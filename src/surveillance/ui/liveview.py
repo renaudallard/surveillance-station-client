@@ -131,7 +131,6 @@ class LiveView(Gtk.Box):
         self._slots: list[CameraSlot] = []
         self._selected_slot: int | None = None
 
-        self.add_css_class("live-grid")
         self.set_hexpand(True)
         self.set_vexpand(True)
 
@@ -170,10 +169,12 @@ class LiveView(Gtk.Box):
 
         # Grid container
         self.grid = Gtk.Grid()
+        self.grid.add_css_class("live-grid")
         self.grid.set_row_homogeneous(True)
         self.grid.set_column_homogeneous(True)
         self.grid.set_hexpand(True)
         self.grid.set_vexpand(True)
+        self.grid.set_overflow(Gtk.Overflow.HIDDEN)
         self.append(self.grid)
 
         # Build initial grid
@@ -181,16 +182,10 @@ class LiveView(Gtk.Box):
 
     def _build_grid(self) -> None:
         """Build the video player grid."""
-        # Stop existing slots
+        # Stop and remove existing slots
         for slot in self._slots:
             slot.player.stop()
-
-        # Remove old grid children
-        child = self.grid.get_first_child()
-        while child is not None:
-            next_child = child.get_next_sibling()
-            self.grid.remove(child)
-            child = next_child
+            self.grid.remove(slot)
 
         self._slots.clear()
         self._selected_slot = None

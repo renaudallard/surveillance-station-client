@@ -168,7 +168,7 @@ class LiveView(Gtk.Box):
     def _on_clear_clicked(self, btn: Gtk.Button) -> None:
         """Clear all streams and camera assignments."""
         self.stop_all()
-        self._select_slot(None)
+        self._build_grid()
         self._save_session()
 
     def _on_slot_clicked(

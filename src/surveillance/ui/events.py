@@ -37,7 +37,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
-from surveillance.api.models import Camera, Event
+from surveillance.api.models import Camera, Event, Recording
 from surveillance.services.event import list_events
 from surveillance.util.async_bridge import run_async
 
@@ -47,14 +47,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 EVENT_TYPES = {
-    0: "Continuous",
-    1: "Motion",
+    1: "Motion Detection",
     2: "Alarm",
-    3: "Custom",
-    4: "Manual",
-    5: "External",
-    6: "Analytics",
-    7: "Edge",
+    3: "Manual",
+    4: "External",
+    6: "Edge",
+    7: "Custom Event",
+    8: "Action Rule",
+    9: "Continuous",
 }
 
 
@@ -108,6 +108,7 @@ class EventsView(Gtk.Box):
 
         self.listbox = Gtk.ListBox()
         self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.listbox.connect("row-activated", self._on_row_activated)
         scroll.set_child(self.listbox)
         self.append(scroll)
 
@@ -182,8 +183,8 @@ class EventsView(Gtk.Box):
     def _create_event_row(self, event: Event) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
         row.add_css_class("event-row")
+        row._event = event  # type: ignore[attr-defined]
 
-        # Add type-specific CSS class
         if event.event_type == 1:
             row.add_css_class("motion")
         elif event.event_type == 2:
@@ -195,21 +196,27 @@ class EventsView(Gtk.Box):
         box.set_margin_start(8)
         box.set_margin_end(8)
 
-        # Event type badge
+        # Info column
+        info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        info_box.set_hexpand(True)
+
+        # Top line: type badge + camera name
+        top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         type_name = EVENT_TYPES.get(event.event_type, f"Type {event.event_type}")
         type_label = Gtk.Label(label=type_name)
-        type_label.set_size_request(80, -1)
-        type_label.set_xalign(0)
-        box.append(type_label)
+        type_label.add_css_class("caption")
+        if event.event_type == 1:
+            type_label.add_css_class("accent")
+        elif event.event_type == 2:
+            type_label.add_css_class("error")
+        top_box.append(type_label)
 
-        # Camera name
         cam_label = Gtk.Label(label=event.camera_name)
         cam_label.add_css_class("camera-label")
-        cam_label.set_xalign(0)
-        cam_label.set_size_request(150, -1)
-        box.append(cam_label)
+        top_box.append(cam_label)
+        info_box.append(top_box)
 
-        # Time
+        # Time range
         start = datetime.fromtimestamp(event.start_time)
         if event.stop_time:
             stop = datetime.fromtimestamp(event.stop_time)
@@ -217,18 +224,57 @@ class EventsView(Gtk.Box):
         else:
             time_str = f"{start:%Y-%m-%d %H:%M:%S} (ongoing)"
         time_label = Gtk.Label(label=time_str)
-        time_label.set_hexpand(True)
         time_label.set_xalign(0)
-        box.append(time_label)
+        time_label.add_css_class("dim-label")
+        time_label.add_css_class("caption")
+        info_box.append(time_label)
 
-        # Reason
-        if event.reason:
-            reason_label = Gtk.Label(label=event.reason)
-            reason_label.add_css_class("dim-label")
-            box.append(reason_label)
+        # Duration
+        if event.stop_time:
+            duration = event.stop_time - event.start_time
+            mins, secs = divmod(duration, 60)
+            dur_label = Gtk.Label(label=f"{mins}m {secs}s")
+            dur_label.set_xalign(0)
+            dur_label.add_css_class("dim-label")
+            dur_label.add_css_class("caption")
+            info_box.append(dur_label)
+
+        box.append(info_box)
+
+        # Play button
+        play_btn = Gtk.Button()
+        play_btn.set_icon_name("media-playback-start-symbolic")
+        play_btn.set_tooltip_text("Play recording")
+        play_btn.set_valign(Gtk.Align.CENTER)
+        play_btn.connect("clicked", self._on_play, event)
+        box.append(play_btn)
 
         row.set_child(box)
         return row
+
+    def _on_row_activated(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        event = row._event  # type: ignore[attr-defined]
+        self._play_event(event)
+
+    def _on_play(self, btn: Gtk.Button, event: Event) -> None:
+        self._play_event(event)
+
+    def _play_event(self, event: Event) -> None:
+        """Open the recording for this event in the player."""
+        from surveillance.ui.player import PlayerDialog
+
+        rec = Recording(
+            id=event.id,
+            camera_id=event.camera_id,
+            camera_name=event.camera_name,
+            start_time=event.start_time,
+            stop_time=event.stop_time,
+            event_type=event.event_type,
+            mount_id=event.mount_id,
+            arch_id=event.arch_id,
+        )
+        dialog = PlayerDialog(self.window, self.app, rec)
+        dialog.present()
 
     def _on_prev(self, btn: Gtk.Button) -> None:
         self._offset = max(0, self._offset - 50)

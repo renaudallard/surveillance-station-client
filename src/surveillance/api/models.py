@@ -134,27 +134,28 @@ class Snapshot:
 
 @dataclass
 class Event:
-    """A surveillance event."""
+    """A surveillance event (recording triggered by motion, alarm, etc.)."""
 
     id: int
     camera_id: int
     camera_name: str
-    event_type: int
+    event_type: int  # mode: 1=motion, 2=alarm, 3=manual, etc.
     start_time: int
     stop_time: int = 0
-    reason: str = ""
+    mount_id: int = 0
+    arch_id: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]
-        reason = data.get("reason", "")
         return cls(
             id=data.get("id", 0),
             camera_id=data.get("cameraId", 0),
             camera_name=data.get("camera_name", data.get("cameraName", "")),
-            event_type=data.get("type", data.get("eventType", 0)),
+            event_type=data.get("mode", data.get("type", data.get("eventType", 0))),
             start_time=data.get("startTime", 0),
             stop_time=data.get("stopTime", 0),
-            reason=str(reason) if reason else "",
+            mount_id=data.get("mountId", 0),
+            arch_id=data.get("archId", 0),
         )
 
 

@@ -62,8 +62,6 @@ class SurveillanceApp(Gtk.Application):
         Gtk.Application.do_startup(self)
         setup_async()
         self.config = load_config()
-        self.apply_theme(self.config.theme)
-        self._load_css()
         self._setup_actions()
 
     def apply_theme(self, theme: str) -> None:
@@ -73,11 +71,9 @@ class SurveillanceApp(Gtk.Application):
             return
         if theme == "dark":
             settings.set_property("gtk-application-prefer-dark-theme", True)
-        elif theme == "light":
-            settings.set_property("gtk-application-prefer-dark-theme", False)
         else:
-            # Auto: reset to OS default by clearing the override
-            settings.reset_property("gtk-application-prefer-dark-theme")
+            # "light" and "auto": False lets the OS color-scheme preference take effect
+            settings.set_property("gtk-application-prefer-dark-theme", False)
 
     def _load_css(self) -> None:
         """Load application CSS."""
@@ -112,6 +108,8 @@ class SurveillanceApp(Gtk.Application):
             from surveillance.ui.window import MainWindow
 
             self._window = MainWindow(application=self)
+        self._load_css()
+        self.apply_theme(self.config.theme)
         self._window.present()
 
     def set_api(self, api: SurveillanceAPI) -> None:

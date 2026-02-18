@@ -345,6 +345,15 @@ This client uses the following Synology Web API endpoints:
 
 ---
 
+## Disclaimer
+
+This project is **not affiliated with, endorsed by, or sponsored by Synology Inc.**
+Synology, Surveillance Station, and DiskStation Manager (DSM) are trademarks of
+Synology Inc. This software is an independent, third-party client that interacts
+with the publicly documented Synology Web API. Use it at your own risk.
+
+---
+
 ## License
 
 BSD-2-Clause

@@ -242,9 +242,18 @@ class MainWindow(Gtk.ApplicationWindow):
             live_view.restart_camera(camera_id)
 
     def show_page(self, page_name: str) -> None:
-        """Switch to a content page."""
+        """Switch to a content page, pausing/resuming live streams as needed."""
+        previous = self.stack.get_visible_child_name()
         self.stack.set_visible_child_name(page_name)
         self.app.config.last_page = page_name
         from surveillance.config import save_config
 
         save_config(self.app.config)
+
+        live_view = self.stack.get_child_by_name("live")
+        if not live_view or not hasattr(live_view, "pause_streams"):
+            return
+        if previous == "live" and page_name != "live":
+            live_view.pause_streams()
+        elif previous != "live" and page_name == "live":
+            live_view.resume_streams()

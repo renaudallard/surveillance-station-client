@@ -429,6 +429,19 @@ class LiveView(Gtk.Box):
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
                 self._start_stream(slot.index, slot.camera)
 
+    def pause_streams(self) -> None:
+        """Stop all mpv playback but keep camera assignments."""
+        for slot in self._slots:
+            if slot.camera:
+                slot.player.stop()
+
+    def resume_streams(self) -> None:
+        """Restart streams for all visible slots that have a camera assigned."""
+        for i in self._active:
+            slot = self._slots[i]
+            if slot.camera:
+                self._start_stream(i, slot.camera)
+
     def stop_all(self) -> None:
         """Stop all streams."""
         for slot in self._slots:

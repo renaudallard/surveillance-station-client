@@ -28,6 +28,8 @@
 
 .live-grid {
     background-color: black;
+    row-spacing: 2px;
+    column-spacing: 2px;
 }
 
 .slot-header {

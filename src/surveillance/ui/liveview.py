@@ -78,9 +78,7 @@ class CameraSlot(Gtk.Box):
         self._header.add_css_class("slot-header")
         self._header.add_css_class("dim-label")
         self._header.add_css_class("caption")
-        self._header.set_xalign(0)
-        self._header.set_margin_start(4)
-        self._header.set_margin_end(4)
+        self._header.set_xalign(0.5)
         self.append(self._header)
 
         # Video player
@@ -192,6 +190,8 @@ class LiveView(Gtk.Box):
         # Grid container
         self.grid = Gtk.Grid()
         self.grid.add_css_class("live-grid")
+        self.grid.set_row_spacing(2)
+        self.grid.set_column_spacing(2)
         self.grid.set_row_homogeneous(True)
         self.grid.set_column_homogeneous(True)
         self.grid.set_hexpand(True)

@@ -121,6 +121,7 @@ class MpvGLArea(Gtk.GLArea):
                 input_vo_keyboard=False,
                 log_handler=self._mpv_log,
                 loglevel="fatal",
+                demuxer_lavf_o="rtsp_transport=tcp",
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches

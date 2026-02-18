@@ -89,11 +89,16 @@ class CameraSlot(Gtk.Box):
         self.player.set_hexpand(True)
         self.append(self.player)
 
-        # Click handler on the whole slot
-        click = Gtk.GestureClick(button=1)
-        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        click.connect("pressed", self._on_click)
-        self.add_controller(click)
+        # Click handlers — one on the header, one on the player.
+        # GLArea consumes events so a CAPTURE gesture on the parent Box
+        # only works for the first grid cell; direct gestures work for all.
+        header_click = Gtk.GestureClick(button=1)
+        header_click.connect("pressed", self._on_click)
+        self._header.add_controller(header_click)
+
+        player_click = Gtk.GestureClick(button=1)
+        player_click.connect("pressed", self._on_click)
+        self.player.add_controller(player_click)
 
         self._click_callback: object = None
 

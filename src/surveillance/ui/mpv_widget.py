@@ -234,6 +234,8 @@ class MpvGLArea(Gtk.GLArea):
                 self._mpv.command("stop")
             except Exception:
                 pass
+        if self._initialized:
+            self.queue_render()
 
     def pause(self) -> None:
         """Toggle pause."""

@@ -192,36 +192,31 @@ class LiveView(Gtk.Box):
             self._frames[slot].add_css_class("slot-selected")
 
     def on_camera_selected(self, camera: Camera) -> None:
-        """Handle camera selection - assign to selected or next available slot."""
-        # If camera is already in a slot, remove it first (allows moving)
-        old_slot: int | None = None
-        for idx, cam in self._assigned.items():
-            if cam.id == camera.id:
-                old_slot = idx
-                break
+        """Handle camera selection.
 
-        # Determine target slot
+        With a slot selected: assign the camera to that slot.
+        Without a slot selected: switch to 1x1 and show only this camera.
+        """
         if self._selected_slot is not None:
-            slot = self._selected_slot
-        elif old_slot is not None:
-            # Already displayed and no slot selected — do nothing
-            return
+            self._assign_to_slot(self._selected_slot, camera)
+            self._select_slot(None)
         else:
-            # Find an empty slot
-            slot = None
-            for i in range(len(self._players)):
-                if i not in self._assigned:
-                    slot = i
-                    break
-            if slot is None:
-                return
+            # Switch to 1x1 and show this camera full-screen
+            self.stop_all()
+            self.layout_combo.set_active_id("1x1")
+            self._build_grid()
+            self._assigned[0] = camera
+            self._start_stream(0, camera)
+        self._save_session()
 
-        assert slot is not None  # ensured by early returns above
-
-        # Remove from old slot if moving
-        if old_slot is not None and old_slot != slot:
-            self._players[old_slot].stop()
-            del self._assigned[old_slot]
+    def _assign_to_slot(self, slot: int, camera: Camera) -> None:
+        """Assign a camera to a specific slot, moving it if already displayed."""
+        # Remove camera from its current slot if it's already displayed elsewhere
+        for idx, cam in list(self._assigned.items()):
+            if cam.id == camera.id and idx != slot:
+                self._players[idx].stop()
+                del self._assigned[idx]
+                break
 
         # Stop whatever was in the target slot
         if slot in self._assigned:
@@ -229,8 +224,6 @@ class LiveView(Gtk.Box):
 
         self._assigned[slot] = camera
         self._start_stream(slot, camera)
-        self._select_slot(None)
-        self._save_session()
 
     def _start_stream(self, slot: int, camera: Camera) -> None:
         """Start streaming a camera in a slot."""

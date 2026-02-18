@@ -92,8 +92,9 @@ class Recording:
     start_time: int  # unix timestamp
     stop_time: int
     file_size: int = 0
-    event_type: str = ""
+    event_type: int = 0
     mount_id: int = 0
+    arch_id: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Recording:  # type: ignore[type-arg]
@@ -103,9 +104,10 @@ class Recording:
             camera_name=data.get("cameraName", ""),
             start_time=data.get("startTime", 0),
             stop_time=data.get("stopTime", 0),
-            file_size=data.get("filePath", 0) if isinstance(data.get("filePath"), int) else 0,
-            event_type=data.get("type", ""),
+            file_size=data.get("fileSize", 0),
+            event_type=data.get("type", 0),
             mount_id=data.get("mountId", 0),
+            arch_id=data.get("archId", 0),
         )
 
 

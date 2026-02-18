@@ -71,30 +71,40 @@ async def list_recordings(
     return recordings, total
 
 
-async def get_stream_url(api: SurveillanceAPI, recording_id: int) -> str:
-    """Get playback URL for a recording."""
-    # Try Recording.Stream first (not available on all NAS versions)
-    try:
-        data = await api.raw_request(
-            api="SYNO.SurveillanceStation.Recording",
-            method="Stream",
-            version=5,
-            extra_params={"id": str(recording_id), "offsetTimeMs": "0"},
-        )
-        path = data.get("uri", "")
-        if path:
-            return f"{api.base_url}{path}"
-    except Exception:
-        pass
+def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
+    """Build a playback URL for a recording.
 
-    # Fallback: use Recording.Download URL (works on all versions)
+    Uses SYNO.SurveillanceStation.Stream EventStream (modern) with a
+    fallback to SYNO.SurveillanceStation.Streaming EventStream (legacy).
+    """
+    # Modern: SYNO.SurveillanceStation.Stream method=EventStream
+    stream_api = "SYNO.SurveillanceStation.Stream"
+    if stream_api in api._api_info:
+        return api.get_stream_url(
+            api._get_api_path(stream_api).removeprefix("/webapi/"),
+            {
+                "api": stream_api,
+                "method": "EventStream",
+                "version": str(api._get_api_version(stream_api, 1)),
+                "eventId": str(rec.id),
+                "mountId": str(rec.mount_id),
+                "recEvtType": str(rec.event_type),
+                "archId": str(rec.arch_id),
+            },
+        )
+
+    # Legacy: SYNO.SurveillanceStation.Streaming method=EventStream
+    legacy_api = "SYNO.SurveillanceStation.Streaming"
     return api.get_stream_url(
-        api._get_api_path("SYNO.SurveillanceStation.Recording").removeprefix("/webapi/"),
+        api._get_api_path(legacy_api).removeprefix("/webapi/"),
         {
-            "api": "SYNO.SurveillanceStation.Recording",
-            "method": "Download",
-            "version": str(api._get_api_version("SYNO.SurveillanceStation.Recording", 5)),
-            "id": str(recording_id),
+            "api": legacy_api,
+            "method": "EventStream",
+            "version": str(api._get_api_version(legacy_api, 2)),
+            "eventId": str(rec.id),
+            "mountId": str(rec.mount_id),
+            "framestart": "0",
+            "timestamp": str(int(__import__("time").time())),
         },
     )
 

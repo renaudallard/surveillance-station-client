@@ -40,7 +40,6 @@ from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 from surveillance.api.models import Recording
 from surveillance.services.recording import get_stream_url
 from surveillance.ui.mpv_widget import MpvGLArea
-from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
     from surveillance.app import SurveillanceApp
@@ -129,11 +128,8 @@ class PlayerDialog(Gtk.Window):
         """Get stream URL and start playback."""
         if not self.app.api:
             return
-        run_async(
-            get_stream_url(self.app.api, self.recording.id),
-            callback=self._on_stream_url,
-            error_callback=lambda e: log.error("Failed to get recording URL: %s", e),
-        )
+        url = get_stream_url(self.app.api, self.recording)
+        self._on_stream_url(url)
 
     def _on_stream_url(self, url: str) -> None:
         self.player.play(url)

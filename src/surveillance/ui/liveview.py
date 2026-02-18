@@ -259,8 +259,8 @@ class LiveView(Gtk.Box):
             # Switch to 1x1 and show this camera full-screen
             for slot in self._slots:
                 slot.clear()
+            # set_active_id triggers _on_layout_changed which rebuilds the grid
             self.layout_combo.set_active_id("1x1")
-            self._build_grid()
             self._slots[0].assign(camera)
             self._start_stream(0, camera)
         self._save_session()

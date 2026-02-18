@@ -47,10 +47,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 EVENT_TYPES = {
+    0: "Continuous",
     1: "Motion Detection",
     2: "Alarm",
     3: "Manual",
     4: "External",
+    5: "Action Rule",
     6: "Edge",
     7: "Custom Event",
     8: "Action Rule",

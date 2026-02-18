@@ -53,6 +53,16 @@ LAYOUTS = {
     "3x3": (3, 3),
 }
 
+# Physical slot indices (in a 3x3 grid) that are visible for each layout.
+# Grid positions: 0=(0,0) 1=(0,1) 2=(0,2) 3=(1,0) 4=(1,1) 5=(1,2) ...
+_LAYOUT_VISIBLE: dict[str, list[int]] = {
+    "1x1": [0],
+    "2x2": [0, 1, 3, 4],
+    "3x3": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+}
+
+_MAX_SLOTS = 9
+
 
 class CameraSlot(Gtk.Box):
     """Self-contained camera slot with a header label and video player."""
@@ -60,6 +70,7 @@ class CameraSlot(Gtk.Box):
     def __init__(self, index: int) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.index = index
+        self._display_index = index
         self.camera: Camera | None = None
 
         # Header bar (outside GL rendering area)
@@ -93,11 +104,16 @@ class CameraSlot(Gtk.Box):
         if self._click_callback and callable(self._click_callback):
             self._click_callback(self.index)
 
+    def set_display_index(self, display_idx: int) -> None:
+        self._display_index = display_idx
+        if not self.camera:
+            self._header.set_label(f"Slot {display_idx + 1}")
+
     def set_selected(self, selected: bool) -> None:
         if selected:
             self._header.remove_css_class("dim-label")
             self._header.add_css_class("slot-selected-label")
-            self._header.set_label(f"\u25b6 Slot {self.index + 1} — click a camera")
+            self._header.set_label(f"\u25b6 Slot {self._display_index + 1} \u2014 click a camera")
         elif self.camera:
             self._header.remove_css_class("slot-selected-label")
             self._header.add_css_class("dim-label")
@@ -105,7 +121,7 @@ class CameraSlot(Gtk.Box):
         else:
             self._header.remove_css_class("slot-selected-label")
             self._header.add_css_class("dim-label")
-            self._header.set_label(f"Slot {self.index + 1}")
+            self._header.set_label(f"Slot {self._display_index + 1}")
 
     def assign(self, camera: Camera) -> None:
         self.camera = camera
@@ -116,7 +132,7 @@ class CameraSlot(Gtk.Box):
     def clear(self) -> None:
         self.camera = None
         self.player.stop()
-        self._header.set_label(f"Slot {self.index + 1}")
+        self._header.set_label(f"Slot {self._display_index + 1}")
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
 
@@ -128,8 +144,9 @@ class LiveView(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.app = window.app
-        self._slots: list[CameraSlot] = []
         self._selected_slot: int | None = None
+        self._active: list[int] = []  # physical indices of visible slots
+        self._inhibit_save = False
 
         self.set_hexpand(True)
         self.set_vexpand(True)
@@ -177,46 +194,39 @@ class LiveView(Gtk.Box):
         self.grid.set_overflow(Gtk.Overflow.HIDDEN)
         self.append(self.grid)
 
-        # Build initial grid
-        self._build_grid()
+        # Pre-create all 9 slots (max for 3x3) and attach to the grid.
+        # Slots are never removed — only shown/hidden on layout change.
+        self._slots: list[CameraSlot] = []
+        for i in range(_MAX_SLOTS):
+            r, c = divmod(i, 3)
+            slot = CameraSlot(i)
+            slot.set_click_callback(self._on_slot_clicked)
+            self.grid.attach(slot, c, r, 1, 1)
+            self._slots.append(slot)
 
-    def _build_grid(self) -> None:
-        """Build the video player grid."""
-        # Stop and remove existing slots
-        for slot in self._slots:
-            slot.player.stop()
-            self.grid.remove(slot)
+        # Apply initial layout (show/hide slots)
+        self._apply_layout()
 
-        self._slots.clear()
-        self._selected_slot = None
-
+    def _apply_layout(self) -> None:
+        """Show/hide slots to match the current layout."""
         layout_name = self.layout_combo.get_active_id() or "2x2"
-        rows, cols = LAYOUTS.get(layout_name, (2, 2))
+        self._active = list(_LAYOUT_VISIBLE.get(layout_name, _LAYOUT_VISIBLE["2x2"]))
+        self._select_slot(None)
 
-        for r in range(rows):
-            for c in range(cols):
-                idx = r * cols + c
-                slot = CameraSlot(idx)
-                slot.set_click_callback(self._on_slot_clicked)
-                self.grid.attach(slot, c, r, 1, 1)
-                self._slots.append(slot)
+        for i, slot in enumerate(self._slots):
+            if i in self._active:
+                slot.set_visible(True)
+                display_idx = self._active.index(i)
+                slot.set_display_index(display_idx)
+            else:
+                slot.set_visible(False)
+                if slot.camera:
+                    slot.clear()
 
     def _on_layout_changed(self, combo: Gtk.ComboBoxText) -> None:
-        # Preserve current assignments
-        old: dict[int, Camera] = {}
-        for slot in self._slots:
-            if slot.camera:
-                old[slot.index] = slot.camera
-
-        self._build_grid()
-
-        # Re-assign cameras that still fit
-        for idx, cam in old.items():
-            if idx < len(self._slots):
-                self._slots[idx].assign(cam)
-                self._start_stream(idx, cam)
-
-        self._save_session()
+        if not self._inhibit_save:
+            self._apply_layout()
+            self._save_session()
 
     def _on_clear_clicked(self, btn: Gtk.Button) -> None:
         """Clear all streams and camera assignments."""
@@ -227,7 +237,8 @@ class LiveView(Gtk.Box):
 
     def _on_slot_clicked(self, slot_idx: int) -> None:
         """Select a grid slot for the next camera assignment."""
-        log.info("Slot %d clicked (was: %s)", slot_idx, self._selected_slot)
+        if slot_idx not in self._active:
+            return
         if self._selected_slot == slot_idx:
             self._select_slot(None)
         else:
@@ -254,8 +265,10 @@ class LiveView(Gtk.Box):
             # Switch to 1x1 and show this camera full-screen
             for slot in self._slots:
                 slot.clear()
-            # set_active_id triggers _on_layout_changed which rebuilds the grid
+            self._inhibit_save = True
             self.layout_combo.set_active_id("1x1")
+            self._inhibit_save = False
+            self._apply_layout()
             self._slots[0].assign(camera)
             self._start_stream(0, camera)
         self._save_session()
@@ -268,11 +281,10 @@ class LiveView(Gtk.Box):
                 slot.clear()
                 break
 
-        # Clear the target slot
-        if slot_idx < len(self._slots):
-            self._slots[slot_idx].clear()
-            self._slots[slot_idx].assign(camera)
-            self._start_stream(slot_idx, camera)
+        # Clear the target slot and assign
+        self._slots[slot_idx].clear()
+        self._slots[slot_idx].assign(camera)
+        self._start_stream(slot_idx, camera)
 
     def _start_stream(self, slot_idx: int, camera: Camera) -> None:
         """Start streaming a camera in a slot."""
@@ -283,9 +295,11 @@ class LiveView(Gtk.Box):
         protocol = self.app.config.camera_protocols.get(camera.id, "auto")
         override = self.app.config.camera_overrides.get(camera.id, "")
 
-        async def _get_url() -> tuple[int, str]:
+        cam_id = camera.id
+
+        async def _get_url() -> tuple[int, int, str]:
             url = await get_live_view_path(api, camera.id, protocol=protocol, override_url=override)
-            return slot_idx, url
+            return slot_idx, cam_id, url
 
         run_async(
             _get_url(),
@@ -295,18 +309,20 @@ class LiveView(Gtk.Box):
             ),
         )
 
-    def _on_stream_url(self, result: tuple[int, str]) -> None:
-        slot_idx, url = result
-        if slot_idx < len(self._slots):
+    def _on_stream_url(self, result: tuple[int, int, str]) -> None:
+        slot_idx, cam_id, url = result
+        slot = self._slots[slot_idx]
+        if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
-            self._slots[slot_idx].player.play(url)
+            slot.player.play(url)
 
     def _save_session(self) -> None:
         """Persist grid layout and camera assignments to config."""
         layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids: list[int] = []
-        for slot in self._slots:
-            cam_ids.append(slot.camera.id if slot.camera else 0)
+        for i in self._active:
+            cam = self._slots[i].camera
+            cam_ids.append(cam.id if cam else 0)
         self.app.config.grid_layout = layout
         self.app.config.last_cameras = cam_ids
         save_config(self.app.config)
@@ -316,13 +332,16 @@ class LiveView(Gtk.Box):
         cam_map = {c.id: c for c in cameras}
         seen: set[int] = set()
         for i, cam_id in enumerate(self.app.config.last_cameras):
-            if cam_id and cam_id in cam_map and i < len(self._slots):
+            if i >= len(self._active):
+                break
+            phys = self._active[i]
+            if cam_id and cam_id in cam_map:
                 if cam_id in seen:
                     continue
                 seen.add(cam_id)
                 cam = cam_map[cam_id]
-                self._slots[i].assign(cam)
-                self._start_stream(i, cam)
+                self._slots[phys].assign(cam)
+                self._start_stream(phys, cam)
 
     def stop_all(self) -> None:
         """Stop all streams."""

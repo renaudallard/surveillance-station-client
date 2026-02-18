@@ -37,6 +37,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus
+from surveillance.config import save_config
 from surveillance.services.camera import list_cameras
 from surveillance.util.async_bridge import run_async
 
@@ -194,9 +195,114 @@ class CameraSidebar(Gtk.Box):
             ptz_label.add_css_class("caption")
             box.append(ptz_label)
 
+        # Right-click gesture for context menu
+        click = Gtk.GestureClick(button=3)
+        click.connect("pressed", self._on_row_right_click, cam)
+        row.add_controller(click)
+
         row.set_child(box)
         row.camera = cam  # type: ignore[attr-defined]
         return row
+
+    def _on_row_right_click(
+        self,
+        gesture: Gtk.GestureClick,
+        n_press: int,
+        x: float,
+        y: float,
+        cam: Camera,
+    ) -> None:
+        """Show context menu on right-click."""
+        popover = Gtk.Popover()
+        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        menu_box.set_margin_top(4)
+        menu_box.set_margin_bottom(4)
+        menu_box.set_margin_start(4)
+        menu_box.set_margin_end(4)
+
+        override_btn = Gtk.Button(label="Set direct RTSP URL\u2026")
+        override_btn.add_css_class("flat")
+        override_btn.connect("clicked", self._on_set_override, cam, popover)
+        menu_box.append(override_btn)
+
+        if cam.id in self.app.config.camera_overrides:
+            clear_btn = Gtk.Button(label="Clear RTSP override")
+            clear_btn.add_css_class("flat")
+            clear_btn.connect("clicked", self._on_clear_override, cam, popover)
+            menu_box.append(clear_btn)
+
+        popover.set_child(menu_box)
+        widget = gesture.get_widget()
+        popover.set_parent(widget)
+        popover.popup()
+
+    def _on_set_override(self, btn: Gtk.Button, cam: Camera, popover: Gtk.Popover) -> None:
+        popover.popdown()
+        self._show_override_dialog(cam)
+
+    def _on_clear_override(self, btn: Gtk.Button, cam: Camera, popover: Gtk.Popover) -> None:
+        popover.popdown()
+        self.app.config.camera_overrides.pop(cam.id, None)
+        save_config(self.app.config)
+
+    def _show_override_dialog(self, cam: Camera) -> None:
+        """Show dialog to set a direct RTSP URL for a camera."""
+        dialog = Gtk.Window(transient_for=self.window, modal=True)
+        dialog.set_title(f"Direct RTSP URL — {cam.name}")
+        dialog.set_default_size(500, -1)
+        dialog.set_resizable(False)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        label = Gtk.Label(
+            label=f"Bypass Synology's RTSP proxy for camera {cam.id} ({cam.name}).\n"
+            "Leave empty and apply to use the default Synology stream."
+        )
+        label.set_wrap(True)
+        label.set_xalign(0)
+        box.append(label)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("rtsp://user:pass@camera-ip:554/stream")
+        existing = self.app.config.camera_overrides.get(cam.id, "")
+        if existing:
+            entry.set_text(existing)
+        box.append(entry)
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_box.set_halign(Gtk.Align.END)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", lambda _: dialog.close())
+        btn_box.append(cancel_btn)
+
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.add_css_class("suggested-action")
+        apply_btn.connect("clicked", self._on_apply_override, cam, entry, dialog)
+        btn_box.append(apply_btn)
+
+        box.append(btn_box)
+        dialog.set_child(box)
+        dialog.present()
+
+    def _on_apply_override(
+        self,
+        btn: Gtk.Button,
+        cam: Camera,
+        entry: Gtk.Entry,
+        dialog: Gtk.Window,
+    ) -> None:
+        url = entry.get_text().strip()
+        if url:
+            self.app.config.camera_overrides[cam.id] = url
+        else:
+            self.app.config.camera_overrides.pop(cam.id, None)
+        save_config(self.app.config)
+        dialog.close()
 
     def _on_row_selected(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:

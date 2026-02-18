@@ -102,18 +102,12 @@ class CameraSlot(Gtk.Box):
         self.player.add_controller(player_click)
 
         self._click_callback: object = None
-        self._dblclick_callback: object = None
 
     def set_click_callback(self, callback: object) -> None:
         self._click_callback = callback
 
-    def set_dblclick_callback(self, callback: object) -> None:
-        self._dblclick_callback = callback
-
     def _on_click(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
-        if n_press == 2 and self._dblclick_callback and callable(self._dblclick_callback):
-            self._dblclick_callback(self.index)
-        elif n_press == 1 and self._click_callback and callable(self._click_callback):
+        if n_press == 1 and self._click_callback and callable(self._click_callback):
             self._click_callback(self.index)
 
     def set_display_index(self, display_idx: int) -> None:
@@ -217,7 +211,6 @@ class LiveView(Gtk.Box):
             r, c = divmod(i, _GRID_COLS)
             slot = CameraSlot(i)
             slot.set_click_callback(self._on_slot_clicked)
-            slot.set_dblclick_callback(self._on_slot_double_clicked)
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)
 
@@ -300,23 +293,19 @@ class LiveView(Gtk.Box):
         self._save_session()
 
     def _on_slot_clicked(self, slot_idx: int) -> None:
-        """Select a grid slot for the next camera assignment."""
+        """Select a grid slot, or switch to 1x1 if clicking a selected slot with a camera."""
         if slot_idx not in self._active:
             return
         if self._selected_slot == slot_idx:
-            self._select_slot(None)
+            cam = self._slots[slot_idx].camera
+            if cam and self._current_layout != "1x1":
+                # Second click on selected slot with a camera: zoom to 1x1
+                self._select_slot(None)
+                self.on_camera_selected(cam)
+            else:
+                self._select_slot(None)
         else:
             self._select_slot(slot_idx)
-
-    def _on_slot_double_clicked(self, slot_idx: int) -> None:
-        """Switch to 1x1 showing only this slot's camera."""
-        if slot_idx not in self._active:
-            return
-        cam = self._slots[slot_idx].camera
-        if not cam or self._current_layout == "1x1":
-            return
-        self._select_slot(None)
-        self.on_camera_selected(cam)
 
     def _select_slot(self, slot_idx: int | None) -> None:
         """Update the selected slot and its visual indicator."""

@@ -146,14 +146,15 @@ class Event:
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]
+        reason = data.get("reason", "")
         return cls(
             id=data.get("id", 0),
             camera_id=data.get("cameraId", 0),
-            camera_name=data.get("cameraName", ""),
-            event_type=data.get("eventType", 0),
+            camera_name=data.get("camera_name", data.get("cameraName", "")),
+            event_type=data.get("type", data.get("eventType", 0)),
             start_time=data.get("startTime", 0),
             stop_time=data.get("stopTime", 0),
-            reason=data.get("reason", ""),
+            reason=str(reason) if reason else "",
         )
 
 

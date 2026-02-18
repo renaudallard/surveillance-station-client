@@ -1,0 +1,64 @@
+.TH SURVEILLANCE 1 "2026-02-18" "0.1.0" "User Commands"
+.SH NAME
+surveillance \- Synology Surveillance Station Linux client
+.SH SYNOPSIS
+.B surveillance
+.RB [ \-\-debug ]
+.SH DESCRIPTION
+.B surveillance
+is a native GTK4 desktop client for Synology Surveillance Station.
+It connects to a Synology NAS via its REST API to provide live camera views,
+recording playback, PTZ control, snapshots, events/alerts, and home mode management.
+.SH FEATURES
+.TP
+.B Live View
+View live camera streams in configurable grid layouts (1x1, 2x2, 3x3).
+Video is rendered via mpv with hardware acceleration.
+.TP
+.B Recording Playback
+Browse, play back, and download recordings filtered by camera and date.
+.TP
+.B PTZ Control
+Control pan-tilt-zoom cameras with direction pad, zoom, preset positions, and patrol routes.
+.TP
+.B Snapshots
+Take live snapshots, browse saved snapshots, download and delete.
+.TP
+.B Events & Alerts
+View motion detection events and camera alerts with notification badges.
+.TP
+.B Home Mode
+Toggle Surveillance Station home mode from the header bar.
+.SH OPTIONS
+.TP
+.B \-\-debug
+Enable debug logging to stderr.
+.SH CONFIGURATION
+Configuration is stored in TOML format at:
+.PP
+.I ~/.config/surveillance-station/config.toml
+.PP
+Connection profiles define NAS host, port, HTTPS, and SSL verification settings.
+Credentials are stored securely via the system keyring.
+.SH KEYBOARD SHORTCUTS
+.TP
+.B Ctrl+Q
+Quit the application.
+.SH DEPENDENCIES
+.TP
+.B System
+gtk4, libmpv, gir1.2-gtk-4.0
+.TP
+.B Python
+PyGObject (>=3.50), httpx, python-mpv, PyOpenGL, keyring, tomli-w
+.SH FILES
+.TP
+.I ~/.config/surveillance-station/config.toml
+Application configuration file.
+.TP
+.I ~/.local/share/surveillance-station/snapshots/
+Default snapshot download directory.
+.SH AUTHORS
+Surveillance Station Linux Client contributors.
+.SH SEE ALSO
+.BR synology-surveillance-station (7)

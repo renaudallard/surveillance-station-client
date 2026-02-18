@@ -1,0 +1,65 @@
+/* Surveillance Station GTK4 theme */
+
+.sidebar {
+    background-color: @theme_bg_color;
+    border-right: 1px solid @borders;
+}
+
+.sidebar row {
+    padding: 8px 12px;
+}
+
+.camera-label {
+    font-weight: bold;
+}
+
+.camera-status-online {
+    color: @success_color;
+}
+
+.camera-status-offline {
+    color: @error_color;
+}
+
+.ptz-pad button {
+    min-width: 48px;
+    min-height: 48px;
+}
+
+.live-grid {
+    background-color: black;
+}
+
+.notification-badge {
+    background-color: @error_color;
+    color: white;
+    border-radius: 10px;
+    padding: 2px 6px;
+    font-size: 0.8em;
+    font-weight: bold;
+}
+
+.recording-row {
+    padding: 6px 12px;
+}
+
+.snapshot-flow > picture {
+    margin: 4px;
+    border-radius: 4px;
+}
+
+.event-row {
+    padding: 8px 12px;
+}
+
+.event-row.motion {
+    border-left: 3px solid @warning_color;
+}
+
+.event-row.alarm {
+    border-left: 3px solid @error_color;
+}
+
+.home-mode-active {
+    color: @success_color;
+}

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Surveillance Station
+Comment=Synology Surveillance Station client
+Exec=surveillance
+Icon=camera-web
+Terminal=false
+Type=Application
+Categories=Video;Security;Network;
+Keywords=surveillance;camera;synology;nas;

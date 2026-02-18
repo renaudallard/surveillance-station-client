@@ -182,9 +182,16 @@ poll_interval_homemode = 60
 snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"
 
 [session]
-grid_layout = "2x2"            # "1x1", "2x2", or "3x3"
+grid_layout = "2x2"            # "1x1", "2x2", "3x3", or "4x4"
 last_page = "live"             # last active page (live, recordings, snapshots, events)
-last_cameras = [1, 3, 0, 5]   # camera IDs assigned to grid slots (0 = empty)
+
+[session.layout_cameras]
+# Camera IDs per layout (0 = empty slot).  Each layout remembers its
+# own assignment independently so switching between layouts restores
+# the previous arrangement.
+"1x1" = [1]
+"2x2" = [1, 3, 0, 5]
+"3x3" = [1, 3, 7, 0, 5, 8, 2, 0, 0]
 
 [camera_overrides]
 # Direct RTSP URLs keyed by Surveillance Station camera ID.

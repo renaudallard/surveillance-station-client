@@ -99,7 +99,7 @@ class AppConfig:
     profiles: dict[str, ConnectionProfile] = field(default_factory=dict)
     grid_layout: str = "2x2"
     last_page: str = "live"
-    last_cameras: list[int] = field(default_factory=list)
+    layout_cameras: dict[str, list[int]] = field(default_factory=dict)
     poll_interval_cameras: int = 30
     poll_interval_alerts: int = 30
     poll_interval_homemode: int = 60
@@ -148,7 +148,7 @@ def load_config() -> AppConfig:
         profiles=profiles,
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
-        last_cameras=session.get("last_cameras", []),
+        layout_cameras=session.get("layout_cameras", {}),
         poll_interval_cameras=general.get("poll_interval_cameras", 30),
         poll_interval_alerts=general.get("poll_interval_alerts", 30),
         poll_interval_homemode=general.get("poll_interval_homemode", 60),
@@ -173,7 +173,7 @@ def save_config(config: AppConfig) -> None:
         "session": {
             "grid_layout": config.grid_layout,
             "last_page": config.last_page,
-            "last_cameras": config.last_cameras,
+            "layout_cameras": config.layout_cameras,
         },
         "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
         "camera_protocols": {

@@ -51,17 +51,20 @@ LAYOUTS = {
     "1x1": (1, 1),
     "2x2": (2, 2),
     "3x3": (3, 3),
+    "4x4": (4, 4),
 }
 
-# Physical slot indices (in a 3x3 grid) that are visible for each layout.
-# Grid positions: 0=(0,0) 1=(0,1) 2=(0,2) 3=(1,0) 4=(1,1) 5=(1,2) ...
+# Internal grid is always 4x4 (16 slots).  Positions: idx = row*4 + col.
+_GRID_COLS = 4
+_MAX_SLOTS = 16
+
+# Physical slot indices that are visible for each layout.
 _LAYOUT_VISIBLE: dict[str, list[int]] = {
     "1x1": [0],
-    "2x2": [0, 1, 3, 4],
-    "3x3": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    "2x2": [0, 1, 4, 5],
+    "3x3": [0, 1, 2, 4, 5, 6, 8, 9, 10],
+    "4x4": list(range(16)),
 }
-
-_MAX_SLOTS = 9
 
 
 class CameraSlot(Gtk.Box):
@@ -150,6 +153,7 @@ class LiveView(Gtk.Box):
         self._selected_slot: int | None = None
         self._active: list[int] = []  # physical indices of visible slots
         self._inhibit_save = False
+        self._cameras: list[Camera] = []  # last known camera list
 
         self.set_hexpand(True)
         self.set_vexpand(True)
@@ -199,11 +203,11 @@ class LiveView(Gtk.Box):
         self.grid.set_overflow(Gtk.Overflow.HIDDEN)
         self.append(self.grid)
 
-        # Pre-create all 9 slots (max for 3x3) and attach to the grid.
+        # Pre-create all 16 slots (max for 4x4) and attach to the grid.
         # Slots are never removed — only shown/hidden on layout change.
         self._slots: list[CameraSlot] = []
         for i in range(_MAX_SLOTS):
-            r, c = divmod(i, 3)
+            r, c = divmod(i, _GRID_COLS)
             slot = CameraSlot(i)
             slot.set_click_callback(self._on_slot_clicked)
             self.grid.attach(slot, c, r, 1, 1)
@@ -212,26 +216,72 @@ class LiveView(Gtk.Box):
         # Apply initial layout (show/hide slots)
         self._apply_layout()
 
+    # ------------------------------------------------------------------
+    # Layout management
+    # ------------------------------------------------------------------
+
     def _apply_layout(self) -> None:
         """Show/hide slots to match the current layout."""
         layout_name = self.layout_combo.get_active_id() or "2x2"
-        self._active = list(_LAYOUT_VISIBLE.get(layout_name, _LAYOUT_VISIBLE["2x2"]))
+        new_active = list(_LAYOUT_VISIBLE.get(layout_name, _LAYOUT_VISIBLE["2x2"]))
         self._select_slot(None)
 
+        # Stop streams on slots that are becoming hidden
         for i, slot in enumerate(self._slots):
-            if i in self._active:
+            if i in new_active:
                 slot.set_visible(True)
-                display_idx = self._active.index(i)
+                display_idx = new_active.index(i)
                 slot.set_display_index(display_idx)
             else:
                 slot.set_visible(False)
                 if slot.camera:
-                    slot.clear()
+                    slot.player.stop()
+
+        self._active = new_active
 
     def _on_layout_changed(self, combo: Gtk.ComboBoxText) -> None:
-        if not self._inhibit_save:
-            self._apply_layout()
-            self._save_session()
+        if self._inhibit_save:
+            return
+        # Save current layout's cameras before switching
+        self._save_layout_cameras()
+        self._apply_layout()
+        # Restore the new layout's saved cameras
+        self._restore_layout_cameras()
+        self._save_session()
+
+    def _save_layout_cameras(self) -> None:
+        """Save camera assignments for the current layout to config."""
+        layout = self.layout_combo.get_active_id() or "2x2"
+        cam_ids: list[int] = []
+        for i in self._active:
+            cam = self._slots[i].camera
+            cam_ids.append(cam.id if cam else 0)
+        self.app.config.layout_cameras[layout] = cam_ids
+
+    def _restore_layout_cameras(self) -> None:
+        """Restore saved camera assignments for the current layout."""
+        layout = self.layout_combo.get_active_id() or "2x2"
+        cam_ids = self.app.config.layout_cameras.get(layout, [])
+        if not cam_ids or not self._cameras:
+            return
+
+        cam_map = {c.id: c for c in self._cameras}
+        seen: set[int] = set()
+        for i, cam_id in enumerate(cam_ids):
+            if i >= len(self._active):
+                break
+            phys = self._active[i]
+            if cam_id and cam_id in cam_map:
+                if cam_id in seen:
+                    continue
+                seen.add(cam_id)
+                cam = cam_map[cam_id]
+                self._slots[phys].assign(cam)
+                self._start_stream(phys, cam)
+
+    # ------------------------------------------------------------------
+    # User interactions
+    # ------------------------------------------------------------------
 
     def _on_clear_clicked(self, btn: Gtk.Button) -> None:
         """Clear all streams and camera assignments."""
@@ -267,9 +317,11 @@ class LiveView(Gtk.Box):
             self._assign_to_slot(self._selected_slot, camera)
             self._select_slot(None)
         else:
-            # Switch to 1x1 and show this camera full-screen
-            for slot in self._slots:
-                slot.clear()
+            # Save current layout before switching
+            self._save_layout_cameras()
+            # Clear visible slots and switch to 1x1
+            for i in self._active:
+                self._slots[i].clear()
             self._inhibit_save = True
             self.layout_combo.set_active_id("1x1")
             self._inhibit_save = False
@@ -290,6 +342,10 @@ class LiveView(Gtk.Box):
         self._slots[slot_idx].clear()
         self._slots[slot_idx].assign(camera)
         self._start_stream(slot_idx, camera)
+
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
 
     def _start_stream(self, slot_idx: int, camera: Camera) -> None:
         """Start streaming a camera in a slot."""
@@ -321,22 +377,32 @@ class LiveView(Gtk.Box):
             log.info("Starting stream in slot %d: %s", slot_idx, url)
             slot.player.play(url)
 
+    # ------------------------------------------------------------------
+    # Session persistence
+    # ------------------------------------------------------------------
+
     def _save_session(self) -> None:
-        """Persist grid layout and camera assignments to config."""
+        """Persist grid layout and per-layout camera assignments to config."""
         layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids: list[int] = []
         for i in self._active:
             cam = self._slots[i].camera
             cam_ids.append(cam.id if cam else 0)
         self.app.config.grid_layout = layout
-        self.app.config.last_cameras = cam_ids
+        self.app.config.layout_cameras[layout] = cam_ids
         save_config(self.app.config)
 
     def restore_session(self, cameras: list[Camera]) -> None:
         """Restore camera assignments from config."""
+        self._cameras = cameras
+        layout = self.layout_combo.get_active_id() or "2x2"
+        cam_ids = self.app.config.layout_cameras.get(layout, [])
+        if not cam_ids:
+            return
+
         cam_map = {c.id: c for c in cameras}
         seen: set[int] = set()
-        for i, cam_id in enumerate(self.app.config.last_cameras):
+        for i, cam_id in enumerate(cam_ids):
             if i >= len(self._active):
                 break
             phys = self._active[i]

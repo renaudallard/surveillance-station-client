@@ -85,13 +85,14 @@ class MpvGLArea(Gtk.GLArea):
     Works on both X11 and Wayland without wid embedding.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tls_verify: bool = True) -> None:
         super().__init__()
         self._mpv: Any = None
         self._ctx: Any = None
         self._url: str = ""
         self._initialized = False
         self._render_pending = False
+        self._tls_verify = tls_verify
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -122,6 +123,7 @@ class MpvGLArea(Gtk.GLArea):
                 log_handler=self._mpv_log,
                 loglevel="fatal",
                 demuxer_lavf_o="rtsp_transport=tcp",
+                tls_verify=self._tls_verify,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches

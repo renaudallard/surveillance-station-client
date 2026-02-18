@@ -89,7 +89,7 @@ async def get_stream_url(api: SurveillanceAPI, recording_id: int) -> str:
 
     # Fallback: use Recording.Download URL (works on all versions)
     return api.get_stream_url(
-        api._get_api_path("SYNO.SurveillanceStation.Recording").lstrip("/webapi/"),
+        api._get_api_path("SYNO.SurveillanceStation.Recording").removeprefix("/webapi/"),
         {
             "api": "SYNO.SurveillanceStation.Recording",
             "method": "Download",

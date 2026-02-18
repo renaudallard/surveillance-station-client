@@ -66,7 +66,8 @@ class PlayerDialog(Gtk.Window):
         self.set_child(main_box)
 
         # Video area
-        self.player = MpvGLArea()
+        verify_ssl = app.api.profile.verify_ssl if app.api else True
+        self.player = MpvGLArea(tls_verify=verify_ssl)
         self.player.set_vexpand(True)
         main_box.append(self.player)
 

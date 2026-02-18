@@ -122,8 +122,6 @@ class MpvGLArea(Gtk.GLArea):
                 log_handler=self._mpv_log,
                 loglevel="warn",
                 demuxer_lavf_o="rtsp_transport=tcp,fflags=+genpts",
-                demuxer_lavf_probesize=10000000,
-                demuxer_lavf_analyzeduration=10000000,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches

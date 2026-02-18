@@ -142,18 +142,17 @@ class LiveView(Gtk.Box):
         for r in range(rows):
             for c in range(cols):
                 idx = r * cols + c
-                slot_box = Gtk.Box()
-                slot_box.add_css_class("slot-box")
-                slot_box.set_can_target(True)
+                frame = Gtk.Frame()
+                frame.set_can_target(True)
                 player = MpvGLArea()
-                slot_box.append(player)
+                frame.set_child(player)
                 click_gesture = Gtk.GestureClick(button=1)
                 click_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
                 click_gesture.connect("pressed", self._on_slot_clicked, idx)
-                slot_box.add_controller(click_gesture)
-                self.grid.attach(slot_box, c, r, 1, 1)
+                frame.add_controller(click_gesture)
+                self.grid.attach(frame, c, r, 1, 1)
                 self._players.append(player)
-                self._frames.append(slot_box)
+                self._frames.append(frame)
 
         # Re-assign cameras to slots
         old_assigned = dict(self._assigned)

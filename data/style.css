@@ -30,14 +30,9 @@
     background-color: black;
 }
 
-.slot-box {
-    padding: 0;
-    background-color: transparent;
-}
-
 .slot-selected {
-    padding: 3px;
-    background-color: #3584e4;
+    outline: 3px solid #3584e4;
+    outline-offset: -3px;
 }
 
 .notification-badge {

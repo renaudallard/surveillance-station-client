@@ -27,6 +27,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +36,10 @@ from surveillance.api.models import Recording
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
+
+log = logging.getLogger(__name__)
+
+_thumbnail_semaphore = asyncio.Semaphore(3)
 
 
 async def list_recordings(
@@ -115,3 +121,49 @@ async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
         version=5,
         extra_params={"idList": str(recording_id)},
     )
+
+
+async def fetch_recording_thumbnail(
+    api: SurveillanceAPI,
+    rec: Recording,
+) -> bytes:
+    """Extract a single JPEG frame from the middle of a recording via ffmpeg."""
+    mid_offset_ms = (rec.stop_time - rec.start_time) * 500
+    stream_url = api.get_stream_url(
+        "entry.cgi",
+        {
+            "api": "SYNO.SurveillanceStation.Recording",
+            "method": "Stream",
+            "version": "5",
+            "id": str(rec.id),
+            "offsetTimeMs": str(mid_offset_ms),
+        },
+    )
+
+    async with _thumbnail_semaphore:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            stream_url,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-q:v",
+            "5",
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+
+    if proc.returncode != 0 or not stdout:
+        msg = stderr.decode(errors="replace").strip() if stderr else "no output"
+        log.warning("Thumbnail failed for recording %d: %s", rec.id, msg)
+        return b""
+    return stdout

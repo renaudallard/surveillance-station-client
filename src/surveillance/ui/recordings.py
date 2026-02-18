@@ -35,11 +35,14 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Recording
-from surveillance.services.recording import list_recordings
+from surveillance.services.recording import fetch_recording_thumbnail, list_recordings
 from surveillance.util.async_bridge import run_async
+
+_THUMB_WIDTH = 120
+_THUMB_HEIGHT = 68
 
 if TYPE_CHECKING:
     from surveillance.ui.window import MainWindow
@@ -164,10 +167,11 @@ class RecordingsView(Gtk.Box):
                 break
             self.listbox.remove(row)
 
-        # Add rows
+        # Add rows and queue thumbnail loads
         for rec in recordings:
             row = self._create_recording_row(rec)
             self.listbox.append(row)
+            self._load_thumbnail(row, rec)
 
         # Update pagination
         self.prev_btn.set_sensitive(self._offset > 0)
@@ -175,6 +179,32 @@ class RecordingsView(Gtk.Box):
         page = (self._offset // 50) + 1
         total_pages = max(1, (total + 49) // 50)
         self.page_label.set_text(f"Page {page} of {total_pages} ({total} total)")
+
+    def _load_thumbnail(self, row: Gtk.ListBoxRow, rec: Recording) -> None:
+        """Async-load a thumbnail for a recording row."""
+        if not self.app.api:
+            return
+        picture: Gtk.Picture = row._thumbnail  # type: ignore[attr-defined]
+
+        def _on_thumb(data: bytes) -> None:
+            if not data:
+                return
+            try:
+                loader = GdkPixbuf.PixbufLoader()
+                loader.write(data)
+                loader.close()
+                pixbuf = loader.get_pixbuf()
+                if pixbuf:
+                    texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+                    picture.set_paintable(texture)
+            except Exception as exc:
+                log.debug("Thumbnail decode failed for recording %d: %s", rec.id, exc)
+
+        run_async(
+            fetch_recording_thumbnail(self.app.api, rec),
+            callback=_on_thumb,
+            error_callback=lambda e: log.debug("Thumbnail fetch failed: %s", e),
+        )
 
     def _create_recording_row(self, rec: Recording) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
@@ -186,28 +216,43 @@ class RecordingsView(Gtk.Box):
         box.set_margin_start(8)
         box.set_margin_end(8)
 
-        # Camera name
+        # Thumbnail placeholder
+        picture = Gtk.Picture()
+        picture.set_size_request(_THUMB_WIDTH, _THUMB_HEIGHT)
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.add_css_class("recording-thumbnail")
+        box.append(picture)
+
+        # Info column
+        info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        info_box.set_hexpand(True)
+        info_box.set_valign(Gtk.Align.CENTER)
+
         cam_label = Gtk.Label(label=rec.camera_name)
         cam_label.add_css_class("camera-label")
         cam_label.set_xalign(0)
-        cam_label.set_size_request(150, -1)
-        box.append(cam_label)
+        info_box.append(cam_label)
 
         # Time range
         start = datetime.fromtimestamp(rec.start_time)
         stop = datetime.fromtimestamp(rec.stop_time)
         time_str = f"{start:%Y-%m-%d %H:%M:%S} - {stop:%H:%M:%S}"
         time_label = Gtk.Label(label=time_str)
-        time_label.set_hexpand(True)
         time_label.set_xalign(0)
-        box.append(time_label)
+        time_label.add_css_class("dim-label")
+        time_label.add_css_class("caption")
+        info_box.append(time_label)
 
         # Duration
         duration = rec.stop_time - rec.start_time
         mins, secs = divmod(duration, 60)
         dur_label = Gtk.Label(label=f"{mins}m {secs}s")
+        dur_label.set_xalign(0)
         dur_label.add_css_class("dim-label")
-        box.append(dur_label)
+        dur_label.add_css_class("caption")
+        info_box.append(dur_label)
+
+        box.append(info_box)
 
         # Play button
         play_btn = Gtk.Button()
@@ -225,6 +270,7 @@ class RecordingsView(Gtk.Box):
 
         row.set_child(box)
         row.recording = rec  # type: ignore[attr-defined]
+        row._thumbnail = picture  # type: ignore[attr-defined]
         return row
 
     def _on_row_activated(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:

@@ -56,6 +56,13 @@
     padding: 6px 12px;
 }
 
+.recording-thumbnail {
+    background-color: #1a1a1a;
+    border-radius: 4px;
+    min-width: 120px;
+    min-height: 68px;
+}
+
 .snapshot-flow > picture {
     margin: 4px;
     border-radius: 4px;

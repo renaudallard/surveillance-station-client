@@ -152,6 +152,7 @@ class LiveView(Gtk.Box):
         self.app = window.app
         self._selected_slot: int | None = None
         self._active: list[int] = []  # physical indices of visible slots
+        self._current_layout: str = self.app.config.grid_layout
         self._inhibit_save = False
         self._cameras: list[Camera] = []  # last known camera list
 
@@ -244,6 +245,8 @@ class LiveView(Gtk.Box):
             return
         # Save current layout's cameras before switching
         self._save_layout_cameras()
+        # Update current layout and apply
+        self._current_layout = combo.get_active_id() or "2x2"
         self._apply_layout()
         # Restore the new layout's saved cameras
         self._restore_layout_cameras()
@@ -251,12 +254,11 @@ class LiveView(Gtk.Box):
 
     def _save_layout_cameras(self) -> None:
         """Save camera assignments for the current layout to config."""
-        layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids: list[int] = []
         for i in self._active:
             cam = self._slots[i].camera
             cam_ids.append(cam.id if cam else 0)
-        self.app.config.layout_cameras[layout] = cam_ids
+        self.app.config.layout_cameras[self._current_layout] = cam_ids
 
     def _restore_layout_cameras(self) -> None:
         """Restore saved camera assignments for the current layout."""
@@ -322,6 +324,7 @@ class LiveView(Gtk.Box):
             # Clear visible slots and switch to 1x1
             for i in self._active:
                 self._slots[i].clear()
+            self._current_layout = "1x1"
             self._inhibit_save = True
             self.layout_combo.set_active_id("1x1")
             self._inhibit_save = False

@@ -34,6 +34,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
+from urllib.parse import urlparse
+
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus
@@ -264,10 +266,19 @@ class CameraSidebar(Gtk.Box):
         url_box.set_sensitive(current_proto == "direct")
         box.append(url_box)
 
+        # Error label (hidden by default)
+        error_label = Gtk.Label()
+        error_label.set_xalign(0)
+        error_label.set_wrap(True)
+        error_label.add_css_class("error")
+        error_label.set_visible(False)
+        box.append(error_label)
+
         # Toggle URL entry sensitivity based on radio selection
         def _on_radio_toggled(radio: Gtk.CheckButton, key: str) -> None:
             if radio.get_active():
                 url_box.set_sensitive(key == "direct")
+                error_label.set_visible(False)
 
         for proto_key, radio in radios.items():
             radio.connect("toggled", _on_radio_toggled, proto_key)
@@ -282,12 +293,38 @@ class CameraSidebar(Gtk.Box):
 
         apply_btn = Gtk.Button(label="Apply")
         apply_btn.add_css_class("suggested-action")
-        apply_btn.connect("clicked", self._on_apply_protocol, cam, radios, url_entry, dialog)
+        apply_btn.connect(
+            "clicked",
+            self._on_apply_protocol,
+            cam,
+            radios,
+            url_entry,
+            error_label,
+            dialog,
+        )
         btn_box.append(apply_btn)
 
         box.append(btn_box)
         dialog.set_child(box)
         dialog.present()
+
+    @staticmethod
+    def _validate_rtsp_url(url: str) -> str | None:
+        """Return an error message if *url* is not a valid RTSP stream URL."""
+        if not url:
+            return "URL must not be empty."
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return "Invalid URL syntax."
+        if parsed.scheme not in ("rtsp", "rtsps", "rtmp", "http", "https"):
+            return (
+                f"Unsupported scheme \u201c{parsed.scheme or ''}\u201d. "
+                "Expected rtsp://, rtsps://, rtmp://, http://, or https://."
+            )
+        if not parsed.hostname:
+            return "URL must contain a hostname."
+        return None
 
     def _on_apply_protocol(
         self,
@@ -295,6 +332,7 @@ class CameraSidebar(Gtk.Box):
         cam: Camera,
         radios: dict[str, Gtk.CheckButton],
         url_entry: Gtk.Entry,
+        error_label: Gtk.Label,
         dialog: Gtk.Window,
     ) -> None:
         # Find selected protocol
@@ -303,6 +341,15 @@ class CameraSidebar(Gtk.Box):
             if radio.get_active():
                 selected = proto_key
                 break
+
+        # Validate direct URL before saving
+        if selected == "direct":
+            url = url_entry.get_text().strip()
+            err = self._validate_rtsp_url(url)
+            if err:
+                error_label.set_label(err)
+                error_label.set_visible(True)
+                return
 
         # Save protocol
         if selected == "auto":
@@ -313,10 +360,7 @@ class CameraSidebar(Gtk.Box):
         # Save direct URL
         if selected == "direct":
             url = url_entry.get_text().strip()
-            if url:
-                self.app.config.camera_overrides[cam.id] = url
-            else:
-                self.app.config.camera_overrides.pop(cam.id, None)
+            self.app.config.camera_overrides[cam.id] = url
         else:
             self.app.config.camera_overrides.pop(cam.id, None)
 

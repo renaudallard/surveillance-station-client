@@ -62,8 +62,15 @@ class SurveillanceApp(Gtk.Application):
         Gtk.Application.do_startup(self)
         setup_async()
         self.config = load_config()
+        self.apply_theme(self.config.dark_theme)
         self._load_css()
         self._setup_actions()
+
+    def apply_theme(self, dark: bool) -> None:
+        """Apply or remove the dark GTK theme variant."""
+        settings = Gtk.Settings.get_default()
+        if settings:
+            settings.set_property("gtk-application-prefer-dark-theme", dark)
 
     def _load_css(self) -> None:
         """Load application CSS."""

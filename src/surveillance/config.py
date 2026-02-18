@@ -97,6 +97,7 @@ class AppConfig:
 
     default_profile: str = ""
     profiles: dict[str, ConnectionProfile] = field(default_factory=dict)
+    dark_theme: bool = True
     grid_layout: str = "2x2"
     last_page: str = "live"
     layout_cameras: dict[str, list[int]] = field(default_factory=dict)
@@ -146,6 +147,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
+        dark_theme=general.get("dark_theme", True),
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
         layout_cameras=session.get("layout_cameras", {}),
@@ -168,6 +170,7 @@ def save_config(config: AppConfig) -> None:
             "poll_interval_cameras": config.poll_interval_cameras,
             "poll_interval_alerts": config.poll_interval_alerts,
             "poll_interval_homemode": config.poll_interval_homemode,
+            "dark_theme": config.dark_theme,
             "snapshot_dir": config.snapshot_dir,
         },
         "session": {

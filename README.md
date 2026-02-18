@@ -176,6 +176,7 @@ Example:
 ```toml
 [general]
 default_profile = "home-nas"
+dark_theme = true               # dark GTK theme variant (toggle in header bar)
 poll_interval_cameras = 30      # seconds
 poll_interval_alerts = 30
 poll_interval_homemode = 60

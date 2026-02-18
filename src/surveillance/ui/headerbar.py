@@ -88,6 +88,14 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.notif_overlay.add_overlay(self.badge_label)
         self.pack_end(self.notif_overlay)
 
+        # Dark theme toggle
+        self.theme_btn = Gtk.ToggleButton()
+        self.theme_btn.set_icon_name("weather-clear-night-symbolic")
+        self.theme_btn.set_tooltip_text("Dark theme")
+        self.theme_btn.set_active(self.app.config.dark_theme)
+        self.theme_btn.connect("toggled", self._on_theme_toggled)
+        self.pack_end(self.theme_btn)
+
         # Logout button
         logout_btn = Gtk.Button()
         logout_btn.set_icon_name("system-log-out-symbolic")
@@ -105,6 +113,14 @@ class AppHeaderBar(Gtk.HeaderBar):
             switch_homemode(self.app.api, btn.get_active()),
             error_callback=lambda e: log.error("Home mode toggle failed: %s", e),
         )
+
+    def _on_theme_toggled(self, btn: Gtk.ToggleButton) -> None:
+        dark = btn.get_active()
+        self.app.config.dark_theme = dark
+        self.app.apply_theme(dark)
+        from surveillance.config import save_config
+
+        save_config(self.app.config)
 
     def set_home_mode(self, active: bool) -> None:
         """Update home mode button state without triggering the signal."""

@@ -129,16 +129,29 @@ async def fetch_recording_thumbnail(
 ) -> bytes:
     """Extract a single JPEG frame from the middle of a recording via ffmpeg."""
     mid_offset_ms = (rec.stop_time - rec.start_time) * 500
-    stream_url = api.get_stream_url(
-        "entry.cgi",
-        {
-            "api": "SYNO.SurveillanceStation.Recording",
-            "method": "Stream",
-            "version": "5",
-            "id": str(rec.id),
-            "offsetTimeMs": str(mid_offset_ms),
-        },
+
+    # Call the API to get the actual stream URI
+    data = await api.request(
+        api="SYNO.SurveillanceStation.Recording",
+        method="Stream",
+        version=5,
+        extra_params={"id": str(rec.id), "offsetTimeMs": str(mid_offset_ms)},
     )
+    uri = data.get("uri", "")
+    if uri:
+        sep = "&" if "?" in uri else "?"
+        stream_url = f"{api.base_url}{uri}{sep}_sid={api.sid}"
+    else:
+        stream_url = api.get_stream_url(
+            "entry.cgi",
+            {
+                "api": "SYNO.SurveillanceStation.Recording",
+                "method": "Stream",
+                "version": "5",
+                "id": str(rec.id),
+                "offsetTimeMs": str(mid_offset_ms),
+            },
+        )
 
     async with _thumbnail_semaphore:
         proc = await asyncio.create_subprocess_exec(
@@ -146,6 +159,8 @@ async def fetch_recording_thumbnail(
             "-y",
             "-loglevel",
             "error",
+            "-tls_verify",
+            "0",
             "-i",
             stream_url,
             "-frames:v",

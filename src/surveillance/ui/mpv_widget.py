@@ -43,7 +43,13 @@ log = logging.getLogger(__name__)
 
 def _load_gl_get_proc() -> ctypes.CDLL | None:
     """Load a native GL library that can resolve proc addresses."""
-    for lib_name in ("libEGL.so.1", "libGL.so.1", "libGLX.so.0"):
+    candidates: list[str] = []
+    for name in ("EGL", "GL", "GLX"):
+        path = ctypes.util.find_library(name)
+        if path:
+            candidates.append(path)
+    candidates.extend(("libEGL.so.1", "libGL.so.1", "libGLX.so.0"))
+    for lib_name in candidates:
         try:
             lib = ctypes.CDLL(lib_name)
             # Verify it has a proc address function
@@ -115,7 +121,7 @@ class MpvGLArea(Gtk.GLArea):
 
             self._mpv = mpv.MPV(
                 vo="libmpv",
-                hwdec="vaapi",
+                hwdec="auto",
                 keep_open="yes",
                 idle="yes",
                 input_default_bindings=False,

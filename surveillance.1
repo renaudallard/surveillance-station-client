@@ -1,6 +1,6 @@
 .TH SURVEILLANCE 1 "2026-02-18" "0.1.0" "User Commands"
 .SH NAME
-surveillance \- Synology Surveillance Station Linux client
+surveillance \- Synology Surveillance Station client
 .SH SYNOPSIS
 .B surveillance
 .RB [ \-\-debug ]
@@ -63,8 +63,14 @@ These settings can be configured by right-clicking a camera in the sidebar.
 Quit the application.
 .SH DEPENDENCIES
 .TP
-.B System
+.B System (Linux)
 gtk4, libmpv, gir1.2-gtk-4.0
+.TP
+.B System (FreeBSD)
+gtk4, mpv, py311-gobject3, py311-cairo
+.TP
+.B System (OpenBSD)
+gtk4, mpv, py3-gobject3, py3-cairo
 .TP
 .B Python
 PyGObject (>=3.50), httpx, python-mpv, PyOpenGL, keyring, tomli-w
@@ -76,6 +82,6 @@ Application configuration file.
 .I ~/.local/share/surveillance-station/snapshots/
 Default snapshot download directory.
 .SH AUTHORS
-Surveillance Station Linux Client contributors.
+Surveillance Station Client contributors.
 .SH SEE ALSO
 .BR synology-surveillance-station (7)

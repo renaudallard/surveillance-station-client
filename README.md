@@ -1,10 +1,10 @@
-# Surveillance Station for Linux
+# Surveillance Station Client
 
 > Native GTK4 desktop client for **Synology Surveillance Station**
 
 No browser needed. Connect directly to your Synology NAS and get live camera
 feeds, recording playback, PTZ control, snapshots, event alerts, and home mode
-management -- all from a lightweight native Linux application.
+management -- all from a lightweight native desktop application.
 
 ---
 
@@ -74,6 +74,22 @@ sudo zypper install \
     mpv-devel \
     python3-gobject \
     python3-gobject-cairo
+```
+</details>
+
+<details>
+<summary><b>FreeBSD</b></summary>
+
+```sh
+pkg install gtk4 mpv py311-gobject3 py311-cairo
+```
+</details>
+
+<details>
+<summary><b>OpenBSD</b></summary>
+
+```sh
+pkg_add gtk4 mpv py3-gobject3 py3-cairo
 ```
 </details>
 

@@ -30,6 +30,10 @@
     background-color: black;
 }
 
+.slot-selected {
+    border: 2px solid @accent_color;
+}
+
 .notification-badge {
     background-color: @error_color;
     color: white;

@@ -62,7 +62,9 @@ class LiveView(Gtk.Box):
         self.window = window
         self.app = window.app
         self._players: list[MpvGLArea] = []
+        self._frames: list[Gtk.Frame] = []
         self._assigned: dict[int, Camera] = {}  # slot_index -> Camera
+        self._selected_slot: int | None = None
 
         self.add_css_class("live-grid")
         self.set_hexpand(True)
@@ -118,6 +120,8 @@ class LiveView(Gtk.Box):
         for player in self._players:
             player.stop()
         self._players.clear()
+        self._frames.clear()
+        self._selected_slot = None
 
         # Remove old grid children
         while True:
@@ -135,13 +139,19 @@ class LiveView(Gtk.Box):
         layout_name = self.layout_combo.get_active_id() or "2x2"
         rows, cols = LAYOUTS.get(layout_name, (2, 2))
 
+        slot_idx = 0
         for r in range(rows):
             for c in range(cols):
                 frame = Gtk.Frame()
                 player = MpvGLArea()
                 frame.set_child(player)
+                click = Gtk.GestureClick(button=1)
+                click.connect("pressed", self._on_slot_clicked, slot_idx)
+                frame.add_controller(click)
                 self.grid.attach(frame, c, r, 1, 1)
                 self._players.append(player)
+                self._frames.append(frame)
+                slot_idx += 1
 
         # Re-assign cameras to slots
         old_assigned = dict(self._assigned)
@@ -158,28 +168,67 @@ class LiveView(Gtk.Box):
     def _on_clear_clicked(self, btn: Gtk.Button) -> None:
         """Clear all streams and camera assignments."""
         self.stop_all()
+        self._select_slot(None)
         self._save_session()
 
-    def on_camera_selected(self, camera: Camera) -> None:
-        """Handle camera selection - assign to next available slot."""
-        # Skip if camera is already displayed
-        for cam in self._assigned.values():
-            if cam.id == camera.id:
-                return
+    def _on_slot_clicked(
+        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, slot: int
+    ) -> None:
+        """Select a grid slot for the next camera assignment."""
+        if self._selected_slot == slot:
+            self._select_slot(None)
+        else:
+            self._select_slot(slot)
 
-        # Find an empty slot
-        slot = None
-        for i in range(len(self._players)):
-            if i not in self._assigned:
-                slot = i
+    def _select_slot(self, slot: int | None) -> None:
+        """Update the selected slot and its visual indicator."""
+        # Remove highlight from previous selection
+        if self._selected_slot is not None and self._selected_slot < len(self._frames):
+            self._frames[self._selected_slot].remove_css_class("slot-selected")
+        self._selected_slot = slot
+        # Add highlight to new selection
+        if slot is not None and slot < len(self._frames):
+            self._frames[slot].add_css_class("slot-selected")
+
+    def on_camera_selected(self, camera: Camera) -> None:
+        """Handle camera selection - assign to selected or next available slot."""
+        # If camera is already in a slot, remove it first (allows moving)
+        old_slot: int | None = None
+        for idx, cam in self._assigned.items():
+            if cam.id == camera.id:
+                old_slot = idx
                 break
 
-        if slot is None:
-            # All slots full, ignore
+        # Determine target slot
+        if self._selected_slot is not None:
+            slot = self._selected_slot
+        elif old_slot is not None:
+            # Already displayed and no slot selected — do nothing
             return
+        else:
+            # Find an empty slot
+            slot = None
+            for i in range(len(self._players)):
+                if i not in self._assigned:
+                    slot = i
+                    break
+            if slot is None:
+                return
+
+        assert slot is not None  # ensured by early returns above
+
+        # Remove from old slot if moving
+        if old_slot is not None and old_slot != slot:
+            self._players[old_slot].stop()
+            del self._assigned[old_slot]
+
+        # Stop whatever was in the target slot
+        if slot in self._assigned:
+            self._players[slot].stop()
 
         self._assigned[slot] = camera
         self._start_stream(slot, camera)
+        self._select_slot(None)
         self._save_session()
 
     def _start_stream(self, slot: int, camera: Camera) -> None:

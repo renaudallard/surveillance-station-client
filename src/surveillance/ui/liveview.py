@@ -143,12 +143,13 @@ class LiveView(Gtk.Box):
             for c in range(cols):
                 idx = r * cols + c
                 frame = Gtk.Frame()
+                frame.set_can_target(True)
                 player = MpvGLArea()
-                player.set_can_target(True)
-                click_gesture = Gtk.GestureClick(button=1)
-                click_gesture.connect("pressed", self._on_slot_clicked, idx)
-                player.add_controller(click_gesture)
                 frame.set_child(player)
+                click_gesture = Gtk.GestureClick(button=1)
+                click_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+                click_gesture.connect("pressed", self._on_slot_clicked, idx)
+                frame.add_controller(click_gesture)
                 self.grid.attach(frame, c, r, 1, 1)
                 self._players.append(player)
                 self._frames.append(frame)

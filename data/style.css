@@ -30,8 +30,9 @@
     background-color: black;
 }
 
-.slot-selected > border {
-    border: 3px solid #3584e4;
+frame > label {
+    color: #3584e4;
+    font-weight: bold;
 }
 
 .notification-badge {

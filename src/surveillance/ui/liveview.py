@@ -100,6 +100,10 @@ class LiveView(Gtk.Box):
         clear_btn.connect("clicked", self._on_clear_clicked)
         toolbar.append(clear_btn)
 
+        self._slot_label = Gtk.Label()
+        self._slot_label.add_css_class("dim-label")
+        toolbar.append(self._slot_label)
+
         self.append(toolbar)
         self.append(Gtk.Separator())
 
@@ -184,13 +188,16 @@ class LiveView(Gtk.Box):
 
     def _select_slot(self, slot: int | None) -> None:
         """Update the selected slot and its visual indicator."""
-        # Remove highlight from previous selection
+        # Remove label from previous selection
         if self._selected_slot is not None and self._selected_slot < len(self._frames):
-            self._frames[self._selected_slot].remove_css_class("slot-selected")
+            self._frames[self._selected_slot].set_label(None)
         self._selected_slot = slot
-        # Add highlight to new selection
+        # Add label to new selection
         if slot is not None and slot < len(self._frames):
-            self._frames[slot].add_css_class("slot-selected")
+            self._frames[slot].set_label(f"\u25b6 Slot {slot + 1}")
+            self._slot_label.set_label(f"Slot {slot + 1} selected")
+        else:
+            self._slot_label.set_label("")
 
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection.

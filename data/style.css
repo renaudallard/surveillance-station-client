@@ -30,9 +30,8 @@
     background-color: black;
 }
 
-.slot-selected {
-    outline: 3px solid #3584e4;
-    outline-offset: -3px;
+.slot-selected > border {
+    border: 3px solid #3584e4;
 }
 
 .notification-badge {

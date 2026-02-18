@@ -97,7 +97,7 @@ class AppConfig:
 
     default_profile: str = ""
     profiles: dict[str, ConnectionProfile] = field(default_factory=dict)
-    dark_theme: bool = True
+    theme: str = "auto"  # "auto", "dark", "light"
     grid_layout: str = "2x2"
     last_page: str = "live"
     layout_cameras: dict[str, list[int]] = field(default_factory=dict)
@@ -111,6 +111,18 @@ class AppConfig:
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
             self.snapshot_dir = str(DATA_DIR / "snapshots")
+
+
+def _load_theme(general: dict[str, Any]) -> str:
+    """Read theme setting with backward compat for old dark_theme bool."""
+    theme = general.get("theme")
+    if isinstance(theme, str) and theme in ("auto", "dark", "light"):
+        return theme
+    # Migrate old dark_theme boolean
+    dark = general.get("dark_theme")
+    if isinstance(dark, bool):
+        return "dark" if dark else "light"
+    return "auto"
 
 
 def load_config() -> AppConfig:
@@ -147,7 +159,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
-        dark_theme=general.get("dark_theme", True),
+        theme=_load_theme(general),
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
         layout_cameras=session.get("layout_cameras", {}),
@@ -170,7 +182,7 @@ def save_config(config: AppConfig) -> None:
             "poll_interval_cameras": config.poll_interval_cameras,
             "poll_interval_alerts": config.poll_interval_alerts,
             "poll_interval_homemode": config.poll_interval_homemode,
-            "dark_theme": config.dark_theme,
+            "theme": config.theme,
             "snapshot_dir": config.snapshot_dir,
         },
         "session": {

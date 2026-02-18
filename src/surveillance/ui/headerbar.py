@@ -88,12 +88,11 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.notif_overlay.add_overlay(self.badge_label)
         self.pack_end(self.notif_overlay)
 
-        # Dark theme toggle
-        self.theme_btn = Gtk.ToggleButton()
-        self.theme_btn.set_icon_name("weather-clear-night-symbolic")
-        self.theme_btn.set_tooltip_text("Dark theme")
-        self.theme_btn.set_active(self.app.config.dark_theme)
-        self.theme_btn.connect("toggled", self._on_theme_toggled)
+        # Theme selector
+        self.theme_btn = Gtk.MenuButton()
+        self.theme_btn.set_tooltip_text("Theme")
+        self._update_theme_icon(self.app.config.theme)
+        self._build_theme_popover()
         self.pack_end(self.theme_btn)
 
         # Logout button
@@ -114,13 +113,49 @@ class AppHeaderBar(Gtk.HeaderBar):
             error_callback=lambda e: log.error("Home mode toggle failed: %s", e),
         )
 
-    def _on_theme_toggled(self, btn: Gtk.ToggleButton) -> None:
-        dark = btn.get_active()
-        self.app.config.dark_theme = dark
-        self.app.apply_theme(dark)
+    _THEME_ICONS: dict[str, str] = {
+        "auto": "display-brightness-symbolic",
+        "dark": "weather-clear-night-symbolic",
+        "light": "weather-clear-symbolic",
+    }
+
+    def _build_theme_popover(self) -> None:
+        """Build a popover with radio buttons for theme selection."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        current = self.app.config.theme
+        group: Gtk.CheckButton | None = None
+        for key, label in [("auto", "System default"), ("dark", "Dark"), ("light", "Light")]:
+            radio = Gtk.CheckButton(label=label)
+            if group is not None:
+                radio.set_group(group)
+            else:
+                group = radio
+            if key == current:
+                radio.set_active(True)
+            radio.connect("toggled", self._on_theme_radio_toggled, key)
+            box.append(radio)
+
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        self.theme_btn.set_popover(popover)
+
+    def _on_theme_radio_toggled(self, radio: Gtk.CheckButton, theme: str) -> None:
+        if not radio.get_active():
+            return
+        self.app.config.theme = theme
+        self.app.apply_theme(theme)
+        self._update_theme_icon(theme)
         from surveillance.config import save_config
 
         save_config(self.app.config)
+
+    def _update_theme_icon(self, theme: str) -> None:
+        self.theme_btn.set_icon_name(self._THEME_ICONS.get(theme, self._THEME_ICONS["auto"]))
 
     def set_home_mode(self, active: bool) -> None:
         """Update home mode button state without triggering the signal."""

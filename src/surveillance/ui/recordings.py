@@ -37,7 +37,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
-from surveillance.api.models import Camera, Recording
+from surveillance.api.models import Camera, Recording, decode_detection_labels
 from surveillance.services.recording import fetch_camera_snapshot, list_recordings
 from surveillance.util.async_bridge import run_async
 
@@ -251,6 +251,17 @@ class RecordingsView(Gtk.Box):
         dur_label.add_css_class("dim-label")
         dur_label.add_css_class("caption")
         info_box.append(dur_label)
+
+        # Smart detection labels
+        det_labels = decode_detection_labels(rec.detection_label)
+        if det_labels:
+            det_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            for tag in det_labels:
+                tag_label = Gtk.Label(label=tag)
+                tag_label.add_css_class("caption")
+                tag_label.add_css_class("accent")
+                det_box.append(tag_label)
+            info_box.append(det_box)
 
         box.append(info_box)
 

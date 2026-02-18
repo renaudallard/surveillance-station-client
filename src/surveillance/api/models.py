@@ -82,6 +82,26 @@ class Camera:
         )
 
 
+DETECTION_LABELS: dict[int, str] = {
+    1: "Person",
+    2: "Vehicle",
+    3: "Animal",
+    4: "Tampering",
+    6: "Crowd",
+    7: "License Plate",
+    8: "Over-occupancy",
+}
+
+
+def decode_detection_labels(bitmask: int) -> list[str]:
+    """Decode a defaultLabel bitmask into human-readable detection tags."""
+    labels = []
+    for bit, name in DETECTION_LABELS.items():
+        if bitmask & (1 << bit):
+            labels.append(name)
+    return labels
+
+
 @dataclass
 class Recording:
     """A camera recording."""
@@ -95,6 +115,7 @@ class Recording:
     event_type: int = 0
     mount_id: int = 0
     arch_id: int = 0
+    detection_label: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Recording:  # type: ignore[type-arg]
@@ -108,6 +129,7 @@ class Recording:
             event_type=data.get("type", 0),
             mount_id=data.get("mountId", 0),
             arch_id=data.get("archId", 0),
+            detection_label=data.get("defaultLabel", 0),
         )
 
 
@@ -144,6 +166,7 @@ class Event:
     stop_time: int = 0
     mount_id: int = 0
     arch_id: int = 0
+    detection_label: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]
@@ -156,6 +179,7 @@ class Event:
             stop_time=data.get("stopTime", 0),
             mount_id=data.get("mountId", 0),
             arch_id=data.get("archId", 0),
+            detection_label=data.get("defaultLabel", 0),
         )
 
 

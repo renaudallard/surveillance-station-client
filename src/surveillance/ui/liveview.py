@@ -146,6 +146,7 @@ class LiveView(Gtk.Box):
                 player = MpvGLArea()
                 frame.set_child(player)
                 click = Gtk.GestureClick(button=1)
+                click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
                 click.connect("pressed", self._on_slot_clicked, slot_idx)
                 frame.add_controller(click)
                 self.grid.attach(frame, c, r, 1, 1)

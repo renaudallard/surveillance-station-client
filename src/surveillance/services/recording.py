@@ -73,25 +73,28 @@ async def list_recordings(
 
 async def get_stream_url(api: SurveillanceAPI, recording_id: int) -> str:
     """Get playback URL for a recording."""
-    data = await api.request(
-        api="SYNO.SurveillanceStation.Recording",
-        method="Stream",
-        version=5,
-        extra_params={"id": str(recording_id), "offsetTimeMs": "0"},
-    )
-    # Build full URL from response
-    path = data.get("uri", "")
-    if path:
-        return f"{api.base_url}{path}"
-    # Fallback: construct URL directly
+    # Try Recording.Stream first (not available on all NAS versions)
+    try:
+        data = await api.raw_request(
+            api="SYNO.SurveillanceStation.Recording",
+            method="Stream",
+            version=5,
+            extra_params={"id": str(recording_id), "offsetTimeMs": "0"},
+        )
+        path = data.get("uri", "")
+        if path:
+            return f"{api.base_url}{path}"
+    except Exception:
+        pass
+
+    # Fallback: use Recording.Download URL (works on all versions)
     return api.get_stream_url(
-        "entry.cgi",
+        api._get_api_path("SYNO.SurveillanceStation.Recording").lstrip("/webapi/"),
         {
             "api": "SYNO.SurveillanceStation.Recording",
-            "method": "Stream",
-            "version": "5",
+            "method": "Download",
+            "version": str(api._get_api_version("SYNO.SurveillanceStation.Recording", 5)),
             "id": str(recording_id),
-            "offsetTimeMs": "0",
         },
     )
 
@@ -127,30 +130,26 @@ async def fetch_recording_thumbnail(
     api: SurveillanceAPI,
     rec: Recording,
 ) -> bytes:
-    """Extract a single JPEG frame from the middle of a recording.
+    """Extract a single JPEG frame from a recording.
 
-    Uses the Synology Recording.Stream API to get the stream URI, fetches
-    video data via httpx (which handles SSL and auth), then pipes to ffmpeg
-    to extract one JPEG frame.
+    Downloads the first chunk of the recording via Recording.Download
+    (using httpx which handles SSL and auth), then pipes to ffmpeg to
+    extract one JPEG frame.
     """
-    mid_offset_ms = (rec.stop_time - rec.start_time) * 500
+    path = api._get_api_path("SYNO.SurveillanceStation.Recording")
+    ver = api._get_api_version("SYNO.SurveillanceStation.Recording", 5)
+    params = {
+        "api": "SYNO.SurveillanceStation.Recording",
+        "version": str(ver),
+        "method": "Download",
+        "id": str(rec.id),
+        "_sid": api.sid,
+    }
 
-    # Get the stream URI from the API
-    data = await api.request(
-        api="SYNO.SurveillanceStation.Recording",
-        method="Stream",
-        version=5,
-        extra_params={"id": str(rec.id), "offsetTimeMs": str(mid_offset_ms)},
-    )
-    uri = data.get("uri", "")
-    if not uri:
-        log.warning("No stream URI for recording %d", rec.id)
-        return b""
-
-    # Fetch video data via httpx (handles SSL via profile settings)
     async with _thumbnail_semaphore:
+        # Fetch first 512KB of the recording file via httpx
         try:
-            async with api.client.stream("GET", uri) as resp:
+            async with api.client.stream("GET", path, params=params) as resp:
                 resp.raise_for_status()
                 chunks: list[bytes] = []
                 total = 0
@@ -160,12 +159,12 @@ async def fetch_recording_thumbnail(
                     if total >= 512_000:
                         break
         except Exception as exc:
-            log.warning("Stream fetch failed for recording %d: %s", rec.id, exc)
+            log.warning("Download fetch failed for recording %d: %s", rec.id, exc)
             return b""
 
         video_data = b"".join(chunks)
         if not video_data:
-            log.warning("Empty stream for recording %d", rec.id)
+            log.warning("Empty download for recording %d", rec.id)
             return b""
 
         # Extract one JPEG frame via ffmpeg from piped data

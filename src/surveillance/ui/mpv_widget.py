@@ -201,8 +201,9 @@ class MpvGLArea(Gtk.GLArea):
 
         Coalesces multiple updates into a single render to avoid flooding
         the GTK main loop when many streams are active (e.g. 3x3 grid).
+        Skips scheduling when stopped (no URL) to prevent idle render loops.
         """
-        if not self._render_pending:
+        if self._url and not self._render_pending:
             self._render_pending = True
             GLib.idle_add(self._do_queue_render)
 

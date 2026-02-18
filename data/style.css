@@ -31,7 +31,7 @@
 }
 
 .slot-selected {
-    border: 2px solid @accent_color;
+    border: 3px solid #3584e4;
 }
 
 .notification-badge {

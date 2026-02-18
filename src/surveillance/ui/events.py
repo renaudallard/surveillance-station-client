@@ -132,9 +132,10 @@ class EventsView(Gtk.Box):
 
         self.append(page_box)
 
-        # Populate camera filter
+        # Populate camera filter and load initial data
         for cam in self.window.sidebar.cameras:
             self.camera_combo.append(str(cam.id), cam.name)
+        self._load_events()
 
     def _on_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
         active = combo.get_active_id()

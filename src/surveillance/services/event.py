@@ -27,12 +27,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Alert, Event
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
+
+log = logging.getLogger(__name__)
 
 
 async def list_events(
@@ -43,6 +46,7 @@ async def list_events(
 ) -> tuple[list[Event], int]:
     """List motion/alarm events.
 
+    Tries Event.List first, falls back to Event.Query on older NAS versions.
     Returns (events, total_count).
     """
     params: dict[str, str] = {
@@ -52,16 +56,26 @@ async def list_events(
     if camera_id is not None:
         params["cameraIds"] = str(camera_id)
 
-    data = await api.request(
-        api="SYNO.SurveillanceStation.Event",
-        method="List",
-        version=5,
-        extra_params=params,
-    )
-
-    events = [Event.from_api(e) for e in data.get("events", [])]
-    total = data.get("total", len(events))
-    return events, total
+    # Try List first (modern), fall back to Query (legacy)
+    last_exc: Exception | None = None
+    for method in ("List", "Query"):
+        try:
+            data = await api.request(
+                api="SYNO.SurveillanceStation.Event",
+                method=method,
+                version=5,
+                extra_params=params,
+            )
+            events = [Event.from_api(e) for e in data.get("events", [])]
+            total = data.get("total", len(events))
+            return events, total
+        except Exception as exc:
+            last_exc = exc
+            if method == "List":
+                log.debug("Event.List not available, trying Event.Query")
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]
 
 
 async def list_alerts(

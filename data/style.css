@@ -30,8 +30,14 @@
     background-color: black;
 }
 
+.slot-box {
+    padding: 0;
+    background-color: transparent;
+}
+
 .slot-selected {
-    border: 3px solid #3584e4;
+    padding: 3px;
+    background-color: #3584e4;
 }
 
 .notification-badge {

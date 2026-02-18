@@ -38,7 +38,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Recording
-from surveillance.services.recording import fetch_recording_thumbnail, list_recordings
+from surveillance.services.recording import fetch_camera_snapshot, list_recordings
 from surveillance.util.async_bridge import run_async
 
 _THUMB_WIDTH = 120
@@ -201,7 +201,7 @@ class RecordingsView(Gtk.Box):
                 log.warning("Thumbnail decode failed for recording %d: %s", rec.id, exc)
 
         run_async(
-            fetch_recording_thumbnail(self.app.api, rec),
+            fetch_camera_snapshot(self.app.api, rec.camera_id),
             callback=_on_thumb,
             error_callback=lambda e: log.warning("Thumbnail fetch failed: %s", e),
         )

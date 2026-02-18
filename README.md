@@ -13,7 +13,7 @@ management -- all from a lightweight native Linux application.
 | Feature | Description |
 |---|---|
 | **Live View** | Real-time camera streams in 1x1, 2x2, or 3x3 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. |
-| **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Preview thumbnails extracted from the middle of each recording via ffmpeg. |
+| **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Camera snapshot thumbnails shown for each recording. |
 | **PTZ Control** | 8-direction pad, zoom in/out, speed slider, preset positions, and patrol routes for PTZ-capable cameras. |
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
 | **Events & Alerts** | View motion detection and alarm events. Notification bell with unread badge, polled every 30 seconds. |

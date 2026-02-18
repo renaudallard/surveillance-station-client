@@ -126,72 +126,29 @@ async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
     )
 
 
-async def fetch_recording_thumbnail(
-    api: SurveillanceAPI,
-    rec: Recording,
-) -> bytes:
-    """Extract a single JPEG frame from a recording.
+_snapshot_cache: dict[int, bytes] = {}
 
-    Downloads the first chunk of the recording via Recording.Download
-    (using httpx which handles SSL and auth), then pipes to ffmpeg to
-    extract one JPEG frame.
-    """
-    path = api._get_api_path("SYNO.SurveillanceStation.Recording")
-    ver = api._get_api_version("SYNO.SurveillanceStation.Recording", 5)
-    params = {
-        "api": "SYNO.SurveillanceStation.Recording",
-        "version": str(ver),
-        "method": "Download",
-        "id": str(rec.id),
-        "_sid": api.sid,
-    }
+
+async def fetch_camera_snapshot(
+    api: SurveillanceAPI,
+    camera_id: int,
+) -> bytes:
+    """Fetch a JPEG snapshot for a camera, with per-camera caching."""
+    if camera_id in _snapshot_cache:
+        return _snapshot_cache[camera_id]
 
     async with _thumbnail_semaphore:
-        # Fetch first 512KB of the recording file via httpx
         try:
-            async with api.client.stream("GET", path, params=params) as resp:
-                resp.raise_for_status()
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes():
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total >= 512_000:
-                        break
+            data = await api.download(
+                api="SYNO.SurveillanceStation.Camera",
+                method="GetSnapshot",
+                version=8,
+                extra_params={"cameraId": str(camera_id)},
+            )
         except Exception as exc:
-            log.warning("Download fetch failed for recording %d: %s", rec.id, exc)
+            log.warning("Snapshot failed for camera %d: %s", camera_id, exc)
             return b""
 
-        video_data = b"".join(chunks)
-        if not video_data:
-            log.warning("Empty download for recording %d", rec.id)
-            return b""
-
-        # Extract one JPEG frame via ffmpeg from piped data
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            "pipe:0",
-            "-frames:v",
-            "1",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "mjpeg",
-            "-q:v",
-            "5",
-            "pipe:1",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(input=video_data), timeout=15)
-
-    if proc.returncode != 0 or not stdout:
-        msg = stderr.decode(errors="replace").strip() if stderr else "no output"
-        log.warning("Thumbnail ffmpeg failed for recording %d: %s", rec.id, msg)
-        return b""
-    return stdout
+    if data:
+        _snapshot_cache[camera_id] = data
+    return data

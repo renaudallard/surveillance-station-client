@@ -48,9 +48,14 @@ It is updated automatically so the application restores the previous viewing
 session on restart.
 .PP
 The
+.B [camera_protocols]
+section selects the stream protocol per camera (auto, rtsp, rtsp_over_http,
+mjpeg, multicast, direct).  When set to
+.IR direct ,
+the URL from
 .B [camera_overrides]
-section maps camera IDs to direct RTSP URLs, bypassing Synology's RTSP proxy
-for cameras whose stream it corrupts (e.g.\& Reolink Duo 3 PoE).
+is used instead of Synology's RTSP proxy.
+These settings can be configured by right-clicking a camera in the sidebar.
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q

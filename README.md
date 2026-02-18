@@ -193,6 +193,12 @@ last_cameras = [1, 3, 0, 5]   # camera IDs assigned to grid slots (0 = empty)
 # the sidebar tooltip or the debug log.
 # 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
 
+[camera_protocols]
+# Stream protocol per camera ID.  Supported values:
+# auto, rtsp, rtsp_over_http, mjpeg, multicast, direct
+# When set to "direct", the URL from [camera_overrides] is used.
+# 5 = "direct"
+
 [profiles.home-nas]
 host = "192.168.1.100"
 port = 5001
@@ -204,10 +210,11 @@ The `[session]` section is managed automatically. On each restart the applicatio
 restores the grid layout, active page, and camera assignments from the previous
 session.
 
-The `[camera_overrides]` section lets you bypass Synology's RTSP proxy for
-specific cameras by mapping their ID to a direct RTSP URL. This is useful
-when Synology corrupts a camera's stream (known issue with some dual-lens
-cameras like the Reolink Duo 3 PoE).
+The `[camera_overrides]` and `[camera_protocols]` sections can also be
+configured from the UI: right-click a camera in the sidebar to choose the
+stream protocol.  Available protocols: Auto, RTSP, RTSP over HTTP, MJPEG,
+Multicast, and Direct RTSP URL (bypasses Synology's proxy entirely — useful
+for cameras whose stream Synology corrupts, e.g. Reolink Duo 3 PoE).
 
 Credentials are **never** stored in the config file. They are kept in the
 system keyring under the service name `surveillance-station`.

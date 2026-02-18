@@ -33,18 +33,40 @@ if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
 
 
+PROTOCOL_LABELS: dict[str, str] = {
+    "auto": "Auto (best available)",
+    "rtsp": "RTSP",
+    "rtsp_over_http": "RTSP over HTTP",
+    "mjpeg": "MJPEG",
+    "multicast": "Multicast",
+    "direct": "Direct RTSP URL",
+}
+
+# Ordered list of API response fields tried by "auto"
+_AUTO_FIELDS = ("rtspPath", "rtspOverHttpPath", "mjpegHttpPath", "multicstPath")
+
+# Map protocol name -> API response field
+_PROTO_FIELD: dict[str, str] = {
+    "rtsp": "rtspPath",
+    "rtsp_over_http": "rtspOverHttpPath",
+    "mjpeg": "mjpegHttpPath",
+    "multicast": "multicstPath",
+}
+
+
 async def get_live_view_path(
     api: SurveillanceAPI,
     camera_id: int,
+    protocol: str = "auto",
     override_url: str = "",
 ) -> str:
     """Get the live view URL for a camera.
 
-    If *override_url* is set it is returned directly (for cameras whose
-    Synology-proxied stream is broken).  Otherwise the best available
-    path from the Surveillance Station API is returned.
+    *protocol* selects which stream path to use:
+      auto, rtsp, rtsp_over_http, mjpeg, multicast, direct.
+    When *protocol* is ``"direct"``, *override_url* is returned as-is.
     """
-    if override_url:
+    if protocol == "direct" and override_url:
         return override_url
 
     data = await api.request(
@@ -66,25 +88,23 @@ async def get_live_view_path(
 
     info = paths[0]
 
-    # Prefer RTSP unicast
-    rtsp_path: str = info.get("rtspPath", "")
-    if rtsp_path:
-        return rtsp_path
+    # Specific protocol requested
+    if protocol in _PROTO_FIELD:
+        field_name = _PROTO_FIELD[protocol]
+        value: str = info.get(field_name, "")
+        if not value:
+            raise ValueError(f"Protocol {protocol!r} not available for camera {camera_id}")
+        if field_name == "mjpegHttpPath":
+            return f"{api.base_url}{value}"
+        return value
 
-    # RTSP over HTTP (tunneled through DSM port)
-    rtsp_http: str = info.get("rtspOverHttpPath", "")
-    if rtsp_http:
-        return rtsp_http
-
-    # Fall back to MJPEG over HTTP
-    mjpeg_path: str = info.get("mjpegHttpPath", "")
-    if mjpeg_path:
-        return f"{api.base_url}{mjpeg_path}"
-
-    # Fall back to multicast
-    mcast: str = info.get("multicstPath", "")
-    if mcast:
-        return mcast
+    # Auto: try each field in order
+    for field_name in _AUTO_FIELDS:
+        value = info.get(field_name, "")
+        if value:
+            if field_name == "mjpegHttpPath":
+                return f"{api.base_url}{value}"
+            return value
 
     raise ValueError(f"No usable stream path for camera {camera_id}")
 

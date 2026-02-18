@@ -39,6 +39,7 @@ from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 from surveillance.api.models import Camera, CameraStatus
 from surveillance.config import save_config
 from surveillance.services.camera import list_cameras
+from surveillance.services.live import PROTOCOL_LABELS
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -212,44 +213,14 @@ class CameraSidebar(Gtk.Box):
         y: float,
         cam: Camera,
     ) -> None:
-        """Show context menu on right-click."""
-        popover = Gtk.Popover()
-        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        menu_box.set_margin_top(4)
-        menu_box.set_margin_bottom(4)
-        menu_box.set_margin_start(4)
-        menu_box.set_margin_end(4)
+        """Show stream protocol dialog on right-click."""
+        self._show_protocol_dialog(cam)
 
-        override_btn = Gtk.Button(label="Set direct RTSP URL\u2026")
-        override_btn.add_css_class("flat")
-        override_btn.connect("clicked", self._on_set_override, cam, popover)
-        menu_box.append(override_btn)
-
-        if cam.id in self.app.config.camera_overrides:
-            clear_btn = Gtk.Button(label="Clear RTSP override")
-            clear_btn.add_css_class("flat")
-            clear_btn.connect("clicked", self._on_clear_override, cam, popover)
-            menu_box.append(clear_btn)
-
-        popover.set_child(menu_box)
-        widget = gesture.get_widget()
-        popover.set_parent(widget)
-        popover.popup()
-
-    def _on_set_override(self, btn: Gtk.Button, cam: Camera, popover: Gtk.Popover) -> None:
-        popover.popdown()
-        self._show_override_dialog(cam)
-
-    def _on_clear_override(self, btn: Gtk.Button, cam: Camera, popover: Gtk.Popover) -> None:
-        popover.popdown()
-        self.app.config.camera_overrides.pop(cam.id, None)
-        save_config(self.app.config)
-
-    def _show_override_dialog(self, cam: Camera) -> None:
-        """Show dialog to set a direct RTSP URL for a camera."""
+    def _show_protocol_dialog(self, cam: Camera) -> None:
+        """Show dialog to choose the streaming protocol for a camera."""
         dialog = Gtk.Window(transient_for=self.window, modal=True)
-        dialog.set_title(f"Direct RTSP URL — {cam.name}")
-        dialog.set_default_size(500, -1)
+        dialog.set_title(f"Stream Protocol — {cam.name}")
+        dialog.set_default_size(450, -1)
         dialog.set_resizable(False)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -258,21 +229,50 @@ class CameraSidebar(Gtk.Box):
         box.set_margin_start(16)
         box.set_margin_end(16)
 
-        label = Gtk.Label(
-            label=f"Bypass Synology's RTSP proxy for camera {cam.id} ({cam.name}).\n"
-            "Leave empty and apply to use the default Synology stream."
-        )
+        label = Gtk.Label(label=f"Choose stream protocol for camera {cam.id} ({cam.name}).")
         label.set_wrap(True)
         label.set_xalign(0)
         box.append(label)
 
-        entry = Gtk.Entry()
-        entry.set_placeholder_text("rtsp://user:pass@camera-ip:554/stream")
-        existing = self.app.config.camera_overrides.get(cam.id, "")
-        if existing:
-            entry.set_text(existing)
-        box.append(entry)
+        current_proto = self.app.config.camera_protocols.get(cam.id, "auto")
 
+        # Radio buttons for each protocol
+        group: Gtk.CheckButton | None = None
+        radios: dict[str, Gtk.CheckButton] = {}
+        for proto_key, proto_label in PROTOCOL_LABELS.items():
+            radio = Gtk.CheckButton(label=proto_label)
+            if group is not None:
+                radio.set_group(group)
+            else:
+                group = radio
+            if proto_key == current_proto:
+                radio.set_active(True)
+            radios[proto_key] = radio
+            box.append(radio)
+
+        # Direct URL entry (shown below the radios)
+        url_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        url_label = Gtk.Label(label="Direct RTSP URL:")
+        url_label.set_xalign(0)
+        url_box.append(url_label)
+        url_entry = Gtk.Entry()
+        url_entry.set_placeholder_text("rtsp://user:pass@camera-ip:554/stream")
+        existing_url = self.app.config.camera_overrides.get(cam.id, "")
+        if existing_url:
+            url_entry.set_text(existing_url)
+        url_box.append(url_entry)
+        url_box.set_sensitive(current_proto == "direct")
+        box.append(url_box)
+
+        # Toggle URL entry sensitivity based on radio selection
+        def _on_radio_toggled(radio: Gtk.CheckButton, key: str) -> None:
+            if radio.get_active():
+                url_box.set_sensitive(key == "direct")
+
+        for proto_key, radio in radios.items():
+            radio.connect("toggled", _on_radio_toggled, proto_key)
+
+        # Buttons
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
 
@@ -282,25 +282,44 @@ class CameraSidebar(Gtk.Box):
 
         apply_btn = Gtk.Button(label="Apply")
         apply_btn.add_css_class("suggested-action")
-        apply_btn.connect("clicked", self._on_apply_override, cam, entry, dialog)
+        apply_btn.connect("clicked", self._on_apply_protocol, cam, radios, url_entry, dialog)
         btn_box.append(apply_btn)
 
         box.append(btn_box)
         dialog.set_child(box)
         dialog.present()
 
-    def _on_apply_override(
+    def _on_apply_protocol(
         self,
         btn: Gtk.Button,
         cam: Camera,
-        entry: Gtk.Entry,
+        radios: dict[str, Gtk.CheckButton],
+        url_entry: Gtk.Entry,
         dialog: Gtk.Window,
     ) -> None:
-        url = entry.get_text().strip()
-        if url:
-            self.app.config.camera_overrides[cam.id] = url
+        # Find selected protocol
+        selected = "auto"
+        for proto_key, radio in radios.items():
+            if radio.get_active():
+                selected = proto_key
+                break
+
+        # Save protocol
+        if selected == "auto":
+            self.app.config.camera_protocols.pop(cam.id, None)
+        else:
+            self.app.config.camera_protocols[cam.id] = selected
+
+        # Save direct URL
+        if selected == "direct":
+            url = url_entry.get_text().strip()
+            if url:
+                self.app.config.camera_overrides[cam.id] = url
+            else:
+                self.app.config.camera_overrides.pop(cam.id, None)
         else:
             self.app.config.camera_overrides.pop(cam.id, None)
+
         save_config(self.app.config)
         dialog.close()
 

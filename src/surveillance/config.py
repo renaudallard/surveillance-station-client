@@ -105,6 +105,7 @@ class AppConfig:
     poll_interval_homemode: int = 60
     snapshot_dir: str = ""
     camera_overrides: dict[int, str] = field(default_factory=dict)
+    camera_protocols: dict[int, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -134,6 +135,14 @@ def load_config() -> AppConfig:
         except (ValueError, TypeError):
             pass
 
+    # camera_protocols: maps camera ID (int) -> protocol name
+    protocols: dict[int, str] = {}
+    for cam_id_str, proto in data.get("camera_protocols", {}).items():
+        try:
+            protocols[int(cam_id_str)] = str(proto)
+        except (ValueError, TypeError):
+            pass
+
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
@@ -145,6 +154,7 @@ def load_config() -> AppConfig:
         poll_interval_homemode=general.get("poll_interval_homemode", 60),
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
         camera_overrides=overrides,
+        camera_protocols=protocols,
     )
 
 
@@ -166,6 +176,9 @@ def save_config(config: AppConfig) -> None:
             "last_cameras": config.last_cameras,
         },
         "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
+        "camera_protocols": {
+            str(cam_id): proto for cam_id, proto in config.camera_protocols.items()
+        },
         "profiles": {},
     }
 

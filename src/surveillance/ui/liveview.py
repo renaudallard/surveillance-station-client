@@ -273,8 +273,12 @@ class LiveView(Gtk.Box):
     def restore_session(self, cameras: list[Camera]) -> None:
         """Restore camera assignments from config."""
         cam_map = {c.id: c for c in cameras}
+        seen: set[int] = set()
         for i, cam_id in enumerate(self.app.config.last_cameras):
             if cam_id and cam_id in cam_map and i < len(self._players):
+                if cam_id in seen:
+                    continue
+                seen.add(cam_id)
                 cam = cam_map[cam_id]
                 self._assigned[i] = cam
                 self._start_stream(i, cam)

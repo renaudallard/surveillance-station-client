@@ -114,7 +114,7 @@ class MpvGLArea(Gtk.GLArea):
 
             self._mpv = mpv.MPV(
                 vo="libmpv",
-                hwdec="auto-safe",
+                hwdec="auto-copy",
                 keep_open="yes",
                 idle="yes",
                 input_default_bindings=False,

@@ -143,19 +143,12 @@ class LiveView(Gtk.Box):
             for c in range(cols):
                 idx = r * cols + c
                 frame = Gtk.Frame()
-                overlay = Gtk.Overlay()
                 player = MpvGLArea()
-                overlay.set_child(player)
-                # Invisible click target on top of the player
-                click_target = Gtk.Box()
-                click_target.set_hexpand(True)
-                click_target.set_vexpand(True)
-                click_target.set_can_target(True)
+                player.set_can_target(True)
                 click_gesture = Gtk.GestureClick(button=1)
                 click_gesture.connect("pressed", self._on_slot_clicked, idx)
-                click_target.add_controller(click_gesture)
-                overlay.add_overlay(click_target)
-                frame.set_child(overlay)
+                player.add_controller(click_gesture)
+                frame.set_child(player)
                 self.grid.attach(frame, c, r, 1, 1)
                 self._players.append(player)
                 self._frames.append(frame)

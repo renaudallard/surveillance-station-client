@@ -198,12 +198,12 @@ class RecordingsView(Gtk.Box):
                     texture = Gdk.Texture.new_for_pixbuf(pixbuf)
                     picture.set_paintable(texture)
             except Exception as exc:
-                log.debug("Thumbnail decode failed for recording %d: %s", rec.id, exc)
+                log.warning("Thumbnail decode failed for recording %d: %s", rec.id, exc)
 
         run_async(
             fetch_recording_thumbnail(self.app.api, rec),
             callback=_on_thumb,
-            error_callback=lambda e: log.debug("Thumbnail fetch failed: %s", e),
+            error_callback=lambda e: log.warning("Thumbnail fetch failed: %s", e),
         )
 
     def _create_recording_row(self, rec: Recording) -> Gtk.ListBoxRow:

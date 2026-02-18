@@ -127,10 +127,15 @@ async def fetch_recording_thumbnail(
     api: SurveillanceAPI,
     rec: Recording,
 ) -> bytes:
-    """Extract a single JPEG frame from the middle of a recording via ffmpeg."""
+    """Extract a single JPEG frame from the middle of a recording.
+
+    Uses the Synology Recording.Stream API to get the stream URI, fetches
+    video data via httpx (which handles SSL and auth), then pipes to ffmpeg
+    to extract one JPEG frame.
+    """
     mid_offset_ms = (rec.stop_time - rec.start_time) * 500
 
-    # Call the API to get the actual stream URI
+    # Get the stream URI from the API
     data = await api.request(
         api="SYNO.SurveillanceStation.Recording",
         method="Stream",
@@ -138,31 +143,39 @@ async def fetch_recording_thumbnail(
         extra_params={"id": str(rec.id), "offsetTimeMs": str(mid_offset_ms)},
     )
     uri = data.get("uri", "")
-    if uri:
-        sep = "&" if "?" in uri else "?"
-        stream_url = f"{api.base_url}{uri}{sep}_sid={api.sid}"
-    else:
-        stream_url = api.get_stream_url(
-            "entry.cgi",
-            {
-                "api": "SYNO.SurveillanceStation.Recording",
-                "method": "Stream",
-                "version": "5",
-                "id": str(rec.id),
-                "offsetTimeMs": str(mid_offset_ms),
-            },
-        )
+    if not uri:
+        log.warning("No stream URI for recording %d", rec.id)
+        return b""
 
+    # Fetch video data via httpx (handles SSL via profile settings)
     async with _thumbnail_semaphore:
+        try:
+            async with api.client.stream("GET", uri) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= 512_000:
+                        break
+        except Exception as exc:
+            log.warning("Stream fetch failed for recording %d: %s", rec.id, exc)
+            return b""
+
+        video_data = b"".join(chunks)
+        if not video_data:
+            log.warning("Empty stream for recording %d", rec.id)
+            return b""
+
+        # Extract one JPEG frame via ffmpeg from piped data
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-y",
             "-loglevel",
             "error",
-            "-tls_verify",
-            "0",
             "-i",
-            stream_url,
+            "pipe:0",
             "-frames:v",
             "1",
             "-f",
@@ -172,13 +185,14 @@ async def fetch_recording_thumbnail(
             "-q:v",
             "5",
             "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=video_data), timeout=15)
 
     if proc.returncode != 0 or not stdout:
         msg = stderr.decode(errors="replace").strip() if stderr else "no output"
-        log.warning("Thumbnail failed for recording %d: %s", rec.id, msg)
+        log.warning("Thumbnail ffmpeg failed for recording %d: %s", rec.id, msg)
         return b""
     return stdout

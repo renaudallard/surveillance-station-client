@@ -121,3 +121,15 @@ async def mark_alert_read(api: SurveillanceAPI, alert_id: int) -> None:
         version=1,
         extra_params={"idList": str(alert_id)},
     )
+
+
+async def mark_alerts_read(api: SurveillanceAPI, alert_ids: list[int]) -> None:
+    """Mark multiple alerts as read in a single call."""
+    if not alert_ids:
+        return
+    await api.request(
+        api="SYNO.SurveillanceStation.Notification",
+        method="SetRead",
+        version=1,
+        extra_params={"idList": ",".join(str(i) for i in alert_ids)},
+    )

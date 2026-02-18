@@ -16,7 +16,7 @@ management -- all from a lightweight native Linux application.
 | **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Camera snapshot thumbnails shown for each recording. |
 | **PTZ Control** | 8-direction pad, zoom in/out, speed slider, preset positions, and patrol routes for PTZ-capable cameras. |
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
-| **Events & Alerts** | View motion detection and alarm events. Notification bell with unread badge, polled every 30 seconds. |
+| **Events & Alerts** | View motion detection and alarm events. Notification bell with unread badge and alert popover, polled every 30 seconds. |
 | **Home Mode** | Toggle Surveillance Station home mode directly from the header bar. |
 | **Session Persistence** | Grid layout, active page, and camera assignments are restored on restart. |
 | **Multi-Profile** | Save multiple NAS connection profiles. Switch between them from the login screen. |

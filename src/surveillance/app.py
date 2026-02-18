@@ -34,7 +34,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gio, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, Gio, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.client import SurveillanceAPI
 from surveillance.config import AppConfig, load_config
@@ -84,8 +84,11 @@ class SurveillanceApp(Gtk.Application):
         if css_file.exists():
             provider = Gtk.CssProvider()
             provider.load_from_path(str(css_file))
+            display = Gdk.Display.get_default()
+            if not display:
+                return
             Gtk.StyleContext.add_provider_for_display(
-                self.get_active_window().get_display() if self.get_active_window() else None,
+                display,
                 provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
@@ -117,22 +120,42 @@ class SurveillanceApp(Gtk.Application):
         self.api = api
 
     def _on_quit(self, action: Gio.SimpleAction, param: None) -> None:
+        if self._window:
+            self._window.on_disconnected()
         if self.api:
             from surveillance.api.auth import logout
             from surveillance.util.async_bridge import run_async
 
-            run_async(logout(self.api), callback=lambda _: self.quit())
+            api = self.api
+            self.api = None
+
+            async def _cleanup() -> None:
+                await logout(api)
+                await api.close()
+
+            run_async(_cleanup(), callback=lambda _: self.quit())
         else:
             self.quit()
 
     def _on_logout(self, action: Gio.SimpleAction, param: None) -> None:
+        if self._window:
+            self._window.on_disconnected()
         if self.api:
             from surveillance.api.auth import logout
             from surveillance.util.async_bridge import run_async
 
+            api = self.api
+            self.api = None
+
+            async def _cleanup() -> None:
+                await logout(api)
+                await api.close()
+
             def _done(_: object) -> None:
-                self.api = None
                 if self._window:
                     self._window.show_login()
 
-            run_async(logout(self.api), callback=_done)
+            run_async(_cleanup(), callback=_done)
+        else:
+            if self._window:
+                self._window.show_login()

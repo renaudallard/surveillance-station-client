@@ -38,7 +38,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Alert
-from surveillance.services.event import list_alerts, mark_alert_read
+from surveillance.services.event import list_alerts, mark_alerts_read
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -172,7 +172,11 @@ class NotificationPopover(Gtk.Popover):
     def _on_mark_all_read(self, btn: Gtk.Button) -> None:
         if not self.app.api:
             return
-        for alert in self._alerts:
-            if not alert.is_read:
-                run_async(mark_alert_read(self.app.api, alert.id))
-        self.refresh()
+        unread_ids = [a.id for a in self._alerts if not a.is_read]
+        if not unread_ids:
+            return
+        run_async(
+            mark_alerts_read(self.app.api, unread_ids),
+            callback=lambda _: self.refresh(),
+            error_callback=lambda e: log.error("Mark all read failed: %s", e),
+        )

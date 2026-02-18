@@ -381,6 +381,7 @@ class CameraSidebar(Gtk.Box):
 
     def start_polling(self) -> None:
         """Start periodic camera status polling."""
+        self.stop_polling()
         interval = self.app.config.poll_interval_cameras
         self._poll_id = GLib.timeout_add_seconds(interval, self._poll_tick)
 

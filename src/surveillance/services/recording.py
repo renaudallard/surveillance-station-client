@@ -139,6 +139,11 @@ async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
 _snapshot_cache: dict[int, bytes] = {}
 
 
+def clear_snapshot_cache() -> None:
+    """Clear the thumbnail snapshot cache."""
+    _snapshot_cache.clear()
+
+
 async def fetch_camera_snapshot(
     api: SurveillanceAPI,
     camera_id: int,

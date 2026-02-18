@@ -77,6 +77,11 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.notif_btn.set_tooltip_text("Notifications")
         self.notif_btn.set_sensitive(False)
 
+        from surveillance.ui.notifications import NotificationPopover
+
+        self.notif_popover = NotificationPopover(self.app)
+        self.notif_btn.set_popover(self.notif_popover)
+
         # Badge overlay
         self.notif_overlay = Gtk.Overlay()
         self.notif_overlay.set_child(self.notif_btn)

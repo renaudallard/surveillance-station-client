@@ -87,6 +87,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Selected camera
         self.selected_camera: Camera | None = None
+        self._homemode_poll_id: int = 0
+        self._alerts_poll_id: int = 0
 
         # Show login if not connected
         if not self.app.api:
@@ -168,6 +170,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
+        self._stop_polling()
+
         from gi.repository import GLib
 
         from surveillance.util.async_bridge import run_async
@@ -197,7 +201,9 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             return True
 
-        GLib.timeout_add_seconds(self.app.config.poll_interval_homemode, _poll_homemode)
+        self._homemode_poll_id = GLib.timeout_add_seconds(
+            self.app.config.poll_interval_homemode, _poll_homemode
+        )
         _poll_homemode()  # initial fetch
 
         # Poll alerts
@@ -222,8 +228,30 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             return True
 
-        GLib.timeout_add_seconds(self.app.config.poll_interval_alerts, _poll_alerts)
+        self._alerts_poll_id = GLib.timeout_add_seconds(
+            self.app.config.poll_interval_alerts, _poll_alerts
+        )
         _poll_alerts()
+
+    def _stop_polling(self) -> None:
+        """Stop background polling for alerts and home mode."""
+        from gi.repository import GLib
+
+        if self._homemode_poll_id:
+            GLib.source_remove(self._homemode_poll_id)
+            self._homemode_poll_id = 0
+        if self._alerts_poll_id:
+            GLib.source_remove(self._alerts_poll_id)
+            self._alerts_poll_id = 0
+
+    def on_disconnected(self) -> None:
+        """Clean up when disconnected (logout/quit)."""
+        self.sidebar.stop_polling()
+        self._stop_polling()
+        self.headerbar.set_connected(False)
+        from surveillance.services.recording import clear_snapshot_cache
+
+        clear_snapshot_cache()
 
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection from sidebar."""

@@ -92,6 +92,12 @@ class LiveView(Gtk.Box):
         self.layout_combo.connect("changed", self._on_layout_changed)
         toolbar.append(self.layout_combo)
 
+        clear_btn = Gtk.Button()
+        clear_btn.set_icon_name("edit-clear-all-symbolic")
+        clear_btn.set_tooltip_text("Clear all streams")
+        clear_btn.connect("clicked", self._on_clear_clicked)
+        toolbar.append(clear_btn)
+
         self.append(toolbar)
         self.append(Gtk.Separator())
 
@@ -149,8 +155,18 @@ class LiveView(Gtk.Box):
         self._build_grid()
         self._save_session()
 
+    def _on_clear_clicked(self, btn: Gtk.Button) -> None:
+        """Clear all streams and camera assignments."""
+        self.stop_all()
+        self._save_session()
+
     def on_camera_selected(self, camera: Camera) -> None:
-        """Handle camera selection - assign to next available slot or slot 0."""
+        """Handle camera selection - assign to next available slot."""
+        # Skip if camera is already displayed
+        for cam in self._assigned.values():
+            if cam.id == camera.id:
+                return
+
         # Find an empty slot
         slot = None
         for i in range(len(self._players)):
@@ -159,9 +175,8 @@ class LiveView(Gtk.Box):
                 break
 
         if slot is None:
-            # All slots full, replace slot 0
-            slot = 0
-            self._players[slot].stop()
+            # All slots full, ignore
+            return
 
         self._assigned[slot] = camera
         self._start_stream(slot, camera)

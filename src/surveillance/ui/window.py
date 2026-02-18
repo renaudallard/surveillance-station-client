@@ -235,6 +235,12 @@ class MainWindow(Gtk.ApplicationWindow):
         if current_page and hasattr(current_page, "on_camera_selected"):
             current_page.on_camera_selected(camera)
 
+    def restart_camera_stream(self, camera_id: int) -> None:
+        """Restart the stream for a camera after a protocol change."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "restart_camera"):
+            live_view.restart_camera(camera_id)
+
     def show_page(self, page_name: str) -> None:
         """Switch to a content page."""
         self.stack.set_visible_child_name(page_name)

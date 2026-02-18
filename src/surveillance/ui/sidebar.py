@@ -367,6 +367,9 @@ class CameraSidebar(Gtk.Box):
         save_config(self.app.config)
         dialog.close()
 
+        # Restart the stream if the camera is currently displayed
+        self.window.restart_camera_stream(cam.id)
+
     def _on_row_selected(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             return

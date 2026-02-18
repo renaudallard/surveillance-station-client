@@ -37,6 +37,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
+from surveillance.config import save_config
 from surveillance.services.live import get_live_view_path
 from surveillance.ui.mpv_widget import MpvGLArea
 from surveillance.util.async_bridge import run_async
@@ -146,6 +147,7 @@ class LiveView(Gtk.Box):
 
     def _on_layout_changed(self, combo: Gtk.ComboBoxText) -> None:
         self._build_grid()
+        self._save_session()
 
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection - assign to next available slot or slot 0."""
@@ -163,6 +165,7 @@ class LiveView(Gtk.Box):
 
         self._assigned[slot] = camera
         self._start_stream(slot, camera)
+        self._save_session()
 
     def _start_stream(self, slot: int, camera: Camera) -> None:
         """Start streaming a camera in a slot."""
@@ -188,6 +191,26 @@ class LiveView(Gtk.Box):
         if slot < len(self._players):
             log.info("Starting stream in slot %d: %s", slot, url)
             self._players[slot].play(url)
+
+    def _save_session(self) -> None:
+        """Persist grid layout and camera assignments to config."""
+        layout = self.layout_combo.get_active_id() or "2x2"
+        cam_ids: list[int] = []
+        for i in range(len(self._players)):
+            cam = self._assigned.get(i)
+            cam_ids.append(cam.id if cam else 0)
+        self.app.config.grid_layout = layout
+        self.app.config.last_cameras = cam_ids
+        save_config(self.app.config)
+
+    def restore_session(self, cameras: list[Camera]) -> None:
+        """Restore camera assignments from config."""
+        cam_map = {c.id: c for c in cameras}
+        for i, cam_id in enumerate(self.app.config.last_cameras):
+            if cam_id and cam_id in cam_map and i < len(self._players):
+                cam = cam_map[cam_id]
+                self._assigned[i] = cam
+                self._start_stream(i, cam)
 
     def stop_all(self) -> None:
         """Stop all streams."""

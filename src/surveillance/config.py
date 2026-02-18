@@ -98,6 +98,8 @@ class AppConfig:
     default_profile: str = ""
     profiles: dict[str, ConnectionProfile] = field(default_factory=dict)
     grid_layout: str = "2x2"
+    last_page: str = "live"
+    last_cameras: list[int] = field(default_factory=list)
     poll_interval_cameras: int = 30
     poll_interval_alerts: int = 30
     poll_interval_homemode: int = 60
@@ -121,10 +123,13 @@ def load_config() -> AppConfig:
         profiles[name] = ConnectionProfile.from_dict(name, pdata)
 
     general = data.get("general", {})
+    session = data.get("session", {})
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
-        grid_layout=general.get("grid_layout", "2x2"),
+        grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
+        last_page=session.get("last_page", "live"),
+        last_cameras=session.get("last_cameras", []),
         poll_interval_cameras=general.get("poll_interval_cameras", 30),
         poll_interval_alerts=general.get("poll_interval_alerts", 30),
         poll_interval_homemode=general.get("poll_interval_homemode", 60),
@@ -139,11 +144,15 @@ def save_config(config: AppConfig) -> None:
     data: dict[str, Any] = {
         "general": {
             "default_profile": config.default_profile,
-            "grid_layout": config.grid_layout,
             "poll_interval_cameras": config.poll_interval_cameras,
             "poll_interval_alerts": config.poll_interval_alerts,
             "poll_interval_homemode": config.poll_interval_homemode,
             "snapshot_dir": config.snapshot_dir,
+        },
+        "session": {
+            "grid_layout": config.grid_layout,
+            "last_page": config.last_page,
+            "last_cameras": config.last_cameras,
         },
         "profiles": {},
     }

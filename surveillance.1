@@ -40,6 +40,12 @@ Configuration is stored in TOML format at:
 .PP
 Connection profiles define NAS host, port, HTTPS, and SSL verification settings.
 Credentials are stored securely via the system keyring.
+.PP
+The
+.B [session]
+section stores the grid layout, active page, and camera assignments.
+It is updated automatically so the application restores the previous viewing
+session on restart.
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q

@@ -18,6 +18,7 @@ management -- all from a lightweight native Linux application.
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
 | **Events & Alerts** | View motion detection and alarm events. Notification bell with unread badge, polled every 30 seconds. |
 | **Home Mode** | Toggle Surveillance Station home mode directly from the header bar. |
+| **Session Persistence** | Grid layout, active page, and camera assignments are restored on restart. |
 | **Multi-Profile** | Save multiple NAS connection profiles. Switch between them from the login screen. |
 | **Secure Credentials** | Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain). |
 
@@ -175,11 +176,15 @@ Example:
 ```toml
 [general]
 default_profile = "home-nas"
-grid_layout = "2x2"            # "1x1", "2x2", or "3x3"
 poll_interval_cameras = 30      # seconds
 poll_interval_alerts = 30
 poll_interval_homemode = 60
 snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"
+
+[session]
+grid_layout = "2x2"            # "1x1", "2x2", or "3x3"
+last_page = "live"             # last active page (live, recordings, snapshots, events)
+last_cameras = [1, 3, 0, 5]   # camera IDs assigned to grid slots (0 = empty)
 
 [profiles.home-nas]
 host = "192.168.1.100"
@@ -187,6 +192,10 @@ port = 5001
 https = true
 verify_ssl = false
 ```
+
+The `[session]` section is managed automatically. On each restart the application
+restores the grid layout, active page, and camera assignments from the previous
+session.
 
 Credentials are **never** stored in the config file. They are kept in the
 system keyring under the service name `surveillance-station`.

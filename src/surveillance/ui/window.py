@@ -128,10 +128,16 @@ class MainWindow(Gtk.ApplicationWindow):
     def on_connected(self) -> None:
         """Called after successful login."""
         self.headerbar.set_connected(True)
-        self.sidebar.refresh()
-        self.sidebar.start_polling()
         self._setup_content_pages()
+        self.sidebar.refresh(on_complete=self._restore_live_session)
+        self.sidebar.start_polling()
         self._start_polling()
+
+    def _restore_live_session(self, cameras: list[Camera]) -> None:
+        """Restore live view camera assignments from last session."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "restore_session"):
+            live_view.restore_session(cameras)
 
     def _setup_content_pages(self) -> None:
         """Replace placeholders with real content widgets."""
@@ -153,7 +159,12 @@ class MainWindow(Gtk.ApplicationWindow):
             widget = widget_class(self)
             self.stack.add_named(widget, name)
 
-        self.stack.set_visible_child_name("live")
+        # Restore last active page
+        last_page = self.app.config.last_page
+        if self.stack.get_child_by_name(last_page):
+            self.stack.set_visible_child_name(last_page)
+        else:
+            self.stack.set_visible_child_name("live")
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
@@ -227,3 +238,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def show_page(self, page_name: str) -> None:
         """Switch to a content page."""
         self.stack.set_visible_child_name(page_name)
+        self.app.config.last_page = page_name
+        from surveillance.config import save_config
+
+        save_config(self.app.config)

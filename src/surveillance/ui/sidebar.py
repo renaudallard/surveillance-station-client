@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import gi
 
@@ -118,13 +118,19 @@ class CameraSidebar(Gtk.Box):
         self.append(Gtk.Separator())
         self.append(nav_box)
 
-    def refresh(self) -> None:
+    def refresh(self, on_complete: Any = None) -> None:
         """Refresh the camera list."""
         if not self.app.api:
             return
+
+        def _on_loaded(cameras: list[Camera]) -> None:
+            self._update_camera_list(cameras)
+            if on_complete:
+                on_complete(cameras)
+
         run_async(
             list_cameras(self.app.api),
-            callback=self._update_camera_list,
+            callback=_on_loaded,
             error_callback=lambda e: log.error("Failed to refresh cameras: %s", e),
         )
 

@@ -33,11 +33,20 @@ if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
 
 
-async def get_live_view_path(api: SurveillanceAPI, camera_id: int) -> str:
-    """Get the RTSP live view URL for a camera.
+async def get_live_view_path(
+    api: SurveillanceAPI,
+    camera_id: int,
+    override_url: str = "",
+) -> str:
+    """Get the live view URL for a camera.
 
-    Returns a full URL suitable for mpv playback.
+    If *override_url* is set it is returned directly (for cameras whose
+    Synology-proxied stream is broken).  Otherwise the best available
+    path from the Surveillance Station API is returned.
     """
+    if override_url:
+        return override_url
+
     data = await api.request(
         api="SYNO.SurveillanceStation.Camera",
         method="GetLiveViewPath",
@@ -57,10 +66,15 @@ async def get_live_view_path(api: SurveillanceAPI, camera_id: int) -> str:
 
     info = paths[0]
 
-    # Prefer RTSP stream
+    # Prefer RTSP unicast
     rtsp_path: str = info.get("rtspPath", "")
     if rtsp_path:
         return rtsp_path
+
+    # RTSP over HTTP (tunneled through DSM port)
+    rtsp_http: str = info.get("rtspOverHttpPath", "")
+    if rtsp_http:
+        return rtsp_http
 
     # Fall back to MJPEG over HTTP
     mjpeg_path: str = info.get("mjpegHttpPath", "")

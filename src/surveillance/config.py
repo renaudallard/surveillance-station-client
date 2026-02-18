@@ -104,6 +104,7 @@ class AppConfig:
     poll_interval_alerts: int = 30
     poll_interval_homemode: int = 60
     snapshot_dir: str = ""
+    camera_overrides: dict[int, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -124,6 +125,15 @@ def load_config() -> AppConfig:
 
     general = data.get("general", {})
     session = data.get("session", {})
+
+    # camera_overrides: maps camera ID (int) -> direct RTSP URL
+    overrides: dict[int, str] = {}
+    for cam_id_str, url in data.get("camera_overrides", {}).items():
+        try:
+            overrides[int(cam_id_str)] = str(url)
+        except (ValueError, TypeError):
+            pass
+
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
@@ -134,6 +144,7 @@ def load_config() -> AppConfig:
         poll_interval_alerts=general.get("poll_interval_alerts", 30),
         poll_interval_homemode=general.get("poll_interval_homemode", 60),
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
+        camera_overrides=overrides,
     )
 
 
@@ -154,6 +165,7 @@ def save_config(config: AppConfig) -> None:
             "last_page": config.last_page,
             "last_cameras": config.last_cameras,
         },
+        "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
         "profiles": {},
     }
 

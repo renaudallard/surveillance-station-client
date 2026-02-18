@@ -186,6 +186,13 @@ grid_layout = "2x2"            # "1x1", "2x2", or "3x3"
 last_page = "live"             # last active page (live, recordings, snapshots, events)
 last_cameras = [1, 3, 0, 5]   # camera IDs assigned to grid slots (0 = empty)
 
+[camera_overrides]
+# Direct RTSP URLs keyed by Surveillance Station camera ID.
+# Use this when Synology's RTSP proxy corrupts a camera's stream
+# (e.g. Reolink Duo 3 PoE h265).  The camera ID can be found in
+# the sidebar tooltip or the debug log.
+# 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
+
 [profiles.home-nas]
 host = "192.168.1.100"
 port = 5001
@@ -196,6 +203,11 @@ verify_ssl = false
 The `[session]` section is managed automatically. On each restart the application
 restores the grid layout, active page, and camera assignments from the previous
 session.
+
+The `[camera_overrides]` section lets you bypass Synology's RTSP proxy for
+specific cameras by mapping their ID to a direct RTSP URL. This is useful
+when Synology corrupts a camera's stream (known issue with some dual-lens
+cameras like the Reolink Duo 3 PoE).
 
 Credentials are **never** stored in the config file. They are kept in the
 system keyring under the service name `surveillance-station`.

@@ -46,6 +46,11 @@ The
 section stores the grid layout, active page, and camera assignments.
 It is updated automatically so the application restores the previous viewing
 session on restart.
+.PP
+The
+.B [camera_overrides]
+section maps camera IDs to direct RTSP URLs, bypassing Synology's RTSP proxy
+for cameras whose stream it corrupts (e.g.\& Reolink Duo 3 PoE).
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q

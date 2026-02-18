@@ -120,8 +120,8 @@ class MpvGLArea(Gtk.GLArea):
                 input_default_bindings=False,
                 input_vo_keyboard=False,
                 log_handler=self._mpv_log,
-                loglevel="warn",
-                demuxer_lavf_o="rtsp_transport=tcp,fflags=+genpts",
+                loglevel="fatal",
+                demuxer_lavf_o="rtsp_transport=tcp",
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches

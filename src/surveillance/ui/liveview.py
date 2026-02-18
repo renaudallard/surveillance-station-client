@@ -174,8 +174,10 @@ class LiveView(Gtk.Box):
 
         api = self.app.api
 
+        override = self.app.config.camera_overrides.get(camera.id, "")
+
         async def _get_url() -> tuple[int, str]:
-            url = await get_live_view_path(api, camera.id)
+            url = await get_live_view_path(api, camera.id, override_url=override)
             return slot, url
 
         run_async(

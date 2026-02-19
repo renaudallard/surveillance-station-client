@@ -70,7 +70,7 @@ _LAYOUT_VISIBLE: dict[str, list[int]] = {
 class CameraSlot(Gtk.Box):
     """Self-contained camera slot with a header label and video player."""
 
-    def __init__(self, index: int) -> None:
+    def __init__(self, index: int, tls_verify: bool = True) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.index = index
         self._display_index = index
@@ -85,7 +85,7 @@ class CameraSlot(Gtk.Box):
         self.append(self._header)
 
         # Video player
-        self.player = MpvGLArea()
+        self.player = MpvGLArea(tls_verify=tls_verify)
         self.player.set_vexpand(True)
         self.player.set_hexpand(True)
         self.append(self.player)
@@ -206,10 +206,11 @@ class LiveView(Gtk.Box):
 
         # Pre-create all 16 slots (max for 4x4) and attach to the grid.
         # Slots are never removed — only shown/hidden on layout change.
+        tls_verify = self.app.api.profile.verify_ssl if self.app.api else True
         self._slots: list[CameraSlot] = []
         for i in range(_MAX_SLOTS):
             r, c = divmod(i, _GRID_COLS)
-            slot = CameraSlot(i)
+            slot = CameraSlot(i, tls_verify=tls_verify)
             slot.set_click_callback(self._on_slot_clicked)
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)

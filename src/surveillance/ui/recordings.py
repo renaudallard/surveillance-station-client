@@ -38,7 +38,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Recording, decode_detection_labels
-from surveillance.services.recording import fetch_camera_snapshot, list_recordings
+from surveillance.services.recording import fetch_recording_thumbnail, list_recordings
 from surveillance.util.async_bridge import run_async
 
 _THUMB_WIDTH = 120
@@ -201,7 +201,7 @@ class RecordingsView(Gtk.Box):
                 log.warning("Thumbnail decode failed for recording %d: %s", rec.id, exc)
 
         run_async(
-            fetch_camera_snapshot(self.app.api, rec.camera_id),
+            fetch_recording_thumbnail(self.app.api, rec),
             callback=_on_thumb,
             error_callback=lambda e: log.warning("Thumbnail fetch failed: %s", e),
         )
@@ -235,8 +235,11 @@ class RecordingsView(Gtk.Box):
 
         # Time range
         start = datetime.fromtimestamp(rec.start_time)
-        stop = datetime.fromtimestamp(rec.stop_time)
-        time_str = f"{start:%Y-%m-%d %H:%M:%S} - {stop:%H:%M:%S}"
+        if rec.stop_time:
+            stop = datetime.fromtimestamp(rec.stop_time)
+            time_str = f"{start:%Y-%m-%d %H:%M:%S} - {stop:%H:%M:%S}"
+        else:
+            time_str = f"{start:%Y-%m-%d %H:%M:%S} (ongoing)"
         time_label = Gtk.Label(label=time_str)
         time_label.set_xalign(0)
         time_label.add_css_class("dim-label")
@@ -244,13 +247,14 @@ class RecordingsView(Gtk.Box):
         info_box.append(time_label)
 
         # Duration
-        duration = rec.stop_time - rec.start_time
-        mins, secs = divmod(duration, 60)
-        dur_label = Gtk.Label(label=f"{mins}m {secs}s")
-        dur_label.set_xalign(0)
-        dur_label.add_css_class("dim-label")
-        dur_label.add_css_class("caption")
-        info_box.append(dur_label)
+        if rec.stop_time:
+            duration = rec.stop_time - rec.start_time
+            mins, secs = divmod(duration, 60)
+            dur_label = Gtk.Label(label=f"{mins}m {secs}s")
+            dur_label.set_xalign(0)
+            dur_label.add_css_class("dim-label")
+            dur_label.add_css_class("caption")
+            info_box.append(dur_label)
 
         # Smart detection labels
         det_labels = decode_detection_labels(rec.detection_label)

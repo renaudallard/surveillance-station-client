@@ -89,6 +89,10 @@ class SurveillanceAPI:
                 verify=self.profile.verify_ssl,
                 timeout=30.0,
                 http2=True,
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    max_connections=20,
+                ),
             )
         return self._client
 

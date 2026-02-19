@@ -195,7 +195,7 @@ def reset_recording_thumbnail_state() -> None:
     _thumbnail_failed_cameras.clear()
 
 
-async def fetch_recording_thumbnail(
+async def fetch_recording_thumbnail(  # noqa: PLR0911
     api: SurveillanceAPI,
     rec: Recording,
 ) -> bytes:

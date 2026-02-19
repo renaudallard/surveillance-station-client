@@ -1,0 +1,117 @@
+name: Lint & Type Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgirepository-2.0-dev \
+            gir1.2-gtk-4.0 \
+            libgtk-4-dev \
+            libmpv-dev \
+            python3-gi \
+            python3-gi-cairo \
+            python3-cairo \
+            gobject-introspection
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ruff mypy
+
+      - name: Run ruff check
+        id: ruff_check
+        run: ruff check src/
+        continue-on-error: true
+
+      - name: Run ruff format check
+        id: ruff_format
+        run: ruff format --check src/
+        continue-on-error: true
+
+      - name: Run mypy
+        id: mypy
+        run: mypy src/
+        continue-on-error: true
+
+      - name: Check results
+        if: steps.ruff_check.outcome == 'success' && steps.ruff_format.outcome == 'success' && steps.mypy.outcome == 'success'
+        run: echo "All checks passed!"
+
+      - name: Attempt auto-fix
+        if: steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure'
+        id: autofix
+        run: |
+          ruff check --fix src/ || true
+          ruff format src/
+
+      - name: Re-check after auto-fix
+        if: steps.autofix.outcome == 'success'
+        id: recheck
+        run: |
+          ruff check src/
+          ruff format --check src/
+        continue-on-error: true
+
+      - name: Commit auto-fixes
+        if: github.event_name == 'push' && steps.recheck.outcome == 'success' && (steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Auto-fix lint errors"
+          git push
+
+      - name: Collect errors and create issue
+        if: github.event_name == 'push' && (steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure' || steps.mypy.outcome == 'failure') && (steps.recheck.outcome != 'success' || steps.mypy.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BRANCH=${GITHUB_REF_NAME}
+          BODY="## Lint/type errors on \`${BRANCH}\` (\`${SHORT_SHA}\`)\n\n"
+
+          if [ "${{ steps.ruff_check.outcome }}" = "failure" ]; then
+            RUFF_OUT=$(ruff check src/ 2>&1 || true)
+            BODY="${BODY}### ruff check\n\`\`\`\n${RUFF_OUT}\n\`\`\`\n\n"
+          fi
+
+          if [ "${{ steps.ruff_format.outcome }}" = "failure" ]; then
+            FMT_OUT=$(ruff format --check src/ 2>&1 || true)
+            BODY="${BODY}### ruff format\n\`\`\`\n${FMT_OUT}\n\`\`\`\n\n"
+          fi
+
+          if [ "${{ steps.mypy.outcome }}" = "failure" ]; then
+            MYPY_OUT=$(mypy src/ 2>&1 || true)
+            BODY="${BODY}### mypy\n\`\`\`\n${MYPY_OUT}\n\`\`\`\n\n"
+          fi
+
+          gh label create lint --color "d73a4a" --description "Lint/type errors" 2>/dev/null || true
+          printf "%b" "$BODY" | gh issue create \
+            --title "Lint/type errors on ${BRANCH} (${SHORT_SHA})" \
+            --label lint \
+            --body-file -
+
+      - name: Fail if checks did not pass
+        if: steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure' || steps.mypy.outcome == 'failure'
+        run: exit 1

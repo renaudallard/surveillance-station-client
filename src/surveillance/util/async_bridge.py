@@ -114,9 +114,8 @@ def run_async(
                     GLib.idle_add(error_callback, exc)
                 else:
                     log.error("Async task failed: %s", exc)
-            else:
-                if callback:
-                    GLib.idle_add(callback, f.result())
+            elif callback:
+                GLib.idle_add(callback, f.result())
 
         future.add_done_callback(_on_done)
 

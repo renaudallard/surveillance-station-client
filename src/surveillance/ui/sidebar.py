@@ -144,7 +144,7 @@ class CameraSidebar(Gtk.Box):
         # Skip rebuild if camera list is unchanged
         if len(cameras) == len(self.cameras) and all(
             a.id == b.id and a.status == b.status and a.name == b.name
-            for a, b in zip(cameras, self.cameras)
+            for a, b in zip(cameras, self.cameras, strict=True)
         ):
             return
 

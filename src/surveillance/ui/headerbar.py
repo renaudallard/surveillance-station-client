@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import gi
 
@@ -118,7 +118,7 @@ class AppHeaderBar(Gtk.HeaderBar):
             error_callback=lambda e: log.error("Home mode toggle failed: %s", e),
         )
 
-    _THEME_ICONS: dict[str, str] = {
+    _THEME_ICONS: ClassVar[dict[str, str]] = {
         "auto": "display-brightness-symbolic",
         "dark": "weather-clear-night-symbolic",
         "light": "weather-clear-symbolic",

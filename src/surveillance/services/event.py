@@ -66,15 +66,16 @@ async def list_events(
                 version=5,
                 extra_params=params,
             )
-            events = [Event.from_api(e) for e in data.get("events", [])]
-            total = data.get("total", len(events))
-            return events, total
         except Exception as exc:
             last_exc = exc
             if method == "List":
                 log.debug("Event.List not available, trying Event.Query")
                 continue
             raise
+        else:
+            events = [Event.from_api(e) for e in data.get("events", [])]
+            total = data.get("total", len(events))
+            return events, total
     raise last_exc  # type: ignore[misc]
 
 

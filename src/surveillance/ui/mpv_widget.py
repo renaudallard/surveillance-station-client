@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.util
 import logging
@@ -151,24 +152,20 @@ class MpvGLArea(Gtk.GLArea):
             if self._url:
                 self._mpv.play(self._url)
 
-        except Exception as e:
-            log.error("Failed to initialize mpv: %s", e)
+        except Exception:
+            log.exception("Failed to initialize mpv")
             self._initialized = False
 
     def _on_unrealize(self, widget: Gtk.GLArea) -> None:
         """Clean up mpv when widget is unrealized."""
         self.stop()
         if self._ctx:
-            try:
+            with contextlib.suppress(Exception):
                 self._ctx.free()
-            except Exception:
-                pass
             self._ctx = None
         if self._mpv:
-            try:
+            with contextlib.suppress(Exception):
                 self._mpv.terminate()
-            except Exception:
-                pass
             self._mpv = None
         self._initialized = False
 
@@ -232,51 +229,41 @@ class MpvGLArea(Gtk.GLArea):
         if self._initialized and self._mpv:
             try:
                 self._mpv.play(url)
-            except Exception as e:
-                log.error("Failed to play %s: %s", url, e)
+            except Exception:
+                log.exception("Failed to play %s", url)
 
     def stop(self) -> None:
         """Stop playback."""
         self._url = ""
         if self._mpv:
-            try:
+            with contextlib.suppress(Exception):
                 self._mpv.command("stop")
-            except Exception:
-                pass
         if self._initialized:
             self.queue_render()
 
     def pause(self) -> None:
         """Toggle pause."""
         if self._mpv:
-            try:
+            with contextlib.suppress(Exception):
                 self._mpv.pause = not self._mpv.pause
-            except Exception:
-                pass
 
     def set_volume(self, volume: int) -> None:
         """Set volume (0-100)."""
         if self._mpv:
-            try:
+            with contextlib.suppress(Exception):
                 self._mpv.volume = volume
-            except Exception:
-                pass
 
     def seek(self, seconds: float) -> None:
         """Seek relative to current position."""
         if self._mpv:
-            try:
+            with contextlib.suppress(Exception):
                 self._mpv.seek(seconds)
-            except Exception:
-                pass
 
     def seek_absolute(self, seconds: float) -> None:
         """Seek to absolute position."""
         if self._mpv:
-            try:
+            with contextlib.suppress(Exception):
                 self._mpv.seek(seconds, reference="absolute")
-            except Exception:
-                pass
 
     @property
     def duration(self) -> float | None:
@@ -284,9 +271,10 @@ class MpvGLArea(Gtk.GLArea):
         if self._mpv:
             try:
                 result: float | None = self._mpv.duration
-                return result
             except Exception:
                 return None
+            else:
+                return result
         return None
 
     @property
@@ -295,9 +283,10 @@ class MpvGLArea(Gtk.GLArea):
         if self._mpv:
             try:
                 result: float | None = self._mpv.time_pos
-                return result
             except Exception:
                 return None
+            else:
+                return result
         return None
 
     @property

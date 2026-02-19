@@ -80,7 +80,7 @@ async def logout(api: SurveillanceAPI) -> None:
             version=6,
             extra_params={"session": "SurveillanceStation"},
         )
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     finally:
         api.sid = ""

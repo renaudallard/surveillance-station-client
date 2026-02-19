@@ -159,6 +159,5 @@ class SurveillanceApp(Gtk.Application):
                     self._window.show_login()
 
             run_async(_cleanup(), callback=_done)
-        else:
-            if self._window:
-                self._window.show_login()
+        elif self._window:
+            self._window.show_login()

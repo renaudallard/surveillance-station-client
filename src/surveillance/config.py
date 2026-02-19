@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,18 +147,14 @@ def load_config() -> AppConfig:
     # camera_overrides: maps camera ID (int) -> direct RTSP URL
     overrides: dict[int, str] = {}
     for cam_id_str, url in data.get("camera_overrides", {}).items():
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             overrides[int(cam_id_str)] = str(url)
-        except (ValueError, TypeError):
-            pass
 
     # camera_protocols: maps camera ID (int) -> protocol name
     protocols: dict[int, str] = {}
     for cam_id_str, proto in data.get("camera_protocols", {}).items():
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             protocols[int(cam_id_str)] = str(proto)
-        except (ValueError, TypeError):
-            pass
 
     return AppConfig(
         default_profile=general.get("default_profile", ""),

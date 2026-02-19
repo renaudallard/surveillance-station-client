@@ -27,6 +27,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import keyring
 
 SERVICE_NAME = "surveillance-station"
@@ -52,11 +54,7 @@ def get_credentials(profile_name: str) -> tuple[str, str] | None:
 
 def delete_credentials(profile_name: str) -> None:
     """Delete credentials for a connection profile."""
-    try:
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password(SERVICE_NAME, f"{profile_name}:username")
-    except keyring.errors.PasswordDeleteError:
-        pass
-    try:
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password(SERVICE_NAME, f"{profile_name}:password")
-    except keyring.errors.PasswordDeleteError:
-        pass

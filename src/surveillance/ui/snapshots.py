@@ -106,7 +106,7 @@ class SnapshotsView(Gtk.Box):
         )
 
     def _on_snapshots_loaded(self, result: tuple[list[Snapshot], int]) -> None:
-        snapshots, total = result
+        snapshots, _total = result
         self._snapshots = snapshots
 
         while True:
@@ -195,8 +195,8 @@ class SnapshotsView(Gtk.Box):
                             callback=lambda p: log.info("Downloaded to %s", p),
                             error_callback=lambda e: log.error("Download failed: %s", e),
                         )
-            except Exception as e:
-                log.error("Save dialog error: %s", e)
+            except Exception:
+                log.exception("Save dialog error")
 
         dialog.save(self.window, None, _on_save)
 

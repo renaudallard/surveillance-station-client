@@ -35,8 +35,22 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = ["E402"]
+select = ["E", "F", "W", "I", "B", "S", "SIM", "RET", "PLR", "PLW", "PLC", "TRY", "RUF"]
+ignore = [
+    "PLW0603",  # global statement — used by design in async_bridge
+    "PLR0915",  # too many statements — GTK __init__ methods are inherently long
+    "PLR0913",  # too many arguments — API methods need many params
+    "S324",     # SHA1/MD5 — required for Synology API compatibility
+    "S311",     # random — used for non-security purposes
+    "TRY003",   # long exception messages — pragmatic choice
+    "PLR2004",  # magic values — config constants are clear in context
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/surveillance/ui/*.py" = ["E402", "PLC0415"]
+"src/surveillance/app.py" = ["E402", "PLC0415"]
+"src/surveillance/__main__.py" = ["PLC0415"]
+"src/surveillance/config.py" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.11"

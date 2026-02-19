@@ -1,5 +1,7 @@
 # Surveillance Station Client
 
+[![Lint & Type Check](https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml/badge.svg)](https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml)
+
 > Native GTK4 desktop client for **Synology Surveillance Station**
 
 No browser needed. Connect directly to your Synology NAS and get live camera
@@ -338,11 +340,16 @@ surveillance/
 
 ## Development
 
+CI runs automatically on push and pull requests to `main` (see
+[`.github/workflows/lint.yml`](.github/workflows/lint.yml)).
+
+Locally you can run the same checks:
+
 ```sh
 # activate the venv
 source .venv/bin/activate
 
-# lint
+# lint (extended rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
 ruff check src/ tests/
 
 # format

@@ -274,10 +274,7 @@ class TimeLapseView(Gtk.Box):
             duration = rec.stop_time - rec.start_time
             mins, secs = divmod(duration, 60)
             hours, mins = divmod(mins, 60)
-            if hours:
-                dur_str = f"{hours}h {mins}m {secs}s"
-            else:
-                dur_str = f"{mins}m {secs}s"
+            dur_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
             dur_label = Gtk.Label(label=dur_str)
             dur_label.set_xalign(0)
             dur_label.add_css_class("dim-label")
@@ -371,8 +368,8 @@ class TimeLapseView(Gtk.Box):
                             callback=lambda p: log.info("Downloaded to %s", p),
                             error_callback=lambda e: log.error("Download failed: %s", e),
                         )
-            except Exception as e:
-                log.error("Save dialog error: %s", e)
+            except Exception:
+                log.exception("Save dialog error")
 
         dialog.save(self.window, None, _on_save)
 

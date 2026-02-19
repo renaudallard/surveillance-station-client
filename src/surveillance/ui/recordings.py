@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -515,8 +516,8 @@ class RecordingsView(Gtk.Box):
                             callback=lambda p: log.info("Downloaded to %s", p),
                             error_callback=lambda e: log.error("Download failed: %s", e),
                         )
-            except Exception as e:
-                log.error("Save dialog error: %s", e)
+            except Exception:
+                log.exception("Save dialog error")
 
         dialog.save(self.window, None, _on_save)
 
@@ -544,17 +545,13 @@ class RecordingsView(Gtk.Box):
         if cfg.search_camera_ids:
             self._search_camera_ids = cfg.search_camera_ids
         if cfg.search_from_time:
-            try:
+            with contextlib.suppress(ValueError):
                 self._search_from_time = int(
                     datetime.fromisoformat(cfg.search_from_time).timestamp()
                 )
-            except ValueError:
-                pass
         if cfg.search_to_time:
-            try:
+            with contextlib.suppress(ValueError):
                 self._search_to_time = int(datetime.fromisoformat(cfg.search_to_time).timestamp())
-            except ValueError:
-                pass
 
     def _save_search_to_config(self) -> None:
         """Save search filters to config."""

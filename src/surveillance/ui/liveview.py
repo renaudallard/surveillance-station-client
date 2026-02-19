@@ -337,8 +337,7 @@ class LiveView(Gtk.Box):
                 self._select_slot(None)
                 self.on_camera_selected(cam)
                 return
-            else:
-                self._select_slot(None)
+            self._select_slot(None)
         else:
             self._select_slot(slot_idx)
         self._update_ptz_controls()

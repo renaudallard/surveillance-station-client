@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import json
 import logging
 from pathlib import Path
@@ -141,9 +142,21 @@ async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
     )
 
 
-_snapshot_cache: dict[int, bytes] = {}
-_recording_thumbnail_cache: dict[int, bytes] = {}
+_snapshot_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
+_recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
 _thumbnail_failed_cameras: set[int] = set()
+
+_MAX_SNAPSHOT_CACHE = 32
+_MAX_THUMBNAIL_CACHE = 128
+
+
+def _cache_put(
+    cache: collections.OrderedDict[int, bytes], key: int, value: bytes, limit: int
+) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > limit:
+        cache.popitem(last=False)
 
 
 def clear_snapshot_cache() -> None:
@@ -209,7 +222,12 @@ async def fetch_recording_thumbnail(
                     if b64:
                         image_data = base64.b64decode(b64)
                         if image_data:
-                            _recording_thumbnail_cache[rec.id] = image_data
+                            _cache_put(
+                                _recording_thumbnail_cache,
+                                rec.id,
+                                image_data,
+                                _MAX_THUMBNAIL_CACHE,
+                            )
                             return image_data
             except Exception as exc:
                 log.debug(
@@ -232,7 +250,7 @@ async def fetch_recording_thumbnail(
             return b""
 
     if data_bytes:
-        _snapshot_cache[rec.camera_id] = data_bytes
+        _cache_put(_snapshot_cache, rec.camera_id, data_bytes, _MAX_SNAPSHOT_CACHE)
     return data_bytes
 
 
@@ -257,5 +275,5 @@ async def fetch_camera_snapshot(
             return b""
 
     if data:
-        _snapshot_cache[camera_id] = data
+        _cache_put(_snapshot_cache, camera_id, data, _MAX_SNAPSHOT_CACHE)
     return data

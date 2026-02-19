@@ -82,9 +82,9 @@ class PtzControls(Gtk.Box):
 
         for row, col, direction, symbol in move_dirs:
             btn = Gtk.Button(label=symbol)
-            gesture = Gtk.GestureDrag()
-            gesture.connect("drag-begin", self._on_move_press, direction)
-            gesture.connect("drag-end", self._on_move_release, direction)
+            gesture = Gtk.GestureClick()
+            gesture.connect("pressed", self._on_move_press, direction)
+            gesture.connect("released", self._on_move_release, direction)
             btn.add_controller(gesture)
             pad.attach(btn, col, row, 1, 1)
 
@@ -101,9 +101,9 @@ class PtzControls(Gtk.Box):
 
         zoom_out_btn = Gtk.Button(label="\u2212")  # minus
         zoom_out_btn.set_tooltip_text("Zoom Out")
-        zoom_out_gesture = Gtk.GestureDrag()
-        zoom_out_gesture.connect("drag-begin", self._on_zoom_press, "out")
-        zoom_out_gesture.connect("drag-end", self._on_zoom_release, "out")
+        zoom_out_gesture = Gtk.GestureClick()
+        zoom_out_gesture.connect("pressed", self._on_zoom_press, "out")
+        zoom_out_gesture.connect("released", self._on_zoom_release, "out")
         zoom_out_btn.add_controller(zoom_out_gesture)
         zoom_box.append(zoom_out_btn)
 
@@ -112,9 +112,9 @@ class PtzControls(Gtk.Box):
 
         zoom_in_btn = Gtk.Button(label="+")
         zoom_in_btn.set_tooltip_text("Zoom In")
-        zoom_in_gesture = Gtk.GestureDrag()
-        zoom_in_gesture.connect("drag-begin", self._on_zoom_press, "in")
-        zoom_in_gesture.connect("drag-end", self._on_zoom_release, "in")
+        zoom_in_gesture = Gtk.GestureClick()
+        zoom_in_gesture.connect("pressed", self._on_zoom_press, "in")
+        zoom_in_gesture.connect("released", self._on_zoom_release, "in")
         zoom_in_btn.add_controller(zoom_in_gesture)
         zoom_box.append(zoom_in_btn)
 
@@ -154,7 +154,9 @@ class PtzControls(Gtk.Box):
         else:
             self.set_sensitive(False)
 
-    def _on_move_press(self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str) -> None:
+    def _on_move_press(
+        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
+    ) -> None:
         if not self.camera or not self.app.api:
             return
         run_async(
@@ -163,7 +165,7 @@ class PtzControls(Gtk.Box):
         )
 
     def _on_move_release(
-        self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str
+        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
     ) -> None:
         if not self.camera or not self.app.api:
             return
@@ -180,7 +182,9 @@ class PtzControls(Gtk.Box):
             error_callback=lambda e: log.error("PTZ move failed: %s", e),
         )
 
-    def _on_zoom_press(self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str) -> None:
+    def _on_zoom_press(
+        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
+    ) -> None:
         if not self.camera or not self.app.api:
             return
         run_async(
@@ -189,7 +193,7 @@ class PtzControls(Gtk.Box):
         )
 
     def _on_zoom_release(
-        self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str
+        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
     ) -> None:
         if not self.camera or not self.app.api:
             return

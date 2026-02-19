@@ -51,7 +51,10 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.changed == 'true'
     # GitHub only offers Ubuntu host VMs; the actual build runs inside
-    # a Debian testing container so bundled libraries match Debian.
+    # a Debian trixie container.  Pinned by codename rather than
+    # "stable"/"testing" so the build won't silently move to forky
+    # (whose gdk-pixbuf requires glycin sandboxed loaders that break
+    # inside AppImages).
     strategy:
       matrix:
         include:
@@ -61,7 +64,7 @@ jobs:
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     container:
-      image: debian:testing
+      image: debian:trixie
     env:
       VERSION: ${{ needs.check-version.outputs.version }}
       DEBIAN_FRONTEND: noninteractive

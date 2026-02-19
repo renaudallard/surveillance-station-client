@@ -32,6 +32,7 @@ import base64
 import collections
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -144,7 +145,8 @@ async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
 
 _snapshot_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
 _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
-_thumbnail_failed_cameras: set[int] = set()
+_thumbnail_failed_cameras: dict[int, float] = {}
+_THUMBNAIL_FAIL_TTL = 300.0  # seconds before retrying GetThumbnail
 
 _MAX_SNAPSHOT_CACHE = 32
 _MAX_THUMBNAIL_CACHE = 128
@@ -190,7 +192,8 @@ async def fetch_recording_thumbnail(
             return _snapshot_cache[rec.camera_id]
 
         # Try recording-specific thumbnail (stored on NAS, works offline)
-        if rec.camera_id not in _thumbnail_failed_cameras:
+        fail_time = _thumbnail_failed_cameras.get(rec.camera_id)
+        if fail_time is None or (time.monotonic() - fail_time) > _THUMBNAIL_FAIL_TTL:
             try:
                 data = await api.request(
                     api="SYNO.SurveillanceStation.Recording",
@@ -235,7 +238,7 @@ async def fetch_recording_thumbnail(
                     rec.id,
                     exc,
                 )
-                _thumbnail_failed_cameras.add(rec.camera_id)
+                _thumbnail_failed_cameras[rec.camera_id] = time.monotonic()
 
         # Fallback: live camera snapshot
         try:

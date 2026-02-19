@@ -167,7 +167,7 @@ class SnapshotsView(Gtk.Box):
 
         run_async(
             save_snapshot(self.app.api, camera.id, output),
-            callback=lambda p: self._on_snapshot_saved(p),
+            callback=self._on_snapshot_saved,
             error_callback=lambda e: log.error("Snapshot failed: %s", e),
         )
 

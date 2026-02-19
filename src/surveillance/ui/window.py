@@ -230,7 +230,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
             run_async(
                 count_unread_alerts(self.app.api),
-                callback=lambda count: self.headerbar.set_notification_count(count),
+                callback=self.headerbar.set_notification_count,
                 error_callback=_alerts_error,
             )
             return True

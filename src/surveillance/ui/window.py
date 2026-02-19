@@ -59,23 +59,24 @@ class MainWindow(Gtk.ApplicationWindow):
         self.headerbar = AppHeaderBar(self)
         self.set_titlebar(self.headerbar)
 
-        # Main layout: sidebar + content
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.set_child(self.main_box)
+        # Main layout: sidebar + content with draggable divider
+        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.set_child(self.paned)
 
         # Sidebar
         self.sidebar = CameraSidebar(self)
-        self.main_box.append(self.sidebar)
-
-        # Separator
-        self.main_box.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        self.paned.set_start_child(self.sidebar)
+        self.paned.set_resize_start_child(False)
+        self.paned.set_shrink_start_child(False)
 
         # Content stack
         self.stack = Gtk.Stack()
         self.stack.set_hexpand(True)
         self.stack.set_vexpand(True)
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.main_box.append(self.stack)
+        self.paned.set_end_child(self.stack)
+        self.paned.set_shrink_end_child(False)
+        self.paned.set_position(220)
 
         # Placeholder pages (replaced by real widgets when connected)
         self._add_placeholder("live", "Live View", "Connect to view live streams")

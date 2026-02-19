@@ -63,6 +63,7 @@ jobs:
     env:
       VERSION: ${{ needs.check-version.outputs.version }}
       DEBIAN_FRONTEND: noninteractive
+      APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
       - name: Install system dependencies
         run: |
@@ -81,8 +82,7 @@ jobs:
             libmpv-dev \
             gobject-introspection \
             file \
-            wget \
-            libfuse2t64
+            wget
 
       - uses: actions/checkout@v4
 

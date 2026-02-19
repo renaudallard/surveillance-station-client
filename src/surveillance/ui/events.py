@@ -71,6 +71,7 @@ class EventsView(Gtk.Box):
         self._offset = 0
         self._total = 0
         self._camera_id: int | None = None
+        self._loading = False
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -153,15 +154,25 @@ class EventsView(Gtk.Box):
         self._load_events()
 
     def _load_events(self) -> None:
-        if not self.app.api:
+        if not self.app.api or self._loading:
             return
+        self._loading = True
+        self.prev_btn.set_sensitive(False)
+        self.next_btn.set_sensitive(False)
         run_async(
             list_events(self.app.api, self._camera_id, self._offset),
             callback=self._on_events_loaded,
-            error_callback=lambda e: log.error("Failed to load events: %s", e),
+            error_callback=self._on_load_error,
         )
 
+    def _on_load_error(self, error: Exception) -> None:
+        self._loading = False
+        self.prev_btn.set_sensitive(self._offset > 0)
+        self.next_btn.set_sensitive(self._offset + 50 < self._total)
+        log.error("Failed to load events: %s", error)
+
     def _on_events_loaded(self, result: tuple[list[Event], int]) -> None:
+        self._loading = False
         events, total = result
         self._events = events
         self._total = total

@@ -61,6 +61,7 @@ class RecordingsView(Gtk.Box):
         self._total = 0
         self._offset = 0
         self._camera_id: int | None = None
+        self._loading = False
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -147,15 +148,25 @@ class RecordingsView(Gtk.Box):
         self._load_recordings()
 
     def _load_recordings(self) -> None:
-        if not self.app.api:
+        if not self.app.api or self._loading:
             return
+        self._loading = True
+        self.prev_btn.set_sensitive(False)
+        self.next_btn.set_sensitive(False)
         run_async(
             list_recordings(self.app.api, self._camera_id, self._offset),
             callback=self._on_recordings_loaded,
-            error_callback=lambda e: log.error("Failed to load recordings: %s", e),
+            error_callback=self._on_load_error,
         )
 
+    def _on_load_error(self, error: Exception) -> None:
+        self._loading = False
+        self.prev_btn.set_sensitive(self._offset > 0)
+        self.next_btn.set_sensitive(self._offset + 50 < self._total)
+        log.error("Failed to load recordings: %s", error)
+
     def _on_recordings_loaded(self, result: tuple[list[Recording], int]) -> None:
+        self._loading = False
         recordings, total = result
         self._recordings = recordings
         self._total = total

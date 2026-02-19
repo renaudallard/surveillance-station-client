@@ -39,7 +39,11 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Recording, decode_detection_labels
-from surveillance.services.recording import fetch_recording_thumbnail, list_recordings
+from surveillance.services.recording import (
+    fetch_recording_thumbnail,
+    list_recordings,
+    reset_recording_thumbnail_state,
+)
 from surveillance.ui.recording_search import RecordingSearchDialog
 from surveillance.util.async_bridge import run_async
 
@@ -65,6 +69,7 @@ class RecordingsView(Gtk.Box):
         self._camera_id: int | None = None
         self._loading = False
         self._thumb_futures: list[concurrent.futures.Future[bytes]] = []
+        self._thumb_generation = 0
         self._search_camera_ids: list[int] | None = None
         self._search_from_time: int | None = None
         self._search_to_time: int | None = None
@@ -310,12 +315,17 @@ class RecordingsView(Gtk.Box):
         for f in self._thumb_futures:
             f.cancel()
         self._thumb_futures.clear()
+        self._thumb_generation += 1
+
+        # Clear per-camera caches so GetThumbnail is retried for each page load
+        reset_recording_thumbnail_state()
 
         # Clear list
         while child := self.row_box.get_first_child():
             self.row_box.remove(child)
 
         # Add rows and queue thumbnail loads (visible rows first)
+        generation = self._thumb_generation
         deferred: list[tuple[Gtk.Picture, Recording]] = []
         for i, rec in enumerate(recordings):
             row_box, picture = self._create_recording_row(rec)
@@ -329,6 +339,8 @@ class RecordingsView(Gtk.Box):
             from gi.repository import GLib
 
             def _load_rest() -> bool:
+                if self._thumb_generation != generation:
+                    return False  # stale, new page already loaded
                 for pic, r in deferred:
                     self._load_thumbnail(pic, r)
                 return False

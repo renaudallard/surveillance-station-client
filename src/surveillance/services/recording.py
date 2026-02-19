@@ -186,6 +186,15 @@ def clear_snapshot_cache() -> None:
     _thumbnail_failed_cameras.clear()
 
 
+def reset_recording_thumbnail_state() -> None:
+    """Reset per-camera caches so each page load retries GetThumbnail.
+
+    Preserves _recording_thumbnail_cache (keyed by rec.id, always correct).
+    """
+    _snapshot_cache.clear()
+    _thumbnail_failed_cameras.clear()
+
+
 async def fetch_recording_thumbnail(
     api: SurveillanceAPI,
     rec: Recording,

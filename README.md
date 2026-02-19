@@ -1,30 +1,182 @@
-# Surveillance Station Client
+<h1 align="center">Surveillance Station Client</h1>
 
-[![Lint & Type Check](https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml/badge.svg)](https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml)
+<p align="center">
+  <strong>Native GTK4 desktop client for Synology Surveillance Station</strong>
+</p>
 
-> Native GTK4 desktop client for **Synology Surveillance Station**
+<p align="center">
+  <a href="https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml"><img src="https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml/badge.svg" alt="Lint & Type Check"></a>
+  <a href="https://github.com/renaudallard/synology-surveillance-station-client/releases/latest"><img src="https://img.shields.io/github/v/release/renaudallard/synology-surveillance-station-client?label=release" alt="Latest Release"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/GTK-4-green" alt="GTK4">
+  <img src="https://img.shields.io/github/license/renaudallard/synology-surveillance-station-client" alt="License">
+</p>
 
-No browser needed. Connect directly to your Synology NAS and get live camera
-feeds, recording playback, PTZ control, snapshots, event alerts, and home mode
-management -- all from a lightweight native desktop application.
+<p align="center">
+  No browser needed. Connect directly to your Synology NAS and get live camera
+  feeds, recording playback, PTZ control, snapshots, event alerts, and home mode
+  management &mdash; all from a lightweight native desktop application.
+</p>
 
 ---
 
 ## Features
 
-| Feature | Description |
+- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland.
+- **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Search by camera(s) and time range. Snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
+- **PTZ Control** &mdash; Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active.
+- **Snapshots** &mdash; Take live snapshots from any camera, browse saved snapshots, download or delete.
+- **Time Lapse** &mdash; Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.
+- **Events & Alerts** &mdash; View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds.
+- **Home Mode** &mdash; Toggle Surveillance Station home mode directly from the header bar.
+- **License Management** &mdash; View, add, and delete camera licenses. Online and offline activation.
+- **Session Persistence** &mdash; Grid layout, active page, and camera assignments are restored on restart.
+- **Multi-Profile** &mdash; Save multiple NAS connection profiles and switch between them from the login screen.
+- **Secure Credentials** &mdash; Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain).
+- **Theming** &mdash; Auto (follow OS), dark, or light theme selectable from the header bar.
+
+---
+
+## Quick Start
+
+### AppImage (Linux, no install needed)
+
+Download the latest AppImage for your architecture from the
+[Releases](https://github.com/renaudallard/synology-surveillance-station-client/releases/latest)
+page:
+
+```sh
+chmod +x Surveillance-*-x86_64.AppImage
+./Surveillance-*-x86_64.AppImage
+```
+
+Available for **x86_64** and **aarch64**. A new release with AppImages is built
+automatically every time the version is bumped.
+
+### From source
+
+1. Install [system dependencies](#system-packages) for your distro
+2. Clone and install:
+
+```sh
+git clone https://github.com/renaudallard/synology-surveillance-station-client.git
+cd synology-surveillance-station-client
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install .
+```
+
+> **Note:** `--system-site-packages` is required so the venv can access the
+> system-installed PyGObject and cairo bindings, which cannot be built via pip
+> without extensive C development headers.
+
+3. Run:
+
+```sh
+surveillance
+```
+
+---
+
+## Usage
+
+```sh
+surveillance            # launch the application
+surveillance --debug    # enable debug logging to stderr
+python -m surveillance  # run directly from the source tree
+```
+
+On launch, a login dialog asks for your NAS connection details:
+
+| Field | Description | Default |
+|---|---|---|
+| **Profile name** | Label for this connection (e.g. `home-nas`) | hostname |
+| **Host** | NAS IP address or hostname | &mdash; |
+| **Port** | DSM port | `5001` |
+| **Use HTTPS** | Enable HTTPS (recommended) | on |
+| **Verify SSL** | Validate the SSL certificate (disable for self-signed) | off |
+| **Username** | DSM user with Surveillance Station permissions | &mdash; |
+| **Password** | DSM password | &mdash; |
+| **Remember credentials** | Store in system keyring | on |
+
+After connecting, the camera list appears in the sidebar. Click a camera to
+start its live stream. Use the navigation buttons at the bottom of the sidebar
+to switch between **Live View**, **Recordings**, **Snapshots**, **Events**,
+**Time Lapse**, and **Licenses**.
+
+### Keyboard shortcuts
+
+| Key | Action |
 |---|---|
-| **Live View** | Real-time camera streams in 1x1, 2x2, 3x3, or 4x4 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. |
-| **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Search recordings by camera(s) and time range. Camera snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording. |
-| **PTZ Control** | Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active. |
-| **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
-| **Time Lapse** | Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task. |
-| **Events & Alerts** | View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds. |
-| **Home Mode** | Toggle Surveillance Station home mode directly from the header bar. |
-| **License Management** | View, add, and delete Surveillance Station camera licenses. Supports both online activation (via NAS) and offline activation (direct to Synology). |
-| **Session Persistence** | Grid layout, active page, and camera assignments are restored on restart. |
-| **Multi-Profile** | Save multiple NAS connection profiles. Switch between them from the login screen. |
-| **Secure Credentials** | Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain). |
+| `Ctrl+Q` | Quit |
+
+---
+
+## Configuration
+
+Configuration is stored in TOML format following the XDG base directory
+specification:
+
+```
+~/.config/surveillance-station/config.toml
+```
+
+<details>
+<summary><b>Example configuration</b></summary>
+
+```toml
+[general]
+default_profile = "home-nas"
+theme = "auto"                  # "auto" (follow OS), "dark", or "light"
+poll_interval_cameras = 30      # seconds
+poll_interval_alerts = 30
+poll_interval_homemode = 60
+snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"
+
+[session]
+grid_layout = "2x2"            # "1x1", "2x2", "3x3", or "4x4"
+last_page = "live"             # last active page
+
+[session.layout_cameras]
+# Camera IDs per layout (0 = empty slot).  Each layout remembers its
+# own assignment independently.
+"1x1" = [1]
+"2x2" = [1, 3, 0, 5]
+"3x3" = [1, 3, 7, 0, 5, 8, 2, 0, 0]
+
+# Recording search filters (persisted from last search)
+# search_camera_ids = [1, 3]
+# search_from_time = "2026-02-01T00:00:00"
+# search_to_time = "2026-02-19T23:59:59"
+
+[camera_overrides]
+# Direct RTSP URLs keyed by camera ID.
+# Use when Synology's RTSP proxy corrupts a stream (e.g. Reolink Duo 3 PoE h265).
+# 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
+
+[camera_protocols]
+# Stream protocol per camera ID:
+# auto, rtsp, rtsp_over_http, mjpeg, multicast, direct
+# "direct" uses the URL from [camera_overrides].
+# 5 = "direct"
+
+[profiles.home-nas]
+host = "192.168.1.100"
+port = 5001
+https = true
+verify_ssl = false
+```
+</details>
+
+The `[session]` section is managed automatically &mdash; the application
+restores the grid layout, active page, and camera assignments from the previous
+session on restart.
+
+Stream protocols and direct RTSP overrides can also be configured from the UI:
+right-click a camera in the sidebar to choose the protocol.
+
+Credentials are **never** stored in the config file. They are kept in the
+system keyring under the service name `surveillance-station`.
 
 ---
 
@@ -97,173 +249,18 @@ pkg_add gtk4 mpv py3-gobject3 py3-cairo
 ```
 </details>
 
-### Python
+### Python packages
 
-**Python 3.11** or later is required.
+**Python 3.11** or later is required. These are installed automatically by `pip`:
 
-The following Python packages are installed automatically by `pip`:
-
-| Package | Version | Purpose |
-|---|---|---|
-| `PyGObject` | >= 3.50 | GTK4 bindings with native asyncio integration |
-| `httpx[http2]` | >= 0.27 | Async HTTP/2 client for Synology REST API |
-| `python-mpv` | >= 1.0 | libmpv bindings for video rendering |
-| `PyOpenGL` | >= 3.1 | OpenGL context for mpv render in GTK4 GLArea |
-| `keyring` | >= 25.0 | Secure credential storage |
-| `tomli-w` | >= 1.0 | TOML config writing |
-
----
-
-## Installation
-
-### AppImage (Linux, no install needed)
-
-Download the latest AppImage for your architecture from the
-[Releases](https://github.com/renaudallard/synology-surveillance-station-client/releases)
-page, make it executable, and run:
-
-```sh
-chmod +x Surveillance-*-x86_64.AppImage
-./Surveillance-*-x86_64.AppImage
-```
-
-AppImages are available for **x86_64** and **aarch64**.
-
-### From source
-
-```sh
-git clone https://github.com/renaudallard/synology-surveillance-station-client.git
-cd synology-surveillance-station-client
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-pip install .
-```
-
-> `--system-site-packages` is required so the venv can access the system-installed
-> PyGObject and cairo bindings, which cannot be built via pip without extensive
-> C development headers.
-
-### Editable install (for development)
-
-```sh
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
----
-
-## Usage
-
-### Launch
-
-```sh
-# If installed via pip
-surveillance
-
-# Or run directly from the source tree
-python -m surveillance
-
-# Enable debug logging
-surveillance --debug
-```
-
-### First connection
-
-On launch, a login dialog appears:
-
-| Field | Description | Default |
-|---|---|---|
-| **Profile name** | A label for this connection (e.g. `home-nas`) | hostname |
-| **Host** | NAS IP address or hostname | -- |
-| **Port** | DSM port | `5001` |
-| **Use HTTPS** | Enable HTTPS (recommended) | on |
-| **Verify SSL** | Validate the SSL certificate (disable for self-signed) | off |
-| **Username** | DSM user with Surveillance Station permissions | -- |
-| **Password** | DSM password | -- |
-| **Remember credentials** | Store in system keyring | on |
-
-After connecting you will see the camera list in the sidebar. Click a camera
-to start its live stream. Use the navigation buttons at the bottom of the
-sidebar to switch between Live View, Recordings, Snapshots, Events, Time Lapse, and Licenses.
-
-### Keyboard shortcuts
-
-| Key | Action |
+| Package | Purpose |
 |---|---|
-| `Ctrl+Q` | Quit |
-
----
-
-## Configuration
-
-Configuration is stored in TOML format following the XDG base directory
-specification:
-
-```
-~/.config/surveillance-station/config.toml
-```
-
-Example:
-
-```toml
-[general]
-default_profile = "home-nas"
-theme = "auto"                  # "auto" (follow OS), "dark", or "light"
-poll_interval_cameras = 30      # seconds
-poll_interval_alerts = 30
-poll_interval_homemode = 60
-snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"
-
-[session]
-grid_layout = "2x2"            # "1x1", "2x2", "3x3", or "4x4"
-last_page = "live"             # last active page (live, recordings, snapshots, events)
-
-[session.layout_cameras]
-# Camera IDs per layout (0 = empty slot).  Each layout remembers its
-# own assignment independently so switching between layouts restores
-# the previous arrangement.
-"1x1" = [1]
-"2x2" = [1, 3, 0, 5]
-"3x3" = [1, 3, 7, 0, 5, 8, 2, 0, 0]
-
-# Recording search filters (persisted from last search)
-# search_camera_ids = [1, 3]           # list of camera IDs to filter
-# search_from_time = "2026-02-01T00:00:00"  # ISO datetime
-# search_to_time = "2026-02-19T23:59:59"    # ISO datetime
-
-[camera_overrides]
-# Direct RTSP URLs keyed by Surveillance Station camera ID.
-# Use this when Synology's RTSP proxy corrupts a camera's stream
-# (e.g. Reolink Duo 3 PoE h265).  The camera ID can be found in
-# the sidebar tooltip or the debug log.
-# 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
-
-[camera_protocols]
-# Stream protocol per camera ID.  Supported values:
-# auto, rtsp, rtsp_over_http, mjpeg, multicast, direct
-# When set to "direct", the URL from [camera_overrides] is used.
-# 5 = "direct"
-
-[profiles.home-nas]
-host = "192.168.1.100"
-port = 5001
-https = true
-verify_ssl = false
-```
-
-The `[session]` section is managed automatically. On each restart the application
-restores the grid layout, active page, and camera assignments from the previous
-session.
-
-The `[camera_overrides]` and `[camera_protocols]` sections can also be
-configured from the UI: right-click a camera in the sidebar to choose the
-stream protocol.  Available protocols: Auto, RTSP, RTSP over HTTP, MJPEG,
-Multicast, and Direct RTSP URL (bypasses Synology's proxy entirely — useful
-for cameras whose stream Synology corrupts, e.g. Reolink Duo 3 PoE).
-
-Credentials are **never** stored in the config file. They are kept in the
-system keyring under the service name `surveillance-station`.
+| `PyGObject` >= 3.50 | GTK4 bindings with native asyncio integration |
+| `httpx[http2]` >= 0.27 | Async HTTP/2 client for Synology REST API |
+| `python-mpv` >= 1.0 | libmpv bindings for video rendering |
+| `PyOpenGL` >= 3.1 | OpenGL context for mpv render in GTK4 GLArea |
+| `keyring` >= 25.0 | Secure credential storage |
+| `tomli-w` >= 1.0 | TOML config writing |
 
 ---
 
@@ -274,7 +271,7 @@ system keyring under the service name `surveillance-station`.
 │  UI Layer          GTK4 widgets         │
 │  window, sidebar, liveview, recordings, │
 │  player, ptz, snapshots, events,        │
-│  timelapse, licenses                    │
+│  timelapse, licenses, notifications     │
 ├─────────────────────────────────────────┤
 │  Service Layer     domain logic         │
 │  camera, live, recording, ptz,          │
@@ -295,16 +292,22 @@ Three event systems are integrated:
 Video is rendered through mpv's OpenGL render API into a `Gtk.GLArea` widget,
 which works on both X11 and Wayland without window ID embedding.
 
-### Project structure
+<details>
+<summary><b>Project structure</b></summary>
 
 ```
-surveillance/
+synology-surveillance-station-client/
 ├── pyproject.toml
 ├── README.md
 ├── surveillance.1                      man page
+├── build-appimage.sh                   AppImage build script
+├── appimage_entry.py                   PyInstaller entry point
 ├── data/
 │   ├── org.surveillance.desktop
 │   └── style.css
+├── .github/workflows/
+│   ├── lint.yml                        CI: ruff + mypy
+│   └── release.yml                     AppImage build + GitHub release
 ├── src/surveillance/
 │   ├── __main__.py                     entry point
 │   ├── app.py                          Gtk.Application
@@ -332,7 +335,7 @@ surveillance/
 │   │   ├── liveview.py                 live stream grid
 │   │   ├── mpv_widget.py               GLArea + mpv render
 │   │   ├── recordings.py               recording browser
-│   │   ├── recording_search.py        recording search dialog
+│   │   ├── recording_search.py         recording search dialog
 │   │   ├── player.py                   playback controls
 │   │   ├── ptz_controls.py             PTZ direction pad
 │   │   ├── snapshots.py                snapshot browser
@@ -343,43 +346,51 @@ surveillance/
 │   └── util/
 │       └── async_bridge.py             GLib + asyncio bridge
 └── tests/
+    ├── conftest.py
     ├── test_api_client.py
     ├── test_models.py
     ├── test_config.py
     └── test_services.py
 ```
+</details>
 
 ---
 
 ## Development
 
-CI runs automatically on push and pull requests to `main` (see
-[`.github/workflows/lint.yml`](.github/workflows/lint.yml)).
+CI runs automatically on push and pull requests to `main`:
 
-Locally you can run the same checks:
+| Workflow | Trigger | What it does |
+|---|---|---|
+| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy |
+| [`release.yml`](.github/workflows/release.yml) | version bump on `main` | Build AppImages (x86_64 + aarch64), create GitHub release |
+
+### Running checks locally
 
 ```sh
-# activate the venv
-source .venv/bin/activate
+pip install -e ".[dev]"
 
-# lint (extended rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
-ruff check src/ tests/
-
-# format
-ruff format src/ tests/
-
-# type check
-mypy src/surveillance/
-
-# run tests
-pytest tests/ -v
+ruff check src/ tests/       # lint (rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
+ruff format src/ tests/       # format
+mypy src/surveillance/        # type check
+pytest tests/ -v              # tests
 ```
+
+### Building an AppImage locally
+
+```sh
+./build-appimage.sh
+```
+
+This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
+Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 
 ---
 
 ## Synology API Reference
 
-This client uses the following Synology Web API endpoints:
+<details>
+<summary><b>Endpoints used by this client</b></summary>
 
 | API | Purpose |
 |---|---|
@@ -397,6 +408,8 @@ This client uses the following Synology Web API endpoints:
 | `SYNO.SurveillanceStation.License` | License management |
 | `SYNO.SurveillanceStation.Info` | NAS device info |
 
+</details>
+
 ---
 
 ## Disclaimer
@@ -410,7 +423,7 @@ with the publicly documented Synology Web API. Use it at your own risk.
 
 ## License
 
-BSD-2-Clause
+BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/synology-surveillance-station-client/blob/main/pyproject.toml) for details.
 
 ```
 Copyright (c) 2026, Renaud Allard <renaud@allard.it>

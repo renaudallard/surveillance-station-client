@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_thumbnail_semaphore = asyncio.Semaphore(3)
+_thumbnail_semaphore = asyncio.Semaphore(8)
 
 
 async def list_recordings(

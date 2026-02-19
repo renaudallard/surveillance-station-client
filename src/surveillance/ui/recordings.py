@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -62,6 +63,7 @@ class RecordingsView(Gtk.Box):
         self._offset = 0
         self._camera_id: int | None = None
         self._loading = False
+        self._thumb_futures: list[concurrent.futures.Future[bytes]] = []
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -94,15 +96,15 @@ class RecordingsView(Gtk.Box):
         self.append(toolbar)
         self.append(Gtk.Separator())
 
-        # Recording list
+        # Recording list — plain Gtk.Box instead of Gtk.ListBox
+        # to avoid ListBoxRow consuming button click events.
         scroll = Gtk.ScrolledWindow()
         scroll.set_vexpand(True)
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
-        self.listbox = Gtk.ListBox()
-        self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.listbox.connect("row-activated", self._on_row_activated)
-        scroll.set_child(self.listbox)
+        self.row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        log.warning("RECORDINGS INIT: plain Gtk.Box")
+        scroll.set_child(self.row_box)
         self.append(scroll)
 
         # Pagination
@@ -132,8 +134,19 @@ class RecordingsView(Gtk.Box):
 
     def _update_camera_filter(self) -> None:
         """Populate camera filter from sidebar camera list."""
+        self._known_camera_ids: set[int] = set()
         for cam in self.window.sidebar.cameras:
-            self.camera_combo.append(str(cam.id), cam.name)
+            if cam.id not in self._known_camera_ids:
+                self.camera_combo.append(str(cam.id), cam.name)
+                self._known_camera_ids.add(cam.id)
+
+    def _ensure_camera_in_combo(self, camera_id: int, name: str) -> None:
+        """Add a camera to the combo if not already present."""
+        if not hasattr(self, "_known_camera_ids"):
+            self._known_camera_ids = set()
+        if camera_id not in self._known_camera_ids:
+            self.camera_combo.append(str(camera_id), name)
+            self._known_camera_ids.add(camera_id)
 
     def _on_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
         active = combo.get_active_id()
@@ -147,7 +160,23 @@ class RecordingsView(Gtk.Box):
         self._offset = 0
         self._load_recordings()
 
+    def _on_camera_filter_clicked(self, btn: Gtk.Button, camera_id: int) -> None:
+        log.warning("FILTER CLICKED: camera_id=%s", camera_id)
+        self._ensure_camera_in_combo(camera_id, btn.get_label() or "")
+        self._camera_id = camera_id
+        self._offset = 0
+        self.camera_combo.handler_block_by_func(self._on_filter_changed)
+        self.camera_combo.set_active_id(str(camera_id))
+        self.camera_combo.handler_unblock_by_func(self._on_filter_changed)
+        self._load_recordings()
+
     def _load_recordings(self) -> None:
+        log.warning(
+            "_load_recordings: cam=%s offset=%d loading=%s",
+            self._camera_id,
+            self._offset,
+            self._loading,
+        )
         if not self.app.api or self._loading:
             return
         self._loading = True
@@ -170,19 +199,30 @@ class RecordingsView(Gtk.Box):
         recordings, total = result
         self._recordings = recordings
         self._total = total
+        log.warning("Loaded %d recordings (total=%d)", len(recordings), total)
+        if recordings:
+            r = recordings[0]
+            log.warning(
+                "First rec: id=%d cam='%s' cam_id=%d",
+                r.id,
+                r.camera_name,
+                r.camera_id,
+            )
+
+        # Cancel pending thumbnail fetches
+        for f in self._thumb_futures:
+            f.cancel()
+        self._thumb_futures.clear()
 
         # Clear list
-        while True:
-            row = self.listbox.get_row_at_index(0)
-            if row is None:
-                break
-            self.listbox.remove(row)
+        while child := self.row_box.get_first_child():
+            self.row_box.remove(child)
 
         # Add rows and queue thumbnail loads
         for rec in recordings:
-            row = self._create_recording_row(rec)
-            self.listbox.append(row)
-            self._load_thumbnail(row, rec)
+            row_box, picture = self._create_recording_row(rec)
+            self.row_box.append(row_box)
+            self._load_thumbnail(picture, rec)
 
         # Update pagination
         self.prev_btn.set_sensitive(self._offset > 0)
@@ -191,14 +231,14 @@ class RecordingsView(Gtk.Box):
         total_pages = max(1, (total + 49) // 50)
         self.page_label.set_text(f"Page {page} of {total_pages} ({total} total)")
 
-    def _load_thumbnail(self, row: Gtk.ListBoxRow, rec: Recording) -> None:
+    def _load_thumbnail(self, picture: Gtk.Picture, rec: Recording) -> None:
         """Async-load a thumbnail for a recording row."""
         if not self.app.api:
             return
-        picture: Gtk.Picture = row._thumbnail  # type: ignore[attr-defined]
 
         def _on_thumb(data: bytes) -> None:
             if not data:
+                log.warning("Thumb rec %d: empty data", rec.id)
                 return
             try:
                 loader = GdkPixbuf.PixbufLoader()
@@ -208,20 +248,31 @@ class RecordingsView(Gtk.Box):
                 if pixbuf:
                     texture = Gdk.Texture.new_for_pixbuf(pixbuf)
                     picture.set_paintable(texture)
+                    log.warning(
+                        "Thumb rec %d: set %dx%d",
+                        rec.id,
+                        pixbuf.get_width(),
+                        pixbuf.get_height(),
+                    )
+                else:
+                    log.warning("Thumb rec %d: no pixbuf", rec.id)
             except Exception as exc:
-                log.warning("Thumbnail decode failed for recording %d: %s", rec.id, exc)
+                log.warning(
+                    "Thumbnail decode failed for recording %d: %s",
+                    rec.id,
+                    exc,
+                )
 
-        run_async(
+        future = run_async(
             fetch_recording_thumbnail(self.app.api, rec),
             callback=_on_thumb,
             error_callback=lambda e: log.warning("Thumbnail fetch failed: %s", e),
         )
+        self._thumb_futures.append(future)
 
-    def _create_recording_row(self, rec: Recording) -> Gtk.ListBoxRow:
-        row = Gtk.ListBoxRow()
-        row.add_css_class("recording-row")
-
+    def _create_recording_row(self, rec: Recording) -> tuple[Gtk.Box, Gtk.Picture]:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        box.add_css_class("recording-row")
         box.set_margin_top(6)
         box.set_margin_bottom(6)
         box.set_margin_start(8)
@@ -239,10 +290,19 @@ class RecordingsView(Gtk.Box):
         info_box.set_hexpand(True)
         info_box.set_valign(Gtk.Align.CENTER)
 
-        cam_label = Gtk.Label(label=rec.camera_name)
-        cam_label.add_css_class("camera-label")
-        cam_label.set_xalign(0)
-        info_box.append(cam_label)
+        cam_btn = Gtk.Button(label=rec.camera_name or "(no name)")
+        cam_btn.add_css_class("camera-label")
+        cam_btn.add_css_class("flat")
+        cam_btn.set_halign(Gtk.Align.START)
+        cam_btn.set_tooltip_text(f"Filter by {rec.camera_name}")
+        cam_btn.connect("clicked", self._on_camera_filter_clicked, rec.camera_id)
+        info_box.append(cam_btn)
+        log.warning(
+            "ROW: cam='%s' id=%d btn_label='%s'",
+            rec.camera_name,
+            rec.camera_id,
+            cam_btn.get_label(),
+        )
 
         # Time range
         start = datetime.fromtimestamp(rec.start_time)
@@ -294,16 +354,10 @@ class RecordingsView(Gtk.Box):
         dl_btn.connect("clicked", self._on_download, rec)
         box.append(dl_btn)
 
-        row.set_child(box)
-        row.recording = rec  # type: ignore[attr-defined]
-        row._thumbnail = picture  # type: ignore[attr-defined]
-        return row
-
-    def _on_row_activated(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
-        rec = row.recording  # type: ignore[attr-defined]
-        self._play_recording(rec)
+        return box, picture
 
     def _on_play(self, btn: Gtk.Button, rec: Recording) -> None:
+        log.warning("PLAY CLICKED: rec_id=%s", rec.id)
         self._play_recording(rec)
 
     def _play_recording(self, rec: Recording) -> None:
@@ -327,7 +381,9 @@ class RecordingsView(Gtk.Box):
                     if path:
                         from pathlib import Path
 
-                        from surveillance.services.recording import download_recording
+                        from surveillance.services.recording import (
+                            download_recording,
+                        )
 
                         if self.app.api is None:
                             return
@@ -351,4 +407,10 @@ class RecordingsView(Gtk.Box):
 
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection from sidebar."""
+        self._ensure_camera_in_combo(camera.id, camera.name)
+        self._camera_id = camera.id
+        self._offset = 0
+        self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id(str(camera.id))
+        self.camera_combo.handler_unblock_by_func(self._on_filter_changed)
+        self._load_recordings()

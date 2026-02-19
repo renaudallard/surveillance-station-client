@@ -68,7 +68,10 @@ async def list_recordings(
         extra_params=params,
     )
 
-    recordings = [Recording.from_api(r) for r in data.get("events", data.get("recordings", []))]
+    raw = data.get("events", data.get("recordings", []))
+    if raw:
+        log.warning("Recording API first item keys: %s", list(raw[0].keys()))
+    recordings = [Recording.from_api(r) for r in raw]
     total = data.get("total", len(recordings))
     return recordings, total
 
@@ -140,12 +143,14 @@ async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
 
 _snapshot_cache: dict[int, bytes] = {}
 _recording_thumbnail_cache: dict[int, bytes] = {}
+_thumbnail_failed_cameras: set[int] = set()
 
 
 def clear_snapshot_cache() -> None:
     """Clear the thumbnail snapshot cache."""
     _snapshot_cache.clear()
     _recording_thumbnail_cache.clear()
+    _thumbnail_failed_cameras.clear()
 
 
 async def fetch_recording_thumbnail(
@@ -164,42 +169,55 @@ async def fetch_recording_thumbnail(
         return _snapshot_cache[rec.camera_id]
 
     async with _thumbnail_semaphore:
+        # Re-check caches after acquiring semaphore (another coroutine
+        # may have populated them while we waited).
+        if rec.id in _recording_thumbnail_cache:
+            return _recording_thumbnail_cache[rec.id]
+        if rec.camera_id in _snapshot_cache:
+            return _snapshot_cache[rec.camera_id]
+
         # Try recording-specific thumbnail (stored on NAS, works offline)
-        try:
-            data = await api.request(
-                api="SYNO.SurveillanceStation.Recording",
-                method="GetThumbnail",
-                version=5,
-                extra_params={
-                    "cameraId": str(rec.camera_id),
-                    "archId": str(rec.arch_id),
-                    "mountId": str(rec.mount_id),
-                    "targetTime": str(rec.start_time),
-                    "blFallbackByLoadEvt": "true",
-                    "rec_group": "0",
-                    "eventInfo": json.dumps(
-                        {
-                            "cameraId": rec.camera_id,
-                            "archId": rec.arch_id,
-                            "mountId": rec.mount_id,
-                            "rec_group": 0,
-                            "startTime": rec.start_time,
-                            "endTime": rec.start_time,
-                            "eventType": rec.event_type,
-                        }
-                    ),
-                },
-            )
-            thumbs = data if isinstance(data, list) else [data]
-            for thumb in thumbs:
-                b64 = thumb.get("thumbnail", "")
-                if b64:
-                    image_data = base64.b64decode(b64)
-                    if image_data:
-                        _recording_thumbnail_cache[rec.id] = image_data
-                        return image_data
-        except Exception as exc:
-            log.debug("Recording thumbnail not available for %d: %s", rec.id, exc)
+        if rec.camera_id not in _thumbnail_failed_cameras:
+            try:
+                data = await api.request(
+                    api="SYNO.SurveillanceStation.Recording",
+                    method="GetThumbnail",
+                    version=5,
+                    extra_params={
+                        "cameraId": str(rec.camera_id),
+                        "archId": str(rec.arch_id),
+                        "mountId": str(rec.mount_id),
+                        "targetTime": str(rec.start_time),
+                        "blFallbackByLoadEvt": "true",
+                        "rec_group": "0",
+                        "eventInfo": json.dumps(
+                            {
+                                "cameraId": rec.camera_id,
+                                "archId": rec.arch_id,
+                                "mountId": rec.mount_id,
+                                "rec_group": 0,
+                                "startTime": rec.start_time,
+                                "endTime": rec.start_time,
+                                "eventType": rec.event_type,
+                            }
+                        ),
+                    },
+                )
+                thumbs = data if isinstance(data, list) else [data]
+                for thumb in thumbs:
+                    b64 = thumb.get("thumbnail", "")
+                    if b64:
+                        image_data = base64.b64decode(b64)
+                        if image_data:
+                            _recording_thumbnail_cache[rec.id] = image_data
+                            return image_data
+            except Exception as exc:
+                log.debug(
+                    "Recording thumbnail not available for %d: %s",
+                    rec.id,
+                    exc,
+                )
+                _thumbnail_failed_cameras.add(rec.camera_id)
 
         # Fallback: live camera snapshot
         try:

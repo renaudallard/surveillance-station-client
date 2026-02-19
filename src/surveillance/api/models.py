@@ -122,7 +122,7 @@ class Recording:
         return cls(
             id=data.get("id", 0),
             camera_id=data.get("cameraId", 0),
-            camera_name=data.get("cameraName", ""),
+            camera_name=data.get("camera_name", data.get("cameraName", "")),
             start_time=data.get("startTime", 0),
             stop_time=data.get("stopTime", 0),
             file_size=data.get("fileSize", 0),

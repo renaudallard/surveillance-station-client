@@ -137,8 +137,11 @@ class EventsView(Gtk.Box):
         self.append(page_box)
 
         # Populate camera filter and load initial data
+        self._known_camera_ids: set[int] = set()
         for cam in self.window.sidebar.cameras:
-            self.camera_combo.append(str(cam.id), cam.name)
+            if cam.id not in self._known_camera_ids:
+                self.camera_combo.append(str(cam.id), cam.name)
+                self._known_camera_ids.add(cam.id)
         self._load_events()
 
     def _on_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
@@ -308,6 +311,20 @@ class EventsView(Gtk.Box):
         self._offset += 50
         self._load_events()
 
+    def _ensure_camera_in_combo(self, camera_id: int, name: str) -> None:
+        """Add a camera to the combo if not already present."""
+        if not hasattr(self, "_known_camera_ids"):
+            self._known_camera_ids = set()
+        if camera_id not in self._known_camera_ids:
+            self.camera_combo.append(str(camera_id), name)
+            self._known_camera_ids.add(camera_id)
+
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection from sidebar."""
+        self._ensure_camera_in_combo(camera.id, camera.name)
+        self._camera_id = camera.id
+        self._offset = 0
+        self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id(str(camera.id))
+        self.camera_combo.handler_unblock_by_func(self._on_filter_changed)
+        self._load_events()

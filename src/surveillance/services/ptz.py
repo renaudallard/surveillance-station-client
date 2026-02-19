@@ -35,51 +35,35 @@ if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
 
 
-async def move(api: SurveillanceAPI, camera_id: int, direction: str, speed: int = 3) -> None:
+async def move(api: SurveillanceAPI, camera_id: int, direction: str) -> None:
     """Move PTZ camera in a direction.
 
-    direction: up, down, left, right, upleft, upright, downleft, downright, home
-    speed: 1-5
+    direction: upStart, upStop, downStart, downStop, leftStart, leftStop,
+               rightStart, rightStop, home
     """
     await api.request(
         api="SYNO.SurveillanceStation.PTZ",
         method="Move",
-        version=5,
+        version=2,
         extra_params={
             "cameraId": str(camera_id),
             "direction": direction,
-            "speed": str(speed),
         },
     )
 
 
-async def zoom(api: SurveillanceAPI, camera_id: int, direction: str, speed: int = 3) -> None:
+async def zoom(api: SurveillanceAPI, camera_id: int, direction: str) -> None:
     """Zoom PTZ camera.
 
-    direction: in, out
-    speed: 1-5
+    control: inStart, inStop, outStart, outStop
     """
     await api.request(
         api="SYNO.SurveillanceStation.PTZ",
         method="Zoom",
-        version=5,
+        version=2,
         extra_params={
             "cameraId": str(camera_id),
             "control": direction,
-            "speed": str(speed),
-        },
-    )
-
-
-async def stop(api: SurveillanceAPI, camera_id: int) -> None:
-    """Stop PTZ movement."""
-    await api.request(
-        api="SYNO.SurveillanceStation.PTZ",
-        method="Move",
-        version=5,
-        extra_params={
-            "cameraId": str(camera_id),
-            "direction": "stop",
         },
     )
 
@@ -89,7 +73,7 @@ async def list_presets(api: SurveillanceAPI, camera_id: int) -> list[PtzPreset]:
     data = await api.request(
         api="SYNO.SurveillanceStation.PTZ",
         method="ListPreset",
-        version=5,
+        version=2,
         extra_params={"cameraId": str(camera_id)},
     )
     return [PtzPreset.from_api(p) for p in data.get("presets", [])]
@@ -100,7 +84,7 @@ async def go_preset(api: SurveillanceAPI, camera_id: int, preset_id: int) -> Non
     await api.request(
         api="SYNO.SurveillanceStation.PTZ",
         method="GoPreset",
-        version=5,
+        version=2,
         extra_params={
             "cameraId": str(camera_id),
             "presetId": str(preset_id),
@@ -113,7 +97,7 @@ async def list_patrols(api: SurveillanceAPI, camera_id: int) -> list[PtzPatrol]:
     data = await api.request(
         api="SYNO.SurveillanceStation.PTZ",
         method="ListPatrol",
-        version=5,
+        version=2,
         extra_params={"cameraId": str(camera_id)},
     )
     return [PtzPatrol.from_api(p) for p in data.get("patrols", [])]
@@ -124,7 +108,7 @@ async def run_patrol(api: SurveillanceAPI, camera_id: int, patrol_id: int) -> No
     await api.request(
         api="SYNO.SurveillanceStation.PTZ",
         method="RunPatrol",
-        version=5,
+        version=2,
         extra_params={
             "cameraId": str(camera_id),
             "patrolId": str(patrol_id),

@@ -40,6 +40,7 @@ from surveillance.api.models import Camera
 from surveillance.config import save_config
 from surveillance.services.live import get_live_view_path
 from surveillance.ui.mpv_widget import MpvGLArea
+from surveillance.ui.ptz_controls import PtzControls
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -215,6 +216,15 @@ class LiveView(Gtk.Box):
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)
 
+        # PTZ controls (shown below grid when a PTZ camera is active)
+        self._ptz_sep = Gtk.Separator()
+        self._ptz_sep.set_visible(False)
+        self.append(self._ptz_sep)
+
+        self._ptz_controls = PtzControls(window)
+        self._ptz_controls.set_visible(False)
+        self.append(self._ptz_controls)
+
         # Apply initial layout (show/hide slots)
         self._apply_layout()
 
@@ -240,6 +250,7 @@ class LiveView(Gtk.Box):
                     slot.player.stop()
 
         self._active = new_active
+        self._update_ptz_controls()
 
     def _on_layout_changed(self, combo: Gtk.ComboBoxText) -> None:
         if self._inhibit_save:
@@ -281,6 +292,27 @@ class LiveView(Gtk.Box):
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._start_stream(phys, cam)
+        self._update_ptz_controls()
+
+    # ------------------------------------------------------------------
+    # PTZ controls
+    # ------------------------------------------------------------------
+
+    def _update_ptz_controls(self) -> None:
+        """Show or hide PTZ controls based on the active camera."""
+        camera: Camera | None = None
+        if len(self._active) == 1:
+            camera = self._slots[self._active[0]].camera
+        elif self._selected_slot is not None:
+            camera = self._slots[self._selected_slot].camera
+
+        if camera and camera.is_ptz:
+            self._ptz_controls.set_camera(camera)
+            self._ptz_controls.set_visible(True)
+            self._ptz_sep.set_visible(True)
+        else:
+            self._ptz_controls.set_visible(False)
+            self._ptz_sep.set_visible(False)
 
     # ------------------------------------------------------------------
     # User interactions
@@ -291,6 +323,7 @@ class LiveView(Gtk.Box):
         for slot in self._slots:
             slot.clear()
         self._select_slot(None)
+        self._update_ptz_controls()
         self._save_session()
 
     def _on_slot_clicked(self, slot_idx: int) -> None:
@@ -303,10 +336,12 @@ class LiveView(Gtk.Box):
                 # Second click on selected slot with a camera: zoom to 1x1
                 self._select_slot(None)
                 self.on_camera_selected(cam)
+                return
             else:
                 self._select_slot(None)
         else:
             self._select_slot(slot_idx)
+        self._update_ptz_controls()
 
     def _select_slot(self, slot_idx: int | None) -> None:
         """Update the selected slot and its visual indicator."""
@@ -338,6 +373,7 @@ class LiveView(Gtk.Box):
             self._apply_layout()
             self._slots[0].assign(camera)
             self._start_stream(0, camera)
+        self._update_ptz_controls()
         self._save_session()
 
     def _assign_to_slot(self, slot_idx: int, camera: Camera) -> None:
@@ -423,6 +459,7 @@ class LiveView(Gtk.Box):
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._start_stream(phys, cam)
+        self._update_ptz_controls()
 
     def restart_camera(self, camera_id: int) -> None:
         """Restart the stream for a camera if it is currently displayed."""

@@ -14,7 +14,7 @@ management -- all from a lightweight native desktop application.
 |---|---|
 | **Live View** | Real-time camera streams in 1x1, 2x2, 3x3, or 4x4 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. |
 | **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Search recordings by camera(s) and time range. Camera snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording. |
-| **PTZ Control** | 8-direction pad, zoom in/out, speed slider, preset positions, and patrol routes for PTZ-capable cameras. |
+| **PTZ Control** | Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active. |
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
 | **Time Lapse** | Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task. |
 | **Events & Alerts** | View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds. |

@@ -50,58 +50,61 @@ class PtzControls(Gtk.Box):
     """PTZ control panel with direction pad, zoom, and presets."""
 
     def __init__(self, window: MainWindow) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.window = window
         self.app = window.app
         self.camera: Camera | None = None
         self._presets: list[PtzPreset] = []
         self._patrols: list[PtzPatrol] = []
 
-        self.set_margin_top(8)
-        self.set_margin_bottom(8)
+        self.set_margin_top(4)
+        self.set_margin_bottom(4)
         self.set_margin_start(8)
         self.set_margin_end(8)
+        self.set_halign(Gtk.Align.CENTER)
 
-        # Title
-        label = Gtk.Label(label="PTZ Controls")
-        label.add_css_class("title-4")
-        self.append(label)
-
-        # Direction pad (3x3 grid)
+        # -- Left column: Direction pad (3x3 grid) --
         pad = Gtk.Grid()
         pad.set_row_homogeneous(True)
         pad.set_column_homogeneous(True)
         pad.set_row_spacing(2)
         pad.set_column_spacing(2)
-        pad.set_halign(Gtk.Align.CENTER)
+        pad.set_valign(Gtk.Align.CENTER)
         pad.add_css_class("ptz-pad")
 
-        directions = [
-            (0, 0, "upleft", "\u2196"),
+        # Continuous directions use press/release (Start/Stop)
+        move_dirs = [
             (0, 1, "up", "\u2191"),
-            (0, 2, "upright", "\u2197"),
             (1, 0, "left", "\u2190"),
-            (1, 1, "home", "\u2302"),
             (1, 2, "right", "\u2192"),
-            (2, 0, "downleft", "\u2199"),
             (2, 1, "down", "\u2193"),
-            (2, 2, "downright", "\u2198"),
         ]
 
-        for row, col, direction, symbol in directions:
+        for row, col, direction, symbol in move_dirs:
             btn = Gtk.Button(label=symbol)
-            btn.connect("clicked", self._on_direction, direction)
+            gesture = Gtk.GestureDrag()
+            gesture.connect("drag-begin", self._on_move_press, direction)
+            gesture.connect("drag-end", self._on_move_release, direction)
+            btn.add_controller(gesture)
             pad.attach(btn, col, row, 1, 1)
+
+        # Home is a single click
+        home_btn = Gtk.Button(label="\u2302")
+        home_btn.connect("clicked", self._on_home)
+        pad.attach(home_btn, 1, 1, 1, 1)
 
         self.append(pad)
 
-        # Zoom controls
+        # -- Center column: Zoom --
         zoom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        zoom_box.set_halign(Gtk.Align.CENTER)
+        zoom_box.set_valign(Gtk.Align.CENTER)
 
         zoom_out_btn = Gtk.Button(label="\u2212")  # minus
         zoom_out_btn.set_tooltip_text("Zoom Out")
-        zoom_out_btn.connect("clicked", self._on_zoom, "out")
+        zoom_out_gesture = Gtk.GestureDrag()
+        zoom_out_gesture.connect("drag-begin", self._on_zoom_press, "out")
+        zoom_out_gesture.connect("drag-end", self._on_zoom_release, "out")
+        zoom_out_btn.add_controller(zoom_out_gesture)
         zoom_box.append(zoom_out_btn)
 
         zoom_label = Gtk.Label(label="Zoom")
@@ -109,44 +112,37 @@ class PtzControls(Gtk.Box):
 
         zoom_in_btn = Gtk.Button(label="+")
         zoom_in_btn.set_tooltip_text("Zoom In")
-        zoom_in_btn.connect("clicked", self._on_zoom, "in")
+        zoom_in_gesture = Gtk.GestureDrag()
+        zoom_in_gesture.connect("drag-begin", self._on_zoom_press, "in")
+        zoom_in_gesture.connect("drag-end", self._on_zoom_release, "in")
+        zoom_in_btn.add_controller(zoom_in_gesture)
         zoom_box.append(zoom_in_btn)
 
         self.append(zoom_box)
 
-        # Speed control
-        speed_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        speed_box.set_halign(Gtk.Align.CENTER)
-        speed_label = Gtk.Label(label="Speed:")
-        speed_box.append(speed_label)
+        # -- Right column: Presets + Patrols --
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        right.set_valign(Gtk.Align.CENTER)
 
-        self.speed_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 5, 1)
-        self.speed_scale.set_value(3)
-        self.speed_scale.set_size_request(100, -1)
-        speed_box.append(self.speed_scale)
-        self.append(speed_box)
-
-        # Presets dropdown
-        self.append(Gtk.Separator())
-        preset_label = Gtk.Label(label="Presets")
-        preset_label.add_css_class("title-4")
-        self.append(preset_label)
-
+        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        preset_label = Gtk.Label(label="Preset:")
+        preset_box.append(preset_label)
         self.preset_combo = Gtk.ComboBoxText()
         self.preset_combo.connect("changed", self._on_preset_changed)
-        self.append(self.preset_combo)
+        preset_box.append(self.preset_combo)
+        right.append(preset_box)
 
-        # Patrols dropdown
-        patrol_label = Gtk.Label(label="Patrols")
-        patrol_label.add_css_class("title-4")
-        self.append(patrol_label)
-
+        patrol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        patrol_label = Gtk.Label(label="Patrol:")
+        patrol_box.append(patrol_label)
         self.patrol_combo = Gtk.ComboBoxText()
-        self.append(self.patrol_combo)
-
-        patrol_btn = Gtk.Button(label="Start Patrol")
+        patrol_box.append(self.patrol_combo)
+        patrol_btn = Gtk.Button(label="Start")
         patrol_btn.connect("clicked", self._on_start_patrol)
-        self.append(patrol_btn)
+        patrol_box.append(patrol_btn)
+        right.append(patrol_box)
+
+        self.append(right)
 
     def set_camera(self, camera: Camera) -> None:
         """Set the camera to control."""
@@ -158,22 +154,47 @@ class PtzControls(Gtk.Box):
         else:
             self.set_sensitive(False)
 
-    def _get_speed(self) -> int:
-        return int(self.speed_scale.get_value())
-
-    def _on_direction(self, btn: Gtk.Button, direction: str) -> None:
+    def _on_move_press(self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str) -> None:
         if not self.camera or not self.app.api:
             return
         run_async(
-            ptz.move(self.app.api, self.camera.id, direction, self._get_speed()),
+            ptz.move(self.app.api, self.camera.id, f"{direction}Start"),
             error_callback=lambda e: log.error("PTZ move failed: %s", e),
         )
 
-    def _on_zoom(self, btn: Gtk.Button, direction: str) -> None:
+    def _on_move_release(
+        self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str
+    ) -> None:
         if not self.camera or not self.app.api:
             return
         run_async(
-            ptz.zoom(self.app.api, self.camera.id, direction, self._get_speed()),
+            ptz.move(self.app.api, self.camera.id, f"{direction}Stop"),
+            error_callback=lambda e: log.error("PTZ move failed: %s", e),
+        )
+
+    def _on_home(self, btn: Gtk.Button) -> None:
+        if not self.camera or not self.app.api:
+            return
+        run_async(
+            ptz.move(self.app.api, self.camera.id, "home"),
+            error_callback=lambda e: log.error("PTZ move failed: %s", e),
+        )
+
+    def _on_zoom_press(self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str) -> None:
+        if not self.camera or not self.app.api:
+            return
+        run_async(
+            ptz.zoom(self.app.api, self.camera.id, f"{direction}Start"),
+            error_callback=lambda e: log.error("PTZ zoom failed: %s", e),
+        )
+
+    def _on_zoom_release(
+        self, gesture: Gtk.GestureDrag, x: float, y: float, direction: str
+    ) -> None:
+        if not self.camera or not self.app.api:
+            return
+        run_async(
+            ptz.zoom(self.app.api, self.camera.id, f"{direction}Stop"),
             error_callback=lambda e: log.error("PTZ zoom failed: %s", e),
         )
 

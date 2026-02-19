@@ -116,7 +116,20 @@ The following Python packages are installed automatically by `pip`:
 
 ## Installation
 
-### From source (recommended)
+### AppImage (Linux, no install needed)
+
+Download the latest AppImage for your architecture from the
+[Releases](https://github.com/renaudallard/synology-surveillance-station-client/releases)
+page, make it executable, and run:
+
+```sh
+chmod +x Surveillance-*-x86_64.AppImage
+./Surveillance-*-x86_64.AppImage
+```
+
+AppImages are available for **x86_64** and **aarch64**.
+
+### From source
 
 ```sh
 git clone https://github.com/renaudallard/synology-surveillance-station-client.git

@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: check
+        run: |
+          NEW=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          OLD=$(git show HEAD~1:pyproject.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+          echo "version=${NEW}" >> "$GITHUB_OUTPUT"
+          if [ "${NEW}" != "${OLD}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: ${OLD} -> ${NEW}"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged: ${NEW}"
+          fi
+
+  build-appimage:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgirepository-2.0-dev \
+            gir1.2-gtk-4.0 \
+            libgtk-4-dev \
+            libmpv-dev \
+            libmpv2 \
+            python3-gi \
+            python3-gi-cairo \
+            python3-cairo \
+            gobject-introspection \
+            libfuse2
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Create venv and install dependencies
+        run: |
+          python3 -m venv --system-site-packages .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
+          pip install . pyinstaller
+
+      - name: Build AppImage
+        run: |
+          . .venv/bin/activate
+          bash build-appimage.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.arch }}
+          path: Surveillance-*-${{ matrix.arch }}.AppImage
+
+  release:
+    needs: [check-version, build-appimage]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${VERSION}"
+
+          # Collect AppImages from artifact directories
+          mkdir -p release-assets
+          find artifacts -name '*.AppImage' -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+          # Create tag and release
+          gh release create "${TAG}" \
+            --title "Surveillance Station Client ${VERSION}" \
+            --generate-notes \
+            release-assets/*

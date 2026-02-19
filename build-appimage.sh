@@ -8,7 +8,7 @@ cd "${SCRIPT_DIR}"
 
 APP_NAME="Surveillance"
 APP_ID="org.surveillance.app"
-VERSION="0.1.0"
+VERSION=$(grep '^version' "${SCRIPT_DIR}/pyproject.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
 ARCH=$(uname -m)
 
 BUILD_DIR="build/appimage"

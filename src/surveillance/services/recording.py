@@ -111,7 +111,7 @@ def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
             "eventId": str(rec.id),
             "mountId": str(rec.mount_id),
             "framestart": "0",
-            "timestamp": str(int(__import__("time").time())),
+            "timestamp": str(int(time.time())),
         },
     )
 

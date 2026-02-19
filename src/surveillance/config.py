@@ -172,8 +172,42 @@ def load_config() -> AppConfig:
     )
 
 
+_save_pending: int = 0
+
+
 def save_config(config: AppConfig) -> None:
-    """Save configuration to TOML file."""
+    """Schedule a debounced config save (writes at most once per second)."""
+    global _save_pending
+
+    if _save_pending:
+        return  # already scheduled
+
+    from gi.repository import GLib  # type: ignore[import-untyped]
+
+    def _do_save() -> bool:
+        global _save_pending
+        _save_pending = 0
+        _write_config(config)
+        return False  # one-shot
+
+    _save_pending = GLib.timeout_add(1000, _do_save)
+
+
+def save_config_now(config: AppConfig) -> None:
+    """Write config immediately (for use at shutdown)."""
+    global _save_pending
+
+    if _save_pending:
+        from gi.repository import GLib  # type: ignore[import-untyped]
+
+        GLib.source_remove(_save_pending)
+        _save_pending = 0
+
+    _write_config(config)
+
+
+def _write_config(config: AppConfig) -> None:
+    """Write configuration to TOML file."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
     data: dict[str, Any] = {
@@ -209,7 +243,7 @@ def add_profile(config: AppConfig, profile: ConnectionProfile) -> None:
     config.profiles[profile.name] = profile
     if not config.default_profile:
         config.default_profile = profile.name
-    save_config(config)
+    save_config_now(config)
 
 
 def remove_profile(config: AppConfig, name: str) -> None:
@@ -217,4 +251,4 @@ def remove_profile(config: AppConfig, name: str) -> None:
     config.profiles.pop(name, None)
     if config.default_profile == name:
         config.default_profile = next(iter(config.profiles), "")
-    save_config(config)
+    save_config_now(config)

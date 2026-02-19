@@ -120,6 +120,9 @@ class SurveillanceApp(Gtk.Application):
         self.api = api
 
     def _on_quit(self, action: Gio.SimpleAction, param: None) -> None:
+        from surveillance.config import save_config_now
+
+        save_config_now(self.config)
         if self._window:
             self._window.on_disconnected()
         if self.api:

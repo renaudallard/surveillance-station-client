@@ -218,11 +218,25 @@ class RecordingsView(Gtk.Box):
         while child := self.row_box.get_first_child():
             self.row_box.remove(child)
 
-        # Add rows and queue thumbnail loads
-        for rec in recordings:
+        # Add rows and queue thumbnail loads (visible rows first)
+        deferred: list[tuple[Gtk.Picture, Recording]] = []
+        for i, rec in enumerate(recordings):
             row_box, picture = self._create_recording_row(rec)
             self.row_box.append(row_box)
-            self._load_thumbnail(picture, rec)
+            if i < 10:
+                self._load_thumbnail(picture, rec)
+            else:
+                deferred.append((picture, rec))
+
+        if deferred:
+            from gi.repository import GLib
+
+            def _load_rest() -> bool:
+                for pic, r in deferred:
+                    self._load_thumbnail(pic, r)
+                return False
+
+            GLib.idle_add(_load_rest)
 
         # Update pagination
         self.prev_btn.set_sensitive(self._offset > 0)

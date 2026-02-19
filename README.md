@@ -23,7 +23,7 @@
 ## Features
 
 - **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland.
-- **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Search by camera(s) and time range. Snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
+- **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Search by camera(s) and time range. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
 - **PTZ Control** &mdash; Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active.
 - **Snapshots** &mdash; Take live snapshots from any camera, browse saved snapshots, download or delete.
 - **Time Lapse** &mdash; Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.

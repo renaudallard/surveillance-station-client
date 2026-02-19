@@ -43,7 +43,6 @@ from surveillance.api.models import Camera, Recording, decode_detection_labels
 from surveillance.services.recording import (
     fetch_recording_thumbnail,
     list_recordings,
-    reset_recording_thumbnail_state,
 )
 from surveillance.ui.recording_search import RecordingSearchDialog
 from surveillance.util.async_bridge import run_async
@@ -317,9 +316,6 @@ class RecordingsView(Gtk.Box):
             f.cancel()
         self._thumb_futures.clear()
         self._thumb_generation += 1
-
-        # Clear per-camera caches so GetThumbnail is retried for each page load
-        reset_recording_thumbnail_state()
 
         # Clear list
         while child := self.row_box.get_first_child():

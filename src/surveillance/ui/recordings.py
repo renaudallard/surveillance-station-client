@@ -103,7 +103,7 @@ class RecordingsView(Gtk.Box):
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
         self.row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        log.warning("RECORDINGS INIT: plain Gtk.Box")
+        log.debug("RECORDINGS INIT: plain Gtk.Box")
         scroll.set_child(self.row_box)
         self.append(scroll)
 
@@ -161,7 +161,7 @@ class RecordingsView(Gtk.Box):
         self._load_recordings()
 
     def _on_camera_filter_clicked(self, btn: Gtk.Button, camera_id: int) -> None:
-        log.warning("FILTER CLICKED: camera_id=%s", camera_id)
+        log.debug("FILTER CLICKED: camera_id=%s", camera_id)
         self._ensure_camera_in_combo(camera_id, btn.get_label() or "")
         self._camera_id = camera_id
         self._offset = 0
@@ -171,7 +171,7 @@ class RecordingsView(Gtk.Box):
         self._load_recordings()
 
     def _load_recordings(self) -> None:
-        log.warning(
+        log.debug(
             "_load_recordings: cam=%s offset=%d loading=%s",
             self._camera_id,
             self._offset,
@@ -199,10 +199,10 @@ class RecordingsView(Gtk.Box):
         recordings, total = result
         self._recordings = recordings
         self._total = total
-        log.warning("Loaded %d recordings (total=%d)", len(recordings), total)
+        log.debug("Loaded %d recordings (total=%d)", len(recordings), total)
         if recordings:
             r = recordings[0]
-            log.warning(
+            log.debug(
                 "First rec: id=%d cam='%s' cam_id=%d",
                 r.id,
                 r.camera_name,
@@ -252,7 +252,7 @@ class RecordingsView(Gtk.Box):
 
         def _on_thumb(data: bytes) -> None:
             if not data:
-                log.warning("Thumb rec %d: empty data", rec.id)
+                log.debug("Thumb rec %d: empty data", rec.id)
                 return
             try:
                 loader = GdkPixbuf.PixbufLoader()
@@ -262,14 +262,14 @@ class RecordingsView(Gtk.Box):
                 if pixbuf:
                     texture = Gdk.Texture.new_for_pixbuf(pixbuf)
                     picture.set_paintable(texture)
-                    log.warning(
+                    log.debug(
                         "Thumb rec %d: set %dx%d",
                         rec.id,
                         pixbuf.get_width(),
                         pixbuf.get_height(),
                     )
                 else:
-                    log.warning("Thumb rec %d: no pixbuf", rec.id)
+                    log.debug("Thumb rec %d: no pixbuf", rec.id)
             except Exception as exc:
                 log.warning(
                     "Thumbnail decode failed for recording %d: %s",
@@ -311,7 +311,7 @@ class RecordingsView(Gtk.Box):
         cam_btn.set_tooltip_text(f"Filter by {rec.camera_name}")
         cam_btn.connect("clicked", self._on_camera_filter_clicked, rec.camera_id)
         info_box.append(cam_btn)
-        log.warning(
+        log.debug(
             "ROW: cam='%s' id=%d btn_label='%s'",
             rec.camera_name,
             rec.camera_id,
@@ -371,7 +371,7 @@ class RecordingsView(Gtk.Box):
         return box, picture
 
     def _on_play(self, btn: Gtk.Button, rec: Recording) -> None:
-        log.warning("PLAY CLICKED: rec_id=%s", rec.id)
+        log.debug("PLAY CLICKED: rec_id=%s", rec.id)
         self._play_recording(rec)
 
     def _play_recording(self, rec: Recording) -> None:

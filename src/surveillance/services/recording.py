@@ -72,7 +72,7 @@ async def list_recordings(
 
     raw = data.get("events", data.get("recordings", []))
     if raw:
-        log.warning("Recording API first item keys: %s", list(raw[0].keys()))
+        log.debug("Recording API first item keys: %s", list(raw[0].keys()))
     recordings = [Recording.from_api(r) for r in raw]
     total = data.get("total", len(recordings))
     return recordings, total

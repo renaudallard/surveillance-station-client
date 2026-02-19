@@ -139,6 +139,13 @@ class CameraSidebar(Gtk.Box):
         )
 
     def _update_camera_list(self, cameras: list[Camera]) -> None:
+        # Skip rebuild if camera list is unchanged
+        if len(cameras) == len(self.cameras) and all(
+            a.id == b.id and a.status == b.status and a.name == b.name
+            for a, b in zip(cameras, self.cameras)
+        ):
+            return
+
         self.cameras = cameras
 
         # Remove old rows

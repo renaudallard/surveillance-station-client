@@ -354,3 +354,73 @@ class TestTimeLapseService:
             mock.assert_called_once()
             call_kwargs = mock.call_args
             assert call_kwargs[1]["extra_params"]["idList"] == "10,11,12"
+
+
+class TestRecordingService:
+    @pytest.mark.asyncio
+    async def test_list_recordings_basic(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import list_recordings
+
+        mock_data = {
+            "events": [
+                {
+                    "id": 1,
+                    "cameraId": 1,
+                    "cameraName": "Front Door",
+                    "startTime": 1700000000,
+                    "stopTime": 1700000060,
+                }
+            ],
+            "total": 1,
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            recordings, total = await list_recordings(api)
+            assert len(recordings) == 1
+            assert total == 1
+            assert recordings[0].camera_name == "Front Door"
+
+    @pytest.mark.asyncio
+    async def test_list_recordings_with_camera_ids(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import list_recordings
+
+        mock_data = {"events": [], "total": 0}
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            await list_recordings(api, camera_ids=[1, 3, 5])
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["cameraIds"] == "1,3,5"
+
+    @pytest.mark.asyncio
+    async def test_list_recordings_with_time_range(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import list_recordings
+
+        mock_data = {"events": [], "total": 0}
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            await list_recordings(api, from_time=1700000000, to_time=1700086400)
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["fromTime"] == "1700000000"
+            assert call_kwargs[1]["extra_params"]["toTime"] == "1700086400"
+
+    @pytest.mark.asyncio
+    async def test_list_recordings_with_all_filters(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import list_recordings
+
+        mock_data = {"events": [], "total": 0}
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            await list_recordings(
+                api,
+                camera_ids=[2, 4],
+                from_time=1700000000,
+                to_time=1700086400,
+                offset=100,
+                limit=20,
+            )
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["cameraIds"] == "2,4"
+            assert call_kwargs[1]["extra_params"]["fromTime"] == "1700000000"
+            assert call_kwargs[1]["extra_params"]["toTime"] == "1700086400"
+            assert call_kwargs[1]["extra_params"]["offset"] == "100"
+            assert call_kwargs[1]["extra_params"]["limit"] == "20"

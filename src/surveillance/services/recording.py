@@ -49,10 +49,22 @@ _thumbnail_semaphore = asyncio.Semaphore(8)
 async def list_recordings(
     api: SurveillanceAPI,
     camera_id: int | None = None,
+    camera_ids: list[int] | None = None,
+    from_time: int | None = None,
+    to_time: int | None = None,
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[list[Recording], int]:
-    """List recordings, optionally filtered by camera.
+    """List recordings, optionally filtered by cameras and time range.
+
+    Args:
+        api: SurveillanceAPI instance
+        camera_id: Single camera ID filter (legacy, use camera_ids for multiple)
+        camera_ids: List of camera IDs to filter (comma-separated for API)
+        from_time: Unix timestamp for start of time range
+        to_time: Unix timestamp for end of time range
+        offset: Pagination offset
+        limit: Maximum number of recordings to return
 
     Returns (recordings, total_count).
     """
@@ -60,8 +72,14 @@ async def list_recordings(
         "offset": str(offset),
         "limit": str(limit),
     }
-    if camera_id is not None:
+    if camera_ids:
+        params["cameraIds"] = ",".join(str(cid) for cid in camera_ids)
+    elif camera_id is not None:
         params["cameraIds"] = str(camera_id)
+    if from_time is not None:
+        params["fromTime"] = str(from_time)
+    if to_time is not None:
+        params["toTime"] = str(to_time)
 
     data = await api.request(
         api="SYNO.SurveillanceStation.Recording",

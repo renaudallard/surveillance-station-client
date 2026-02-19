@@ -13,7 +13,7 @@ management -- all from a lightweight native desktop application.
 | Feature | Description |
 |---|---|
 | **Live View** | Real-time camera streams in 1x1, 2x2, 3x3, or 4x4 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. |
-| **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Camera snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording. |
+| **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Search recordings by camera(s) and time range. Camera snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording. |
 | **PTZ Control** | 8-direction pad, zoom in/out, speed slider, preset positions, and patrol routes for PTZ-capable cameras. |
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
 | **Time Lapse** | Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task. |
@@ -212,6 +212,11 @@ last_page = "live"             # last active page (live, recordings, snapshots, 
 "2x2" = [1, 3, 0, 5]
 "3x3" = [1, 3, 7, 0, 5, 8, 2, 0, 0]
 
+# Recording search filters (persisted from last search)
+# search_camera_ids = [1, 3]           # list of camera IDs to filter
+# search_from_time = "2026-02-01T00:00:00"  # ISO datetime
+# search_to_time = "2026-02-19T23:59:59"    # ISO datetime
+
 [camera_overrides]
 # Direct RTSP URLs keyed by Surveillance Station camera ID.
 # Use this when Synology's RTSP proxy corrupts a camera's stream
@@ -312,6 +317,7 @@ surveillance/
 │   │   ├── liveview.py                 live stream grid
 │   │   ├── mpv_widget.py               GLArea + mpv render
 │   │   ├── recordings.py               recording browser
+│   │   ├── recording_search.py        recording search dialog
 │   │   ├── player.py                   playback controls
 │   │   ├── ptz_controls.py             PTZ direction pad
 │   │   ├── snapshots.py                snapshot browser

@@ -107,6 +107,9 @@ class AppConfig:
     snapshot_dir: str = ""
     camera_overrides: dict[int, str] = field(default_factory=dict)
     camera_protocols: dict[int, str] = field(default_factory=dict)
+    search_camera_ids: list[int] = field(default_factory=list)
+    search_from_time: str = ""
+    search_to_time: str = ""
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -169,6 +172,9 @@ def load_config() -> AppConfig:
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
         camera_overrides=overrides,
         camera_protocols=protocols,
+        search_camera_ids=session.get("search_camera_ids", []),
+        search_from_time=session.get("search_from_time", ""),
+        search_to_time=session.get("search_to_time", ""),
     )
 
 
@@ -223,6 +229,9 @@ def _write_config(config: AppConfig) -> None:
             "grid_layout": config.grid_layout,
             "last_page": config.last_page,
             "layout_cameras": config.layout_cameras,
+            "search_camera_ids": config.search_camera_ids,
+            "search_from_time": config.search_from_time,
+            "search_to_time": config.search_to_time,
         },
         "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
         "camera_protocols": {

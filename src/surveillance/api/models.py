@@ -309,3 +309,63 @@ class LicenseInfo:
             key_used=data.get("key_used", 0),
             licenses=[License.from_api(lic) for lic in raw],
         )
+
+
+@dataclass
+class TimeLapseTask:
+    """A time lapse task configuration."""
+
+    id: int
+    name: str
+    camera_id: int
+    camera_name: str
+    enabled: bool = True
+    status: int = 0
+
+    @classmethod
+    def from_api(cls, data: dict) -> TimeLapseTask:  # type: ignore[type-arg]
+        return cls(
+            id=data.get("id", 0),
+            name=data.get("name", ""),
+            camera_id=data.get("cameraId", 0),
+            camera_name=data.get("cameraName", ""),
+            enabled=data.get("enabled", True),
+            status=data.get("status", 0),
+        )
+
+
+@dataclass
+class TimeLapseRecording:
+    """A time lapse recording segment."""
+
+    id: int
+    camera_id: int
+    camera_name: str
+    start_time: int
+    stop_time: int
+    task_id: int = 0
+    file_size: int = 0
+    mount_id: int = 0
+    arch_id: int = 0
+    is_locked: bool = False
+    recording: bool = False
+    path: str = ""
+
+    @classmethod
+    def from_api(cls, data: dict) -> TimeLapseRecording:  # type: ignore[type-arg]
+        # status_flags bit 2 = locked (from APK RecModel.isLocked)
+        status_flags = data.get("status_flags", 0)
+        return cls(
+            id=data.get("id", 0),
+            camera_id=data.get("cameraId", 0),
+            camera_name=data.get("camera_name", data.get("cameraName", "")),
+            start_time=data.get("startTime", 0),
+            stop_time=data.get("stopTime", 0),
+            task_id=data.get("taskId", 0),
+            file_size=data.get("event_size_bytes", 0),
+            mount_id=data.get("mountId", 0),
+            arch_id=data.get("archId", 0),
+            is_locked=bool(status_flags & 4),
+            recording=data.get("recording", False),
+            path=data.get("path", ""),
+        )

@@ -82,6 +82,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("recordings", "Recordings", "Connect to browse recordings")
         self._add_placeholder("snapshots", "Snapshots", "Connect to view snapshots")
         self._add_placeholder("events", "Events", "Connect to view events")
+        self._add_placeholder("timelapse", "Time Lapse", "Connect to browse time lapse recordings")
         self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
 
         self.stack.set_visible_child_name("live")
@@ -149,6 +150,7 @@ class MainWindow(Gtk.ApplicationWindow):
         from surveillance.ui.liveview import LiveView
         from surveillance.ui.recordings import RecordingsView
         from surveillance.ui.snapshots import SnapshotsView
+        from surveillance.ui.timelapse import TimeLapseView
 
         # Remove placeholders and add real pages
         for name, widget_class in [
@@ -156,6 +158,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("recordings", RecordingsView),
             ("snapshots", SnapshotsView),
             ("events", EventsView),
+            ("timelapse", TimeLapseView),
             ("licenses", LicensesView),
         ]:
             old = self.stack.get_child_by_name(name)

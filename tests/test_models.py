@@ -38,6 +38,8 @@ from surveillance.api.models import (
     PtzPreset,
     Recording,
     Snapshot,
+    TimeLapseRecording,
+    TimeLapseTask,
 )
 
 
@@ -247,3 +249,83 @@ class TestLicenseInfo:
         assert info.licenses[0].key == "AAAA-BBBB-CCCC-DDDD"
         assert info.licenses[0].expired_date == 0
         assert info.licenses[1].is_expired is True
+
+
+class TestTimeLapseTask:
+    def test_from_api(self) -> None:
+        data = {
+            "id": 1,
+            "name": "Front Door Lapse",
+            "cameraId": 3,
+            "cameraName": "Front Door",
+            "enabled": True,
+            "status": 2,
+        }
+        task = TimeLapseTask.from_api(data)
+        assert task.id == 1
+        assert task.name == "Front Door Lapse"
+        assert task.camera_id == 3
+        assert task.camera_name == "Front Door"
+        assert task.enabled is True
+        assert task.status == 2
+
+    def test_from_api_defaults(self) -> None:
+        task = TimeLapseTask.from_api({})
+        assert task.id == 0
+        assert task.name == ""
+        assert task.camera_id == 0
+        assert task.camera_name == ""
+        assert task.enabled is True
+        assert task.status == 0
+
+
+class TestTimeLapseRecording:
+    def test_from_api(self) -> None:
+        data = {
+            "id": 10,
+            "cameraId": 3,
+            "camera_name": "Front Door",
+            "startTime": 1700000000,
+            "stopTime": 1700003600,
+            "taskId": 1,
+            "event_size_bytes": 5242880,
+            "mountId": 0,
+            "archId": 0,
+            "status_flags": 0,
+            "recording": False,
+            "path": "/volume1/surveillance/timelapse/1.mp4",
+        }
+        rec = TimeLapseRecording.from_api(data)
+        assert rec.id == 10
+        assert rec.camera_id == 3
+        assert rec.camera_name == "Front Door"
+        assert rec.start_time == 1700000000
+        assert rec.stop_time == 1700003600
+        assert rec.task_id == 1
+        assert rec.file_size == 5242880
+        assert rec.is_locked is False
+        assert rec.recording is False
+        assert rec.path == "/volume1/surveillance/timelapse/1.mp4"
+
+    def test_from_api_locked(self) -> None:
+        data = {
+            "id": 11,
+            "cameraId": 3,
+            "cameraName": "Front Door",
+            "startTime": 1700000000,
+            "stopTime": 1700003600,
+            "status_flags": 4,
+        }
+        rec = TimeLapseRecording.from_api(data)
+        assert rec.is_locked is True
+
+    def test_from_api_camera_name_fallback(self) -> None:
+        data = {
+            "id": 12,
+            "cameraId": 3,
+            "cameraName": "Garage",
+            "startTime": 1700000000,
+            "stopTime": 1700003600,
+        }
+        rec = TimeLapseRecording.from_api(data)
+        assert rec.camera_name == "Garage"

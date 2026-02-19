@@ -106,6 +106,7 @@ class CameraSidebar(Gtk.Box):
             ("media-playback-start-symbolic", "Recordings", "recordings"),
             ("camera-photo-symbolic", "Snapshots", "snapshots"),
             ("dialog-warning-symbolic", "Events", "events"),
+            ("camera-video-symbolic", "Time Lapse", "timelapse"),
             ("emblem-system-symbolic", "Licenses", "licenses"),
         ]:
             btn = Gtk.Button()

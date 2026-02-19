@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
-from surveillance.api.models import CameraStatus, HomeModeInfo, LicenseInfo
+from surveillance.api.models import CameraStatus, HomeModeInfo, LicenseInfo, TimeLapseTask
 from surveillance.config import ConnectionProfile
 
 
@@ -259,3 +259,98 @@ class TestLicenseService:
         # Verify deterministic: same inputs produce same output
         result2 = _offline_encrypt(content, serial, seed)
         assert result == result2
+
+
+class TestTimeLapseService:
+    @pytest.mark.asyncio
+    async def test_list_tasks(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.timelapse import list_tasks
+
+        mock_data = {
+            "task": [
+                {
+                    "id": 1,
+                    "name": "Front Door Lapse",
+                    "cameraId": 3,
+                    "cameraName": "Front Door",
+                    "enabled": True,
+                    "status": 0,
+                },
+                {
+                    "id": 2,
+                    "name": "Backyard Lapse",
+                    "cameraId": 5,
+                    "cameraName": "Backyard",
+                    "enabled": False,
+                    "status": 1,
+                },
+            ],
+            "total": 2,
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            tasks = await list_tasks(api)
+            assert len(tasks) == 2
+            assert isinstance(tasks[0], TimeLapseTask)
+            assert tasks[0].name == "Front Door Lapse"
+            assert tasks[1].enabled is False
+
+    @pytest.mark.asyncio
+    async def test_list_recordings(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.timelapse import list_recordings
+
+        mock_data = {
+            "events": [
+                {
+                    "id": 10,
+                    "cameraId": 3,
+                    "camera_name": "Front Door",
+                    "startTime": 1700000000,
+                    "stopTime": 1700003600,
+                    "taskId": 1,
+                    "event_size_bytes": 5242880,
+                    "status_flags": 0,
+                }
+            ],
+            "total": 1,
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            recordings, total = await list_recordings(api, task_id=1, offset=0, limit=50)
+            assert len(recordings) == 1
+            assert total == 1
+            assert recordings[0].camera_name == "Front Door"
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["lapseId"] == "1"
+            assert call_kwargs[1]["extra_params"]["start"] == "0"
+            assert call_kwargs[1]["extra_params"]["limit"] == "50"
+
+    @pytest.mark.asyncio
+    async def test_delete_recordings(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.timelapse import delete_recordings
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await delete_recordings(api, [10, 11])
+            mock.assert_called_once()
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["idList"] == "10,11"
+
+    @pytest.mark.asyncio
+    async def test_lock_recordings(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.timelapse import lock_recordings
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await lock_recordings(api, [10])
+            mock.assert_called_once()
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["idList"] == "10"
+
+    @pytest.mark.asyncio
+    async def test_unlock_recordings(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.timelapse import unlock_recordings
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await unlock_recordings(api, [10, 11, 12])
+            mock.assert_called_once()
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["idList"] == "10,11,12"

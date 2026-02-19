@@ -16,6 +16,7 @@ management -- all from a lightweight native desktop application.
 | **Recordings** | Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Camera snapshot thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording. |
 | **PTZ Control** | 8-direction pad, zoom in/out, speed slider, preset positions, and patrol routes for PTZ-capable cameras. |
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
+| **Time Lapse** | Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task. |
 | **Events & Alerts** | View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds. |
 | **Home Mode** | Toggle Surveillance Station home mode directly from the header bar. |
 | **License Management** | View, add, and delete Surveillance Station camera licenses. Supports both online activation (via NAS) and offline activation (direct to Synology). |
@@ -169,7 +170,7 @@ On launch, a login dialog appears:
 
 After connecting you will see the camera list in the sidebar. Click a camera
 to start its live stream. Use the navigation buttons at the bottom of the
-sidebar to switch between Live View, Recordings, Snapshots, Events, and Licenses.
+sidebar to switch between Live View, Recordings, Snapshots, Events, Time Lapse, and Licenses.
 
 ### Keyboard shortcuts
 
@@ -253,11 +254,12 @@ system keyring under the service name `surveillance-station`.
 │  UI Layer          GTK4 widgets         │
 │  window, sidebar, liveview, recordings, │
 │  player, ptz, snapshots, events,        │
-│  licenses                               │
+│  timelapse, licenses                    │
 ├─────────────────────────────────────────┤
 │  Service Layer     domain logic         │
 │  camera, live, recording, ptz,          │
-│  snapshot, event, homemode, license     │
+│  snapshot, event, homemode, license,    │
+│  timelapse                              │
 ├─────────────────────────────────────────┤
 │  API Layer         httpx (async)        │
 │  client, auth, models                   │
@@ -300,7 +302,8 @@ surveillance/
 │   │   ├── snapshot.py                 snapshot management
 │   │   ├── event.py                    events + alerts
 │   │   ├── homemode.py                 home mode toggle
-│   │   └── license.py                  license management
+│   │   ├── license.py                  license management
+│   │   └── timelapse.py                time lapse management
 │   ├── ui/
 │   │   ├── window.py                   main window
 │   │   ├── login.py                    login dialog
@@ -314,6 +317,7 @@ surveillance/
 │   │   ├── snapshots.py                snapshot browser
 │   │   ├── events.py                   event list
 │   │   ├── licenses.py                 license management
+│   │   ├── timelapse.py                time lapse browser
 │   │   └── notifications.py            alert popover
 │   └── util/
 │       └── async_bridge.py             GLib + asyncio bridge
@@ -359,6 +363,8 @@ This client uses the following Synology Web API endpoints:
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download, delete recordings |
 | `SYNO.SurveillanceStation.SnapShot` | List, download, delete snapshots |
+| `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |
+| `SYNO.SurveillanceStation.TimeLapse.Recording` | Time lapse recording management |
 | `SYNO.SurveillanceStation.Event` | Motion and alarm event history |
 | `SYNO.SurveillanceStation.Notification` | Alert list, unread count, mark read |
 | `SYNO.SurveillanceStation.HomeMode` | Get/set home mode status |

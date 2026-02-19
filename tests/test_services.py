@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
-from surveillance.api.models import CameraStatus, HomeModeInfo
+from surveillance.api.models import CameraStatus, HomeModeInfo, LicenseInfo
 from surveillance.config import ConnectionProfile
 
 
@@ -191,3 +191,71 @@ class TestEventService:
         with patch.object(api, "request", new_callable=AsyncMock, return_value={"unread": 5}):
             count = await count_unread_alerts(api)
             assert count == 5
+
+
+class TestLicenseService:
+    @pytest.mark.asyncio
+    async def test_load_licenses(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.license import load_licenses
+
+        mock_data = {
+            "key_max": 8,
+            "key_total": 2,
+            "key_used": 1,
+            "license": [
+                {
+                    "id": 1,
+                    "key": "AAAA-BBBB-CCCC-DDDD",
+                    "quota": 1,
+                    "expired_date": 0,
+                }
+            ],
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            info = await load_licenses(api)
+            assert isinstance(info, LicenseInfo)
+            assert info.key_max == 8
+            assert info.key_used == 1
+            assert len(info.licenses) == 1
+            assert info.licenses[0].key == "AAAA-BBBB-CCCC-DDDD"
+
+    @pytest.mark.asyncio
+    async def test_delete_license(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.license import delete_license
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await delete_license(api, [1, 2])
+            mock.assert_called_once()
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["lic_list"] == "1,2"
+
+    @pytest.mark.asyncio
+    async def test_add_license_online(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.license import add_license_online
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await add_license_online(api, ["KEY-1", "KEY-2"])
+            mock.assert_called_once()
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["licenseList"] == "KEY-1,KEY-2"
+
+    def test_offline_encrypt(self) -> None:
+        from surveillance.services.license import _offline_encrypt
+
+        serial = "TESTSERIAL123"
+        seed = 123456
+        content = '{"method":"GetTimestamp"}'
+
+        result = _offline_encrypt(content, serial, seed)
+        # Verify it produces a valid base64 string
+        import base64
+
+        decoded = base64.b64decode(result)
+        assert len(decoded) > 0
+        # AES-CBC with PKCS7 always produces blocks of 16 bytes
+        assert len(decoded) % 16 == 0
+
+        # Verify deterministic: same inputs produce same output
+        result2 = _offline_encrypt(content, serial, seed)
+        assert result == result2

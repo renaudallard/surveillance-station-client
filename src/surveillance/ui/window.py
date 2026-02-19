@@ -82,6 +82,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("recordings", "Recordings", "Connect to browse recordings")
         self._add_placeholder("snapshots", "Snapshots", "Connect to view snapshots")
         self._add_placeholder("events", "Events", "Connect to view events")
+        self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
 
         self.stack.set_visible_child_name("live")
 
@@ -144,6 +145,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _setup_content_pages(self) -> None:
         """Replace placeholders with real content widgets."""
         from surveillance.ui.events import EventsView
+        from surveillance.ui.licenses import LicensesView
         from surveillance.ui.liveview import LiveView
         from surveillance.ui.recordings import RecordingsView
         from surveillance.ui.snapshots import SnapshotsView
@@ -154,6 +156,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("recordings", RecordingsView),
             ("snapshots", SnapshotsView),
             ("events", EventsView),
+            ("licenses", LicensesView),
         ]:
             old = self.stack.get_child_by_name(name)
             if old:

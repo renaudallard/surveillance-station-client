@@ -18,6 +18,7 @@ management -- all from a lightweight native desktop application.
 | **Snapshots** | Take live snapshots from any camera, browse saved snapshots, download or delete. |
 | **Events & Alerts** | View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds. |
 | **Home Mode** | Toggle Surveillance Station home mode directly from the header bar. |
+| **License Management** | View, add, and delete Surveillance Station camera licenses. Supports both online activation (via NAS) and offline activation (direct to Synology). |
 | **Session Persistence** | Grid layout, active page, and camera assignments are restored on restart. |
 | **Multi-Profile** | Save multiple NAS connection profiles. Switch between them from the login screen. |
 | **Secure Credentials** | Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain). |
@@ -168,7 +169,7 @@ On launch, a login dialog appears:
 
 After connecting you will see the camera list in the sidebar. Click a camera
 to start its live stream. Use the navigation buttons at the bottom of the
-sidebar to switch between Live View, Recordings, Snapshots, and Events.
+sidebar to switch between Live View, Recordings, Snapshots, Events, and Licenses.
 
 ### Keyboard shortcuts
 
@@ -251,11 +252,12 @@ system keyring under the service name `surveillance-station`.
 ┌─────────────────────────────────────────┐
 │  UI Layer          GTK4 widgets         │
 │  window, sidebar, liveview, recordings, │
-│  player, ptz, snapshots, events         │
+│  player, ptz, snapshots, events,        │
+│  licenses                               │
 ├─────────────────────────────────────────┤
 │  Service Layer     domain logic         │
 │  camera, live, recording, ptz,          │
-│  snapshot, event, homemode              │
+│  snapshot, event, homemode, license     │
 ├─────────────────────────────────────────┤
 │  API Layer         httpx (async)        │
 │  client, auth, models                   │
@@ -297,7 +299,8 @@ surveillance/
 │   │   ├── ptz.py                      PTZ commands
 │   │   ├── snapshot.py                 snapshot management
 │   │   ├── event.py                    events + alerts
-│   │   └── homemode.py                 home mode toggle
+│   │   ├── homemode.py                 home mode toggle
+│   │   └── license.py                  license management
 │   ├── ui/
 │   │   ├── window.py                   main window
 │   │   ├── login.py                    login dialog
@@ -310,6 +313,7 @@ surveillance/
 │   │   ├── ptz_controls.py             PTZ direction pad
 │   │   ├── snapshots.py                snapshot browser
 │   │   ├── events.py                   event list
+│   │   ├── licenses.py                 license management
 │   │   └── notifications.py            alert popover
 │   └── util/
 │       └── async_bridge.py             GLib + asyncio bridge
@@ -358,6 +362,8 @@ This client uses the following Synology Web API endpoints:
 | `SYNO.SurveillanceStation.Event` | Motion and alarm event history |
 | `SYNO.SurveillanceStation.Notification` | Alert list, unread count, mark read |
 | `SYNO.SurveillanceStation.HomeMode` | Get/set home mode status |
+| `SYNO.SurveillanceStation.License` | License management |
+| `SYNO.SurveillanceStation.Info` | NAS device info |
 
 ---
 

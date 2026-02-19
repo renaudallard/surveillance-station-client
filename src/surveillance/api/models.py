@@ -264,3 +264,48 @@ class ApiInfo:
             min_version=data.get("minVersion", 1),
             max_version=data.get("maxVersion", 1),
         )
+
+
+@dataclass
+class License:
+    """A Surveillance Station camera license."""
+
+    id: int
+    key: str
+    quota: int
+    expired_date: int  # unix timestamp, 0 = never expires
+    is_expired: bool = False
+    is_migrated: bool = False
+    owner_ds_id: int = 0
+
+    @classmethod
+    def from_api(cls, data: dict) -> License:  # type: ignore[type-arg]
+        return cls(
+            id=data.get("id", 0),
+            key=data.get("key", ""),
+            quota=data.get("quota", 0),
+            expired_date=data.get("expired_date", 0),
+            is_expired=data.get("isExpired", False),
+            is_migrated=data.get("isMigrated", False),
+            owner_ds_id=data.get("ownerDsId", 0),
+        )
+
+
+@dataclass
+class LicenseInfo:
+    """License summary with list of individual licenses."""
+
+    key_max: int
+    key_total: int
+    key_used: int
+    licenses: list[License]
+
+    @classmethod
+    def from_api(cls, data: dict) -> LicenseInfo:  # type: ignore[type-arg]
+        raw = data.get("license", [])
+        return cls(
+            key_max=data.get("key_max", 0),
+            key_total=data.get("key_total", 0),
+            key_used=data.get("key_used", 0),
+            licenses=[License.from_api(lic) for lic in raw],
+        )

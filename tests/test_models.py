@@ -32,6 +32,8 @@ from surveillance.api.models import (
     CameraStatus,
     Event,
     HomeModeInfo,
+    License,
+    LicenseInfo,
     PtzPatrol,
     PtzPreset,
     Recording,
@@ -182,3 +184,66 @@ class TestApiInfo:
         assert info.path == "entry.cgi"
         assert info.min_version == 1
         assert info.max_version == 9
+
+
+class TestLicense:
+    def test_from_api(self) -> None:
+        data = {
+            "id": 1,
+            "key": "ABCD-1234-EFGH-5678",
+            "quota": 2,
+            "expired_date": 1735689600,
+            "isExpired": False,
+            "isMigrated": False,
+            "ownerDsId": 42,
+        }
+        lic = License.from_api(data)
+        assert lic.id == 1
+        assert lic.key == "ABCD-1234-EFGH-5678"
+        assert lic.quota == 2
+        assert lic.expired_date == 1735689600
+        assert lic.is_expired is False
+        assert lic.is_migrated is False
+        assert lic.owner_ds_id == 42
+
+    def test_from_api_defaults(self) -> None:
+        lic = License.from_api({})
+        assert lic.id == 0
+        assert lic.key == ""
+        assert lic.quota == 0
+        assert lic.expired_date == 0
+        assert lic.is_expired is False
+        assert lic.is_migrated is False
+        assert lic.owner_ds_id == 0
+
+
+class TestLicenseInfo:
+    def test_from_api(self) -> None:
+        data = {
+            "key_max": 8,
+            "key_total": 4,
+            "key_used": 3,
+            "license": [
+                {
+                    "id": 1,
+                    "key": "AAAA-BBBB-CCCC-DDDD",
+                    "quota": 1,
+                    "expired_date": 0,
+                },
+                {
+                    "id": 2,
+                    "key": "EEEE-FFFF-GGGG-HHHH",
+                    "quota": 2,
+                    "expired_date": 1735689600,
+                    "isExpired": True,
+                },
+            ],
+        }
+        info = LicenseInfo.from_api(data)
+        assert info.key_max == 8
+        assert info.key_total == 4
+        assert info.key_used == 3
+        assert len(info.licenses) == 2
+        assert info.licenses[0].key == "AAAA-BBBB-CCCC-DDDD"
+        assert info.licenses[0].expired_date == 0
+        assert info.licenses[1].is_expired is True

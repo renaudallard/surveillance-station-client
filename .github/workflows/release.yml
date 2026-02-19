@@ -50,12 +50,14 @@ jobs:
   build-appimage:
     needs: check-version
     if: needs.check-version.outputs.changed == 'true'
+    # GitHub only offers Ubuntu host VMs; the actual build runs inside
+    # a Debian testing container so bundled libraries match Debian.
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-latest    # x86_64 host VM
             arch: x86_64
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04-arm # aarch64 host VM
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     container:

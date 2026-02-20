@@ -60,7 +60,7 @@ jobs:
                     '```',
                     '',
                     'Then reproduce the issue and paste the contents of `/tmp/debug.log` in the **Debug logs** field.',
-                    '**Important:** redact any passwords, tokens, or private IP addresses before posting.',
+                    'Passwords and session tokens are automatically redacted in the log output.',
                     '',
                     'This issue will remain labeled `needs-debug-logs` until valid logs are provided.',
                   ].join('\n')

@@ -1,0 +1,90 @@
+name: Bug Report
+description: Report a problem with the Surveillance Station Client
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+
+        Please fill out all required fields — issues without debug logs will be closed.
+
+  - type: input
+    id: app_version
+    attributes:
+      label: Application version
+      placeholder: "e.g. 0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS and desktop environment
+      placeholder: "e.g. Debian 13 trixie, GNOME 47 (Wayland)"
+    validations:
+      required: true
+
+  - type: input
+    id: nas_version
+    attributes:
+      label: DSM and Surveillance Station version
+      placeholder: "e.g. DSM 7.2.2, Surveillance Station 9.2.0"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the issue in detail. What did you expect to happen and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1.
+        2.
+        3.
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If you have screenshots or screen recordings, add them here.
+
+  - type: textarea
+    id: debug_logs
+    attributes:
+      label: Debug logs
+      description: |
+        Run with `--debug`, reproduce the issue, and paste the logs here.
+        Passwords and session tokens are automatically redacted in the log output.
+
+        ```sh
+        surveillance --debug 2> /tmp/debug.log
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other information that might help (camera model, stream protocol, network setup, etc.).
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I'm using the latest version of the application
+          required: true
+        - label: I've searched existing issues to avoid duplicates
+          required: true
+        - label: I've included debug logs and version information
+          required: true

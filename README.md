@@ -86,6 +86,8 @@ surveillance --debug    # enable debug logging to stderr
 python -m surveillance  # run directly from the source tree
 ```
 
+Debug logs automatically redact passwords, session tokens, and usernames.
+
 On launch, a login dialog asks for your NAS connection details:
 
 | Field | Description | Default |

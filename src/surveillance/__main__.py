@@ -26,7 +26,22 @@
 """Entry point for surveillance application."""
 
 import logging
+import re
 import sys
+
+_REDACT_RE = re.compile(
+    r"(passwd|_sid|account)=[^&\s\"]+",
+    re.IGNORECASE,
+)
+
+
+class _RedactFilter(logging.Filter):
+    """Strip passwords, session IDs, and usernames from log messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _REDACT_RE.sub(r"\1=***", record.msg)
+        return True
 
 
 def main() -> None:
@@ -39,6 +54,7 @@ def main() -> None:
         level=level,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger().addFilter(_RedactFilter())
 
     # Suppress chatty third-party loggers in debug mode
     for name in ("OpenGL", "websockets", "hpack", "httpcore"):

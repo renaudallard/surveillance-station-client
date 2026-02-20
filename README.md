@@ -156,10 +156,9 @@ last_page = "live"             # last active page
 
 [camera_protocols]
 # Stream protocol per camera ID:
-# auto, websocket, webapi, mjpeg, rtsp_over_http, rtsp, multicast, direct
-# Auto tries: websocket → webapi → mjpeg → rtsp_over_http → rtsp → multicast.
+# auto, websocket, mjpeg, rtsp_over_http, rtsp, multicast, direct
+# Auto tries: websocket → mjpeg → rtsp_over_http → rtsp → multicast.
 # "websocket" uses a WebSocket stream bridged to mpv via a named pipe.
-# "webapi" uses the Synology HTTP stream endpoint (no extra dependencies).
 # "direct" uses the URL from [camera_overrides].
 # 5 = "direct"
 
@@ -403,7 +402,6 @@ Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 | `SYNO.API.Auth` | Login / logout / session management |
 | `SYNO.SurveillanceStation.Camera` | Camera list, info, enable/disable, snapshots, live view paths |
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
-| `SYNO.SurveillanceStation.Player.LiveviewSrc` | WebApi HTTP live stream |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download, delete recordings |
 | `SYNO.SurveillanceStation.SnapShot` | List, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |

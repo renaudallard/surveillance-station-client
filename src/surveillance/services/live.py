@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 PROTOCOL_LABELS: dict[str, str] = {
     "auto": "Auto (best available)",
     "websocket": "WebSocket",
-    "webapi": "WebApi HTTP Stream",
     "mjpeg": "MJPEG",
     "rtsp_over_http": "RTSP over HTTP",
     "rtsp": "RTSP",
@@ -44,7 +43,7 @@ PROTOCOL_LABELS: dict[str, str] = {
     "direct": "Direct RTSP URL",
 }
 
-# Ordered list of API response fields tried by "auto" (after websocket and webapi)
+# Ordered list of API response fields tried by "auto" (after websocket)
 _AUTO_FIELDS = ("mjpegHttpPath", "rtspOverHttpPath", "rtspPath", "multicstPath")
 
 # Map protocol name -> API response field
@@ -54,22 +53,6 @@ _PROTO_FIELD: dict[str, str] = {
     "mjpeg": "mjpegHttpPath",
     "multicast": "multicstPath",
 }
-
-
-def _build_webapi_url(api: SurveillanceAPI, camera_id: int) -> str:
-    """Build a WebApi HTTP stream URL (LiveviewSrc.Play)."""
-    return api.get_stream_url(
-        "entry.cgi",
-        {
-            "api": "SYNO.SurveillanceStation.Player.LiveviewSrc",
-            "method": "Play",
-            "version": "1",
-            "camera": str(camera_id),
-            "archId": "0",
-            "profileType": "0",
-            "itemType": "0",
-        },
-    )
 
 
 def _build_ws_live_url(api: SurveillanceAPI, camera_id: int) -> str:
@@ -94,19 +77,16 @@ async def get_live_view_path(
     """Get the live view URL for a camera.
 
     *protocol* selects which stream path to use:
-      auto, rtsp, rtsp_over_http, mjpeg, multicast, webapi, websocket, direct.
+      auto, rtsp, rtsp_over_http, mjpeg, multicast, websocket, direct.
     When *protocol* is ``"direct"``, *override_url* is returned as-is.
     """
     if protocol == "direct" and override_url:
         return override_url
 
-    if protocol == "webapi":
-        return _build_webapi_url(api, camera_id)
-
     if protocol == "websocket":
         return _build_ws_live_url(api, camera_id)
 
-    # Auto: try websocket first, then webapi, then API-based protocols
+    # Auto: try websocket first, then API-based protocols
     if protocol == "auto":
         return _build_ws_live_url(api, camera_id)
 

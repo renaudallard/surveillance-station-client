@@ -58,13 +58,11 @@ session on restart.
 .PP
 The
 .B [camera_protocols]
-section selects the stream protocol per camera (auto, websocket, webapi,
+section selects the stream protocol per camera (auto, websocket,
 mjpeg, rtsp_over_http, rtsp, multicast, direct).
-Auto tries: websocket, webapi, mjpeg, rtsp_over_http, rtsp, multicast.
+Auto tries: websocket, mjpeg, rtsp_over_http, rtsp, multicast.
 .IR websocket
 uses a WebSocket stream bridged to mpv via a named pipe.
-.IR webapi
-uses the Synology HTTP stream endpoint.
 When set to
 .IR direct ,
 the URL from

@@ -35,17 +35,17 @@ if TYPE_CHECKING:
 
 PROTOCOL_LABELS: dict[str, str] = {
     "auto": "Auto (best available)",
-    "rtsp": "RTSP",
-    "rtsp_over_http": "RTSP over HTTP",
-    "mjpeg": "MJPEG",
-    "multicast": "Multicast",
-    "webapi": "WebApi HTTP Stream",
     "websocket": "WebSocket",
+    "webapi": "WebApi HTTP Stream",
+    "mjpeg": "MJPEG",
+    "rtsp_over_http": "RTSP over HTTP",
+    "rtsp": "RTSP",
+    "multicast": "Multicast",
     "direct": "Direct RTSP URL",
 }
 
-# Ordered list of API response fields tried by "auto"
-_AUTO_FIELDS = ("rtspPath", "rtspOverHttpPath", "mjpegHttpPath", "multicstPath")
+# Ordered list of API response fields tried by "auto" (after websocket and webapi)
+_AUTO_FIELDS = ("mjpegHttpPath", "rtspOverHttpPath", "rtspPath", "multicstPath")
 
 # Map protocol name -> API response field
 _PROTO_FIELD: dict[str, str] = {
@@ -106,6 +106,10 @@ async def get_live_view_path(
     if protocol == "websocket":
         return _build_ws_live_url(api, camera_id)
 
+    # Auto: try websocket first, then webapi, then API-based protocols
+    if protocol == "auto":
+        return _build_ws_live_url(api, camera_id)
+
     data = await api.request(
         api="SYNO.SurveillanceStation.Camera",
         method="GetLiveViewPath",
@@ -135,16 +139,7 @@ async def get_live_view_path(
             return f"{api.base_url}{value}"
         return value
 
-    # Auto: try each field in order
-    for field_name in _AUTO_FIELDS:
-        value = info.get(field_name, "")
-        if value:
-            if field_name == "mjpegHttpPath":
-                return f"{api.base_url}{value}"
-            return value
-
-    # Fallback to webapi stream
-    return _build_webapi_url(api, camera_id)
+    raise ValueError(f"Unknown protocol {protocol!r}")
 
 
 def get_snapshot_url(api: SurveillanceAPI, camera_id: int) -> str:

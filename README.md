@@ -156,9 +156,10 @@ last_page = "live"             # last active page
 
 [camera_protocols]
 # Stream protocol per camera ID:
-# auto, rtsp, rtsp_over_http, mjpeg, multicast, webapi, websocket, direct
-# "webapi" uses the Synology HTTP stream endpoint (no extra dependencies).
+# auto, websocket, webapi, mjpeg, rtsp_over_http, rtsp, multicast, direct
+# Auto tries: websocket → webapi → mjpeg → rtsp_over_http → rtsp → multicast.
 # "websocket" uses a WebSocket stream bridged to mpv via a named pipe.
+# "webapi" uses the Synology HTTP stream endpoint (no extra dependencies).
 # "direct" uses the URL from [camera_overrides].
 # 5 = "direct"
 

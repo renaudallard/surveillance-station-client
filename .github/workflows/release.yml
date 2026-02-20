@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  check-version:
+  create-release:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
@@ -47,9 +47,21 @@ jobs:
             echo "Version unchanged: ${NEW}"
           fi
 
+      - name: Create GitHub release
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.check.outputs.version }}"
+          if ! gh release view "${TAG}" &>/dev/null; then
+            gh release create "${TAG}" \
+              --title "Surveillance Station Client ${{ steps.check.outputs.version }}" \
+              --generate-notes
+          fi
+
   build-appimage:
-    needs: check-version
-    if: needs.check-version.outputs.changed == 'true'
+    needs: create-release
+    if: needs.create-release.outputs.changed == 'true'
     # GitHub only offers Ubuntu host VMs; the actual build runs inside
     # a Debian trixie container.  Pinned by codename rather than
     # "stable"/"testing" so the build won't silently move to forky
@@ -66,7 +78,7 @@ jobs:
     container:
       image: debian:trixie
     env:
-      VERSION: ${{ needs.check-version.outputs.version }}
+      VERSION: ${{ needs.create-release.outputs.version }}
       DEBIAN_FRONTEND: noninteractive
       APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
@@ -103,42 +115,10 @@ jobs:
           . .venv/bin/activate
           bash build-appimage.sh
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: appimage-${{ matrix.arch }}
-          path: Surveillance-*-${{ matrix.arch }}.AppImage
-
-  release:
-    needs: [check-version, build-appimage]
-    runs-on: ubuntu-latest
-    env:
-      VERSION: ${{ needs.check-version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Upload to release
+      - name: Upload AppImage to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          apt-get install -y gh
           TAG="v${VERSION}"
-
-          # Collect AppImages from artifact directories
-          mkdir -p release-assets
-          find artifacts -name '*.AppImage' -exec cp {} release-assets/ \;
-          ls -lh release-assets/
-
-          # Upload to existing release or create a new one
-          if gh release view "${TAG}" &>/dev/null; then
-            gh release upload "${TAG}" release-assets/* --clobber
-          else
-            gh release create "${TAG}" \
-              --title "Surveillance Station Client ${VERSION}" \
-              --generate-notes \
-              release-assets/*
-          fi
+          gh release upload "${TAG}" Surveillance-*-${{ matrix.arch }}.AppImage --clobber

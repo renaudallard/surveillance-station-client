@@ -128,7 +128,7 @@ class MpvGLArea(Gtk.GLArea):
                 input_default_bindings=False,
                 input_vo_keyboard=False,
                 log_handler=self._mpv_log,
-                loglevel="warn",
+                loglevel="fatal",
                 demuxer_lavf_o="rtsp_transport=tcp",
                 tls_verify=self._tls_verify,
             )

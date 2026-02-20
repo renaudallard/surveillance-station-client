@@ -500,6 +500,8 @@ class LiveView(Gtk.Box):
         """Restart the stream for a camera if it is currently displayed."""
         for slot in self._slots:
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
+                slot._stop_bridge()
+                slot.player.stop()
                 self._start_stream(slot.index, slot.camera)
 
     def pause_streams(self) -> None:

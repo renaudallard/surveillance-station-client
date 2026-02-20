@@ -118,7 +118,8 @@ class WebSocketBridge:
 
         fd: int | None = None
         try:
-            fd = await asyncio.to_thread(os.open, self._fifo_path, os.O_WRONLY)
+            # Connect WebSocket BEFORE opening the FIFO so data is ready
+            # to flow as soon as mpv opens the read end.
             log.debug("WebSocket connecting: %s", self._ws_url)
 
             async with ws_client.connect(
@@ -129,6 +130,7 @@ class WebSocketBridge:
                 open_timeout=15,
             ) as ws:
                 log.debug("WebSocket connected")
+                fd = await asyncio.to_thread(os.open, self._fifo_path, os.O_WRONLY)
                 written = 0
                 dropped = 0
                 async for message in ws:

@@ -236,10 +236,20 @@ class MpvGLArea(Gtk.GLArea):
                     self._mpv["cache"] = "no"
                     self._mpv["demuxer-max-bytes"] = "512KiB"
                     self._mpv["demuxer-readahead-secs"] = 0
+                    self._mpv["demuxer-lavf-analyzeduration"] = 0
+                    self._mpv["demuxer-lavf-probesize"] = 32
+                    self._mpv["correct-pts"] = False
+                    self._mpv["untimed"] = True
+                    self._mpv["fps-override"] = 25
                 else:
                     self._mpv["cache"] = "auto"
                     self._mpv["demuxer-max-bytes"] = "150MiB"
                     self._mpv["demuxer-readahead-secs"] = 1
+                    self._mpv["demuxer-lavf-analyzeduration"] = 0  # ffmpeg default
+                    self._mpv["demuxer-lavf-probesize"] = 0  # ffmpeg default
+                    self._mpv["correct-pts"] = True
+                    self._mpv["untimed"] = False
+                    self._mpv["fps-override"] = 0
                 self._mpv.play(url)
             except Exception:
                 log.exception("Failed to play %s", url)

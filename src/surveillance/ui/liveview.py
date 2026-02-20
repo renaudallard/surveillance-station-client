@@ -430,6 +430,7 @@ class LiveView(Gtk.Box):
         slot = self._slots[slot_idx]
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
+            slot._stop_bridge()
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:

@@ -80,6 +80,7 @@ class WebSocketBridge:
         headers = {"Cookie": f"id={self._sid}"}
 
         fd: int | None = None
+        msg_count = 0
         try:
             fd = await asyncio.to_thread(os.open, self._fifo_path, os.O_WRONLY)
             log.debug("WebSocket connecting: %s", self._ws_url)
@@ -94,6 +95,24 @@ class WebSocketBridge:
                 log.debug("WebSocket connected")
                 async for message in ws:
                     if isinstance(message, bytes):
+                        msg_count += 1
+                        if msg_count <= 5:
+                            log.warning(
+                                "WS msg #%d: len=%d first_64=%s",
+                                msg_count,
+                                len(message),
+                                message[:64].hex(" "),
+                            )
+                            # Try to show ASCII interpretation of header
+                            try:
+                                ascii_part = message[:128].split(b"\x00")[0]
+                                log.warning(
+                                    "WS msg #%d ascii prefix: %r",
+                                    msg_count,
+                                    ascii_part[:128],
+                                )
+                            except Exception:  # noqa: S110
+                                pass
                         await asyncio.to_thread(os.write, fd, message)
         except asyncio.CancelledError:
             log.debug("WebSocket bridge cancelled")

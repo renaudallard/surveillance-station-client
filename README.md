@@ -323,7 +323,7 @@ synology-surveillance-station-client/
 │   │   ├── auth.py                     login / logout / SID
 │   │   └── models.py                   dataclasses
 │   ├── services/
-│   │   ├── camera.py                   camera list + status
+│   │   ├── camera.py                   camera list
 │   │   ├── live.py                     stream URL resolution
 │   │   ├── ws_bridge.py               WebSocket-to-FIFO bridge
 │   │   ├── recording.py               recording management
@@ -402,9 +402,9 @@ Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 |---|---|
 | `SYNO.API.Info` | Discover available APIs and CGI paths |
 | `SYNO.API.Auth` | Login / logout / session management |
-| `SYNO.SurveillanceStation.Camera` | Camera list, info, enable/disable, snapshots, live view paths |
+| `SYNO.SurveillanceStation.Camera` | Camera list, snapshots, live view paths |
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
-| `SYNO.SurveillanceStation.Recording` | List, stream, download, delete recordings |
+| `SYNO.SurveillanceStation.Recording` | List, stream, download recordings |
 | `SYNO.SurveillanceStation.SnapShot` | List, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |
 | `SYNO.SurveillanceStation.TimeLapse.Recording` | Time lapse recording management |

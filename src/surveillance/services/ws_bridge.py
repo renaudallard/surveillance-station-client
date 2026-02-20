@@ -127,11 +127,32 @@ class WebSocketBridge:
                 open_timeout=15,
             ) as ws:
                 log.debug("WebSocket connected")
+                written = 0
+                dropped = 0
                 async for message in ws:
                     if isinstance(message, bytes):
                         payload = self._extract_payload(message)
                         if payload:
+                            written += 1
+                            if written <= 3:
+                                log.warning(
+                                    "WS write #%d: payload=%d first_8=%s",
+                                    written,
+                                    len(payload),
+                                    payload[:8].hex(" "),
+                                )
                             await asyncio.to_thread(os.write, fd, payload)
+                        else:
+                            dropped += 1
+                            if dropped <= 3:
+                                hl = struct.unpack(">I", message[:4])[0] if len(message) >= 4 else 0
+                                hdr = message[4 : 4 + hl] if len(message) >= 4 + hl else b""
+                                log.warning(
+                                    "WS drop #%d: msg_len=%d hdr=%s",
+                                    dropped,
+                                    len(message),
+                                    hdr[:80].decode(errors="replace"),
+                                )
         except asyncio.CancelledError:
             log.debug("WebSocket bridge cancelled")
         except Exception:

@@ -413,9 +413,9 @@ class LiveView(Gtk.Box):
 
         cam_id = camera.id
 
-        async def _get_url() -> tuple[int, int, str]:
+        async def _get_url() -> tuple[int, int, str, str]:
             url = await get_live_view_path(api, camera.id, protocol=protocol, override_url=override)
-            return slot_idx, cam_id, url
+            return slot_idx, cam_id, url, protocol
 
         run_async(
             _get_url(),
@@ -425,15 +425,15 @@ class LiveView(Gtk.Box):
             ),
         )
 
-    def _on_stream_url(self, result: tuple[int, int, str]) -> None:
-        slot_idx, cam_id, url = result
+    def _on_stream_url(self, result: tuple[int, int, str, str]) -> None:
+        slot_idx, cam_id, url, protocol = result
         slot = self._slots[slot_idx]
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:
-                slot.player.play(url)
+                slot.player.play(url, low_latency=protocol == "webapi")
 
     def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
         """Start a WebSocket bridge and play the resulting FIFO in mpv."""

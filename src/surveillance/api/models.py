@@ -53,32 +53,20 @@ class Camera:
 
     id: int
     name: str
-    ip: str
-    port: int
     model: str
     vendor: str
     status: CameraStatus
-    host: str = ""
     is_ptz: bool = False
-    resolution: str = ""
-    fps: int = 0
-    channel: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Camera:  # type: ignore[type-arg]
         return cls(
             id=data.get("id", 0),
             name=data.get("newName", data.get("name", "")),
-            ip=data.get("ip", ""),
-            port=data.get("port", 0),
             model=data.get("model", ""),
             vendor=data.get("vendor", ""),
             status=CameraStatus(data.get("status", 0)),
-            host=data.get("host", ""),
             is_ptz=bool(data.get("ptzDirection", 0)),
-            resolution=data.get("resolution", ""),
-            fps=data.get("fps", 0),
-            channel=data.get("channel", 0),
         )
 
 
@@ -254,14 +242,12 @@ class ApiInfo:
     """API endpoint information from SYNO.API.Info."""
 
     path: str
-    min_version: int
     max_version: int
 
     @classmethod
     def from_api(cls, data: dict) -> ApiInfo:  # type: ignore[type-arg]
         return cls(
             path=data.get("path", ""),
-            min_version=data.get("minVersion", 1),
             max_version=data.get("maxVersion", 1),
         )
 
@@ -276,7 +262,6 @@ class License:
     expired_date: int  # unix timestamp, 0 = never expires
     is_expired: bool = False
     is_migrated: bool = False
-    owner_ds_id: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> License:  # type: ignore[type-arg]
@@ -287,7 +272,6 @@ class License:
             expired_date=data.get("expired_date", 0),
             is_expired=data.get("isExpired", False),
             is_migrated=data.get("isMigrated", False),
-            owner_ds_id=data.get("ownerDsId", 0),
         )
 
 
@@ -319,8 +303,6 @@ class TimeLapseTask:
     name: str
     camera_id: int
     camera_name: str
-    enabled: bool = True
-    status: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> TimeLapseTask:  # type: ignore[type-arg]
@@ -329,8 +311,6 @@ class TimeLapseTask:
             name=data.get("name", ""),
             camera_id=data.get("cameraId", 0),
             camera_name=data.get("cameraName", ""),
-            enabled=data.get("enabled", True),
-            status=data.get("status", 0),
         )
 
 
@@ -343,7 +323,6 @@ class TimeLapseRecording:
     camera_name: str
     start_time: int
     stop_time: int
-    task_id: int = 0
     file_size: int = 0
     mount_id: int = 0
     arch_id: int = 0
@@ -361,7 +340,6 @@ class TimeLapseRecording:
             camera_name=data.get("camera_name", data.get("cameraName", "")),
             start_time=data.get("startTime", 0),
             stop_time=data.get("stopTime", 0),
-            task_id=data.get("taskId", 0),
             file_size=data.get("event_size_bytes", 0),
             mount_id=data.get("mountId", 0),
             arch_id=data.get("archId", 0),

@@ -244,12 +244,3 @@ class RecordingSearchDialog(Gtk.Dialog):
         if not self.to_time_entry.get_text().strip() and not self._time_preset_used:
             return None
         return self._get_datetime(self.to_date, self.to_time_entry, "23:59:59")
-
-    def reset(self) -> None:
-        """Reset to default values (all cameras, no time restriction)."""
-        self._time_preset_used = False
-        self.all_cam_btn.set_active(True)
-        for check in self._camera_checks.values():
-            check.set_active(False)
-        self.from_time_entry.set_text("")
-        self.to_time_entry.set_text("")

@@ -522,8 +522,3 @@ class LiveView(Gtk.Box):
         """Stop all streams."""
         for slot in self._slots:
             slot.clear()
-
-    def stop_slot(self, slot_idx: int) -> None:
-        """Stop stream in a specific slot."""
-        if slot_idx < len(self._slots):
-            self._slots[slot_idx].clear()

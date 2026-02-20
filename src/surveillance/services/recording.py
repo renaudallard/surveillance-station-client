@@ -134,24 +134,6 @@ def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
     )
 
 
-def build_ws_recording_url(
-    api: SurveillanceAPI,
-    rec: Recording,
-    seek_sec: int = 0,
-) -> str:
-    """Build a WebSocket playback URL for a recording."""
-    scheme = "wss" if api.base_url.startswith("https") else "ws"
-    host_port = api.base_url.split("://", 1)[1]
-    return (
-        f"{scheme}://{host_port}/ss_webstream_task/"
-        f"?method=MixStream&stmSrc=1&recEvtType={rec.event_type}"
-        f"&blAudio=true&dsId=0&id={rec.id}"
-        f"&mountId={rec.mount_id}&archId={rec.arch_id}"
-        f"&start={seek_sec}&autoDrop=0&refreshHeader=0"
-        f"&reverse=false&flushTo={seek_sec}"
-    )
-
-
 async def download_recording(
     api: SurveillanceAPI,
     recording_id: int,
@@ -167,16 +149,6 @@ async def download_recording(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(data)
     return output_path
-
-
-async def delete_recording(api: SurveillanceAPI, recording_id: int) -> None:
-    """Delete a recording."""
-    await api.request(
-        api="SYNO.SurveillanceStation.Recording",
-        method="Delete",
-        version=5,
-        extra_params={"idList": str(recording_id)},
-    )
 
 
 _snapshot_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
@@ -260,28 +232,3 @@ async def fetch_recording_thumbnail(
             )
 
     return b""
-
-
-async def fetch_camera_snapshot(
-    api: SurveillanceAPI,
-    camera_id: int,
-) -> bytes:
-    """Fetch a JPEG snapshot for a camera, with per-camera caching."""
-    if camera_id in _snapshot_cache:
-        return _snapshot_cache[camera_id]
-
-    async with _thumbnail_semaphore:
-        try:
-            data = await api.download(
-                api="SYNO.SurveillanceStation.Camera",
-                method="GetSnapshot",
-                version=8,
-                extra_params={"cameraId": str(camera_id)},
-            )
-        except Exception as exc:
-            log.warning("Snapshot failed for camera %d: %s", camera_id, exc)
-            return b""
-
-    if data:
-        _cache_put(_snapshot_cache, camera_id, data, _MAX_SNAPSHOT_CACHE)
-    return data

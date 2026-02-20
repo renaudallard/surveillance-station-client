@@ -120,16 +120,3 @@ async def get_live_view_path(
         return value
 
     raise ValueError(f"Unknown protocol {protocol!r}")
-
-
-def get_snapshot_url(api: SurveillanceAPI, camera_id: int) -> str:
-    """Get URL for a live snapshot from a camera."""
-    return api.get_stream_url(
-        "entry.cgi",
-        {
-            "api": "SYNO.SurveillanceStation.Camera",
-            "method": "GetSnapshot",
-            "version": "9",
-            "cameraId": str(camera_id),
-        },
-    )

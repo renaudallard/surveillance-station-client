@@ -55,10 +55,6 @@ class WebSocketBridge:
     def fifo_path(self) -> str:
         return self._fifo_path
 
-    @property
-    def is_running(self) -> bool:
-        return self._pump_task is not None and not self._pump_task.done()
-
     async def start(self) -> str:
         """Create FIFO, start pump task, return the FIFO path."""
         self._tmp_dir = tempfile.mkdtemp(prefix="surveillance-ws-")

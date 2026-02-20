@@ -45,37 +45,3 @@ async def list_cameras(api: SurveillanceAPI) -> list[Camera]:
     )
     cameras_data = data.get("cameras", [])
     return [Camera.from_api(c) for c in cameras_data]
-
-
-async def get_camera_info(api: SurveillanceAPI, camera_id: int) -> Camera:
-    """Get detailed info for a single camera."""
-    data = await api.request(
-        api="SYNO.SurveillanceStation.Camera",
-        method="GetInfo",
-        version=9,
-        extra_params={"cameraIds": str(camera_id), "basic": "true", "ptz": "true"},
-    )
-    cameras = data.get("cameras", [])
-    if not cameras:
-        raise ValueError(f"Camera {camera_id} not found")
-    return Camera.from_api(cameras[0])
-
-
-async def enable_camera(api: SurveillanceAPI, camera_id: int) -> None:
-    """Enable a camera."""
-    await api.request(
-        api="SYNO.SurveillanceStation.Camera",
-        method="Enable",
-        version=9,
-        extra_params={"cameraIds": str(camera_id)},
-    )
-
-
-async def disable_camera(api: SurveillanceAPI, camera_id: int) -> None:
-    """Disable a camera."""
-    await api.request(
-        api="SYNO.SurveillanceStation.Camera",
-        method="Disable",
-        version=9,
-        extra_params={"cameraIds": str(camera_id)},
-    )

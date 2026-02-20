@@ -32,6 +32,7 @@ import contextlib
 import logging
 import os
 import ssl
+import struct
 import tempfile
 
 import websockets.asyncio.client as ws_client
@@ -68,8 +69,42 @@ class WebSocketBridge:
         self._pump_task = asyncio.create_task(self._pump())
         return self._fifo_path
 
+    @staticmethod
+    def _extract_payload(message: bytes) -> bytes | None:
+        """Strip Synology framing from a WebSocket message.
+
+        Frame format: [4-byte BE header_len][ASCII header][binary payload]
+
+        Returns the binary payload for video frames and codec init data.
+        Returns None for audio frames (mediaType=2) and control messages
+        (close=...) which should not be written to the video FIFO.
+        """
+        if len(message) < 4:
+            return None
+        (hdr_len,) = struct.unpack(">I", message[:4])
+        if 4 + hdr_len > len(message):
+            # Malformed: header extends beyond message
+            return None
+        header = message[4 : 4 + hdr_len]
+        payload = message[4 + hdr_len :]
+        # Skip audio frames and control messages
+        if b"mediaType=2" in header or b"close=" in header:
+            if b"close=" in header:
+                log.debug("WebSocket stream close: %s", header.decode(errors="replace"))
+            return None
+        if not payload:
+            return None
+        return payload
+
     async def _pump(self) -> None:
-        """Connect to the WebSocket and write frames to the FIFO."""
+        """Connect to the WebSocket and write video frames to the FIFO.
+
+        Strips the Synology proprietary framing (4-byte length + ASCII
+        header) from each WebSocket message and writes only the raw
+        video payload (Annex B H.264/H.265 NAL units) to the FIFO.
+        Audio frames are dropped since mpv cannot demux interleaved
+        raw audio in a raw video byte stream.
+        """
         ssl_ctx: ssl.SSLContext | bool | None = None
         if self._ws_url.startswith("wss://"):
             ssl_ctx = ssl.create_default_context()
@@ -80,7 +115,6 @@ class WebSocketBridge:
         headers = {"Cookie": f"id={self._sid}"}
 
         fd: int | None = None
-        msg_count = 0
         try:
             fd = await asyncio.to_thread(os.open, self._fifo_path, os.O_WRONLY)
             log.debug("WebSocket connecting: %s", self._ws_url)
@@ -95,25 +129,9 @@ class WebSocketBridge:
                 log.debug("WebSocket connected")
                 async for message in ws:
                     if isinstance(message, bytes):
-                        msg_count += 1
-                        if msg_count <= 5:
-                            log.warning(
-                                "WS msg #%d: len=%d first_64=%s",
-                                msg_count,
-                                len(message),
-                                message[:64].hex(" "),
-                            )
-                            # Try to show ASCII interpretation of header
-                            try:
-                                ascii_part = message[:128].split(b"\x00")[0]
-                                log.warning(
-                                    "WS msg #%d ascii prefix: %r",
-                                    msg_count,
-                                    ascii_part[:128],
-                                )
-                            except Exception:  # noqa: S110
-                                pass
-                        await asyncio.to_thread(os.write, fd, message)
+                        payload = self._extract_payload(message)
+                        if payload:
+                            await asyncio.to_thread(os.write, fd, payload)
         except asyncio.CancelledError:
             log.debug("WebSocket bridge cancelled")
         except Exception:

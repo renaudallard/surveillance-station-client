@@ -449,7 +449,7 @@ class LiveView(Gtk.Box):
             s = self._slots[slot_idx]
             if s.get_visible() and s.camera and s.camera.id == cam_id:
                 log.info("WebSocket bridge ready, playing FIFO: %s", fifo_path)
-                s.player.play(fifo_path)
+                s.player.play(fifo_path, low_latency=True)
 
         run_async(
             bridge.start(),

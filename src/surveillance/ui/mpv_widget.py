@@ -223,11 +223,23 @@ class MpvGLArea(Gtk.GLArea):
         elif loglevel == "warn":
             log.warning("mpv [%s]: %s", component, message.strip())
 
-    def play(self, url: str) -> None:
-        """Start playing a stream URL."""
+    def play(self, url: str, *, low_latency: bool = False) -> None:
+        """Start playing a stream URL.
+
+        When *low_latency* is True, disable caching and read-ahead so the
+        stream plays in near real-time (used for WebSocket FIFO bridges).
+        """
         self._url = url
         if self._initialized and self._mpv:
             try:
+                if low_latency:
+                    self._mpv["cache"] = "no"
+                    self._mpv["demuxer-max-bytes"] = "512KiB"
+                    self._mpv["demuxer-readahead-secs"] = 0
+                else:
+                    self._mpv["cache"] = "auto"
+                    self._mpv["demuxer-max-bytes"] = "150MiB"
+                    self._mpv["demuxer-readahead-secs"] = 1
                 self._mpv.play(url)
             except Exception:
                 log.exception("Failed to play %s", url)

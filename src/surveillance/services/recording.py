@@ -189,8 +189,7 @@ async def fetch_recording_thumbnail(
 ) -> bytes:
     """Fetch a thumbnail for a recording.
 
-    Tries DetectionEvent.GetThumbnail first (per-event, matches web UI),
-    falls back to Recording.GetThumbnail with eventInfo.
+    Uses Recording.GetThumbnail with eventInfo array matching the APK format.
     """
     if rec.id in _recording_thumbnail_cache:
         return _recording_thumbnail_cache[rec.id]
@@ -199,52 +198,26 @@ async def fetch_recording_thumbnail(
         if rec.id in _recording_thumbnail_cache:
             return _recording_thumbnail_cache[rec.id]
 
-        # Primary: DetectionEvent.GetThumbnail (per-event binary image)
-        try:
-            image_data = await api.download(
-                api="SYNO.SurveillanceStation.DetectionEvent",
-                method="GetThumbnail",
-                version=1,
-                extra_params={"id": str(rec.id), "type": "0"},
-            )
-            if image_data:
-                _cache_put(
-                    _recording_thumbnail_cache,
-                    rec.id,
-                    image_data,
-                    _MAX_THUMBNAIL_CACHE,
-                )
-                return image_data
-        except Exception as exc:
-            log.debug(
-                "DetectionEvent thumbnail failed for %d: %s",
-                rec.id,
-                exc,
-            )
-
-        # Fallback: Recording.GetThumbnail (base64 JSON response)
+        # Recording.GetThumbnail — eventInfo must be a JSON array of objects
+        # matching the APK format (dsId + blFallbackByLoadEvt + eventInfo only).
         try:
             data = await api.request(
                 api="SYNO.SurveillanceStation.Recording",
                 method="GetThumbnail",
                 version=5,
                 extra_params={
-                    "cameraId": str(rec.camera_id),
-                    "archId": str(rec.arch_id),
-                    "mountId": str(rec.mount_id),
-                    "targetTime": str(rec.start_time),
+                    "dsId": "0",
                     "blFallbackByLoadEvt": "true",
-                    "rec_group": "0",
                     "eventInfo": json.dumps(
-                        {
-                            "cameraId": rec.camera_id,
-                            "archId": rec.arch_id,
-                            "mountId": rec.mount_id,
-                            "rec_group": 0,
-                            "startTime": rec.start_time,
-                            "endTime": rec.start_time,
-                            "eventType": rec.event_type,
-                        }
+                        [
+                            {
+                                "cameraId": rec.camera_id,
+                                "archId": rec.arch_id,
+                                "mountId": rec.mount_id,
+                                "rec_group": 0,
+                                "targetTime": rec.start_time,
+                            }
+                        ]
                     ),
                 },
             )

@@ -135,7 +135,7 @@ async def get_live_view_path(
         value: str = info.get(field_name, "")
         if not value:
             raise ValueError(f"Protocol {protocol!r} not available for camera {camera_id}")
-        if field_name == "mjpegHttpPath":
+        if field_name == "mjpegHttpPath" and not value.startswith(("http://", "https://")):
             return f"{api.base_url}{value}"
         return value
 

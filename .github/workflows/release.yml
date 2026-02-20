@@ -120,5 +120,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           apt-get install -y gh
+          git config --global --add safe.directory "$PWD"
           TAG="v${VERSION}"
           gh release upload "${TAG}" Surveillance-*-${{ matrix.arch }}.AppImage --clobber

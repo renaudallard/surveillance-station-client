@@ -94,7 +94,9 @@ class WebSocketBridge:
             return None
         if not payload:
             return None
-        return payload
+        # The Synology header embeds the Annex B start code (00 00 00 01)
+        # as its last 4 bytes.  Prepend it so mpv can detect NAL boundaries.
+        return b"\x00\x00\x00\x01" + payload
 
     async def _pump(self) -> None:
         """Connect to the WebSocket and write video frames to the FIFO.

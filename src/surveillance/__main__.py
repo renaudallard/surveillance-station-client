@@ -40,8 +40,9 @@ def main() -> None:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    # Suppress PyOpenGL optional-dependency warnings (numpy, CUDA)
-    logging.getLogger("OpenGL").setLevel(max(level, logging.WARNING))
+    # Suppress chatty third-party loggers in debug mode
+    for name in ("OpenGL", "websockets", "hpack", "httpcore"):
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
 
     from surveillance.app import SurveillanceApp
 

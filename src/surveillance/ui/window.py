@@ -256,6 +256,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sidebar.stop_polling()
         self._stop_polling()
         self.headerbar.set_connected(False)
+
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "stop_all"):
+            live_view.stop_all()
+
         from surveillance.services.recording import clear_snapshot_cache
 
         clear_snapshot_cache()

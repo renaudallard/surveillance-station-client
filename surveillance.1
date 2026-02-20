@@ -59,7 +59,12 @@ session on restart.
 The
 .B [camera_protocols]
 section selects the stream protocol per camera (auto, rtsp, rtsp_over_http,
-mjpeg, multicast, direct).  When set to
+mjpeg, multicast, webapi, websocket, direct).
+.IR webapi
+uses the Synology HTTP stream endpoint.
+.IR websocket
+uses a WebSocket stream bridged to mpv via a named pipe.
+When set to
 .IR direct ,
 the URL from
 .B [camera_overrides]
@@ -81,7 +86,7 @@ gtk4, mpv, py311-gobject3, py311-cairo
 gtk4, mpv, py3-gobject3, py3-cairo
 .TP
 .B Python
-PyGObject (>=3.50), httpx, python-mpv, PyOpenGL, keyring, tomli-w
+PyGObject (>=3.50), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets
 .SH FILES
 .TP
 .I ~/.config/surveillance-station/config.toml

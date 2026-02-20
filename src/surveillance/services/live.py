@@ -39,6 +39,8 @@ PROTOCOL_LABELS: dict[str, str] = {
     "rtsp_over_http": "RTSP over HTTP",
     "mjpeg": "MJPEG",
     "multicast": "Multicast",
+    "webapi": "WebApi HTTP Stream",
+    "websocket": "WebSocket",
     "direct": "Direct RTSP URL",
 }
 
@@ -54,6 +56,35 @@ _PROTO_FIELD: dict[str, str] = {
 }
 
 
+def _build_webapi_url(api: SurveillanceAPI, camera_id: int) -> str:
+    """Build a WebApi HTTP stream URL (LiveviewSrc.Play)."""
+    return api.get_stream_url(
+        "entry.cgi",
+        {
+            "api": "SYNO.SurveillanceStation.Player.LiveviewSrc",
+            "method": "Play",
+            "version": "1",
+            "camera": str(camera_id),
+            "archId": "0",
+            "profileType": "0",
+            "itemType": "camera",
+        },
+    )
+
+
+def _build_ws_live_url(api: SurveillanceAPI, camera_id: int) -> str:
+    """Build a WebSocket live stream URL."""
+    # wss://host:port/ss_webstream_task/?method=MixStream&stmSrc=0&blAudio=true
+    #   &dsId=0&id={camId}&devType=1&profile=0
+    scheme = "wss" if api.base_url.startswith("https") else "ws"
+    host_port = api.base_url.split("://", 1)[1]
+    return (
+        f"{scheme}://{host_port}/ss_webstream_task/"
+        f"?method=MixStream&stmSrc=0&blAudio=true"
+        f"&dsId=0&id={camera_id}&devType=1&profile=0"
+    )
+
+
 async def get_live_view_path(
     api: SurveillanceAPI,
     camera_id: int,
@@ -63,11 +94,17 @@ async def get_live_view_path(
     """Get the live view URL for a camera.
 
     *protocol* selects which stream path to use:
-      auto, rtsp, rtsp_over_http, mjpeg, multicast, direct.
+      auto, rtsp, rtsp_over_http, mjpeg, multicast, webapi, websocket, direct.
     When *protocol* is ``"direct"``, *override_url* is returned as-is.
     """
     if protocol == "direct" and override_url:
         return override_url
+
+    if protocol == "webapi":
+        return _build_webapi_url(api, camera_id)
+
+    if protocol == "websocket":
+        return _build_ws_live_url(api, camera_id)
 
     data = await api.request(
         api="SYNO.SurveillanceStation.Camera",
@@ -106,7 +143,8 @@ async def get_live_view_path(
                 return f"{api.base_url}{value}"
             return value
 
-    raise ValueError(f"No usable stream path for camera {camera_id}")
+    # Fallback to webapi stream
+    return _build_webapi_url(api, camera_id)
 
 
 def get_snapshot_url(api: SurveillanceAPI, camera_id: int) -> str:

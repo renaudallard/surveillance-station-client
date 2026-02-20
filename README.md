@@ -156,7 +156,9 @@ last_page = "live"             # last active page
 
 [camera_protocols]
 # Stream protocol per camera ID:
-# auto, rtsp, rtsp_over_http, mjpeg, multicast, direct
+# auto, rtsp, rtsp_over_http, mjpeg, multicast, webapi, websocket, direct
+# "webapi" uses the Synology HTTP stream endpoint (no extra dependencies).
+# "websocket" uses a WebSocket stream bridged to mpv via a named pipe.
 # "direct" uses the URL from [camera_overrides].
 # 5 = "direct"
 
@@ -261,6 +263,7 @@ pkg_add gtk4 mpv py3-gobject3 py3-cairo
 | `PyOpenGL` >= 3.1 | OpenGL context for mpv render in GTK4 GLArea |
 | `keyring` >= 25.0 | Secure credential storage |
 | `tomli-w` >= 1.0 | TOML config writing |
+| `websockets` >= 13.0 | WebSocket stream bridge for live view |
 
 ---
 
@@ -319,7 +322,8 @@ synology-surveillance-station-client/
 │   │   └── models.py                   dataclasses
 │   ├── services/
 │   │   ├── camera.py                   camera list + status
-│   │   ├── live.py                     RTSP URL resolution
+│   │   ├── live.py                     stream URL resolution
+│   │   ├── ws_bridge.py               WebSocket-to-FIFO bridge
 │   │   ├── recording.py               recording management
 │   │   ├── ptz.py                      PTZ commands
 │   │   ├── snapshot.py                 snapshot management
@@ -398,6 +402,7 @@ Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 | `SYNO.API.Auth` | Login / logout / session management |
 | `SYNO.SurveillanceStation.Camera` | Camera list, info, enable/disable, snapshots, live view paths |
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
+| `SYNO.SurveillanceStation.Player.LiveviewSrc` | WebApi HTTP live stream |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download, delete recordings |
 | `SYNO.SurveillanceStation.SnapShot` | List, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |

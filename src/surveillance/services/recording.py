@@ -134,6 +134,24 @@ def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
     )
 
 
+def build_ws_recording_url(
+    api: SurveillanceAPI,
+    rec: Recording,
+    seek_sec: int = 0,
+) -> str:
+    """Build a WebSocket playback URL for a recording."""
+    scheme = "wss" if api.base_url.startswith("https") else "ws"
+    host_port = api.base_url.split("://", 1)[1]
+    return (
+        f"{scheme}://{host_port}/ss_webstream_task/"
+        f"?method=MixStream&stmSrc=1&recEvtType={rec.event_type}"
+        f"&blAudio=true&dsId=0&id={rec.id}"
+        f"&mountId={rec.mount_id}&archId={rec.arch_id}"
+        f"&start={seek_sec}&autoDrop=0&refreshHeader=0"
+        f"&reverse=false&flushTo={seek_sec}"
+    )
+
+
 async def download_recording(
     api: SurveillanceAPI,
     recording_id: int,

@@ -16,6 +16,7 @@ dependencies = [
     "PyOpenGL>=3.1",
     "keyring>=25.0",
     "tomli-w>=1.0",
+    "websockets>=13.0",
 ]
 
 [project.scripts]
@@ -47,6 +48,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"src/surveillance/services/live.py" = ["PLR0911"]
 "src/surveillance/ui/*.py" = ["E402", "PLC0415"]
 "src/surveillance/app.py" = ["E402", "PLC0415"]
 "src/surveillance/__main__.py" = ["PLC0415"]

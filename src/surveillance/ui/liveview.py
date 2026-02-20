@@ -39,6 +39,7 @@ from gi.repository import Gtk  # type: ignore[import-untyped]
 from surveillance.api.models import Camera
 from surveillance.config import save_config
 from surveillance.services.live import get_live_view_path
+from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.mpv_widget import MpvGLArea
 from surveillance.ui.ptz_controls import PtzControls
 from surveillance.util.async_bridge import run_async
@@ -102,6 +103,7 @@ class CameraSlot(Gtk.Box):
         player_click.connect("pressed", self._on_click)
         self.player.add_controller(player_click)
 
+        self._ws_bridge: WebSocketBridge | None = None
         self._click_callback: object = None
 
     def set_click_callback(self, callback: object) -> None:
@@ -136,7 +138,14 @@ class CameraSlot(Gtk.Box):
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
 
+    def _stop_bridge(self) -> None:
+        if self._ws_bridge is not None:
+            bridge = self._ws_bridge
+            self._ws_bridge = None
+            run_async(bridge.stop())
+
     def clear(self) -> None:
+        self._stop_bridge()
         self.camera = None
         self.player.stop()
         self._header.set_label(f"Slot {self._display_index + 1}")
@@ -247,6 +256,7 @@ class LiveView(Gtk.Box):
             else:
                 slot.set_visible(False)
                 if slot.camera:
+                    slot._stop_bridge()
                     slot.player.stop()
 
         self._active = new_active
@@ -420,7 +430,32 @@ class LiveView(Gtk.Box):
         slot = self._slots[slot_idx]
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
-            slot.player.play(url)
+            if url.startswith(("ws://", "wss://")):
+                self._start_ws_bridge(slot, url)
+            else:
+                slot.player.play(url)
+
+    def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
+        """Start a WebSocket bridge and play the resulting FIFO in mpv."""
+        slot._stop_bridge()
+        verify_ssl = self.app.api.profile.verify_ssl if self.app.api else True
+        sid = self.app.api.sid if self.app.api else ""
+        bridge = WebSocketBridge(url, verify_ssl, sid)
+        slot._ws_bridge = bridge
+        cam_id = slot.camera.id if slot.camera else -1
+        slot_idx = slot.index
+
+        def _on_fifo(fifo_path: str) -> None:
+            s = self._slots[slot_idx]
+            if s.get_visible() and s.camera and s.camera.id == cam_id:
+                log.info("WebSocket bridge ready, playing FIFO: %s", fifo_path)
+                s.player.play(fifo_path)
+
+        run_async(
+            bridge.start(),
+            callback=_on_fifo,
+            error_callback=lambda e: log.error("WebSocket bridge failed: %s", e),
+        )
 
     # ------------------------------------------------------------------
     # Session persistence
@@ -470,6 +505,7 @@ class LiveView(Gtk.Box):
         """Stop all mpv playback but keep camera assignments."""
         for slot in self._slots:
             if slot.camera:
+                slot._stop_bridge()
                 slot.player.stop()
 
     def resume_streams(self) -> None:

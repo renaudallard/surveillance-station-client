@@ -67,7 +67,7 @@ def _build_webapi_url(api: SurveillanceAPI, camera_id: int) -> str:
             "camera": str(camera_id),
             "archId": "0",
             "profileType": "0",
-            "itemType": "camera",
+            "itemType": "0",
         },
     )
 

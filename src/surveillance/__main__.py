@@ -60,10 +60,21 @@ def main() -> None:
     for name in ("OpenGL", "websockets", "hpack", "httpcore"):
         logging.getLogger(name).setLevel(max(level, logging.WARNING))
 
+    import os
+    import signal
+
+    signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+
     from surveillance.app import SurveillanceApp
+
+    # Register AFTER all imports so it runs BEFORE concurrent.futures
+    # atexit handler that hangs joining executor threads (LIFO order).
+    __import__("atexit").register(os._exit, 0)
 
     app = SurveillanceApp()
     app.run(sys.argv)
+    os._exit(0)
 
 
 if __name__ == "__main__":

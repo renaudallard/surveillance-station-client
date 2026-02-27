@@ -114,6 +114,7 @@ class WebSocketBridge:
                 additional_headers=headers,
                 max_size=2**22,
                 open_timeout=15,
+                close_timeout=2,
             ) as ws:
                 log.debug("WebSocket connected")
                 async for message in ws:
@@ -131,14 +132,21 @@ class WebSocketBridge:
                     os.close(self._write_fd)
                 self._write_fd = -1
 
-    async def stop(self) -> None:
-        """Cancel the pump task and close pipe fds."""
-        # Close write end first. This unblocks any pending os.write
-        # with BrokenPipeError and signals EOF to mpv on the read end.
+    def close_write_end(self) -> None:
+        """Close the write end of the pipe immediately.
+
+        This unblocks any os.write call stuck in the thread pool
+        and signals EOF to mpv on the read end. Safe to call from
+        any thread, idempotent.
+        """
         if self._write_fd >= 0:
             with contextlib.suppress(OSError):
                 os.close(self._write_fd)
             self._write_fd = -1
+
+    async def stop(self) -> None:
+        """Cancel the pump task and close pipe fds."""
+        self.close_write_end()
 
         if self._pump_task is not None:
             self._pump_task.cancel()

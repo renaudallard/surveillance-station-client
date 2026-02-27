@@ -142,6 +142,7 @@ class CameraSlot(Gtk.Box):
         if self._ws_bridge is not None:
             bridge = self._ws_bridge
             self._ws_bridge = None
+            bridge.close_write_end()
             run_async(bridge.stop())
 
     def clear(self) -> None:

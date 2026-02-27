@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import concurrent.futures.thread
 import logging
 import threading
 from collections.abc import Coroutine
@@ -83,12 +84,17 @@ def get_loop() -> asyncio.AbstractEventLoop:
 def shutdown_async() -> None:
     """Stop the background event loop."""
     global _loop, _thread
-    if _loop is not None:
-        _loop.call_soon_threadsafe(_loop.stop)
-        if _thread is not None:
-            _thread.join(timeout=5)
-        _loop = None
-        _thread = None
+    if _loop is None:
+        return
+    loop = _loop
+    loop.call_soon_threadsafe(loop.stop)
+    if _thread is not None:
+        _thread.join(timeout=2)
+    _loop = None
+    _thread = None
+    # Prevent atexit hang on leftover executor threads.
+    # The process is exiting. The OS reclaims all resources.
+    concurrent.futures.thread._threads_queues.clear()  # type: ignore[attr-defined]
 
 
 def run_async(

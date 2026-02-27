@@ -93,9 +93,31 @@ class MainWindow(Gtk.ApplicationWindow):
         self._homemode_poll_id: int = 0
         self._alerts_poll_id: int = 0
 
+        # Exit handlers. Both vfunc override and signal connection
+        # for maximum compatibility across PyGObject versions.
+        self.connect("close-request", lambda *_: self._force_exit("signal"))
+
         # Show login if not connected
         if not self.app.api:
             self._schedule_login()
+
+    def do_close_request(self) -> bool:
+        """Vfunc override for close-request."""
+        self._force_exit("vfunc")
+        return True
+
+    def _force_exit(self, source: str) -> bool:
+        import os
+
+        log.warning("exit requested via %s", source)
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            from surveillance.config import save_config_now
+
+            save_config_now(self.app.config)
+        os._exit(0)
+        return True
 
     def _add_placeholder(self, name: str, title: str, description: str) -> None:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)

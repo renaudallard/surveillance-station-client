@@ -32,6 +32,7 @@ from pathlib import Path
 
 import gi
 
+gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gdk, Gio, Gtk  # type: ignore[import-untyped]
@@ -120,25 +121,14 @@ class SurveillanceApp(Gtk.Application):
         self.api = api
 
     def _on_quit(self, action: Gio.SimpleAction, param: None) -> None:
-        from surveillance.config import save_config_now
+        import contextlib
+        import os
 
-        save_config_now(self.config)
-        if self._window:
-            self._window.on_disconnected()
-        if self.api:
-            from surveillance.api.auth import logout
-            from surveillance.util.async_bridge import run_async
+        with contextlib.suppress(Exception):
+            from surveillance.config import save_config_now
 
-            api = self.api
-            self.api = None
-
-            async def _cleanup() -> None:
-                await logout(api)
-                await api.close()
-
-            run_async(_cleanup(), callback=lambda _: self.quit())
-        else:
-            self.quit()
+            save_config_now(self.config)
+        os._exit(0)
 
     def _on_logout(self, action: Gio.SimpleAction, param: None) -> None:
         if self._window:

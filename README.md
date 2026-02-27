@@ -160,7 +160,7 @@ last_page = "live"             # last active page
 # Stream protocol per camera ID:
 # auto, websocket, mjpeg, rtsp_over_http, rtsp, multicast, direct
 # Auto tries: websocket → mjpeg → rtsp_over_http → rtsp → multicast.
-# "websocket" uses a WebSocket stream bridged to mpv via a named pipe.
+# "websocket" uses a WebSocket stream bridged to mpv via an in-memory pipe.
 # "direct" uses the URL from [camera_overrides].
 # 5 = "direct"
 
@@ -325,7 +325,7 @@ synology-surveillance-station-client/
 │   ├── services/
 │   │   ├── camera.py                   camera list
 │   │   ├── live.py                     stream URL resolution
-│   │   ├── ws_bridge.py               WebSocket-to-FIFO bridge
+│   │   ├── ws_bridge.py               WebSocket-to-pipe bridge
 │   │   ├── recording.py               recording management
 │   │   ├── ptz.py                      PTZ commands
 │   │   ├── snapshot.py                 snapshot management

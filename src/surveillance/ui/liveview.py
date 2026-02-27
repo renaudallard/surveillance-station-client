@@ -437,7 +437,7 @@ class LiveView(Gtk.Box):
                 slot.player.play(url)
 
     def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
-        """Start a WebSocket bridge and play the resulting FIFO in mpv."""
+        """Start a WebSocket bridge and play the resulting pipe in mpv."""
         slot._stop_bridge()
         verify_ssl = self.app.api.profile.verify_ssl if self.app.api else True
         sid = self.app.api.sid if self.app.api else ""
@@ -446,15 +446,15 @@ class LiveView(Gtk.Box):
         cam_id = slot.camera.id if slot.camera else -1
         slot_idx = slot.index
 
-        def _on_fifo(fifo_path: str) -> None:
+        def _on_ready(pipe_url: str) -> None:
             s = self._slots[slot_idx]
             if s.get_visible() and s.camera and s.camera.id == cam_id:
-                log.info("WebSocket bridge ready, playing FIFO: %s", fifo_path)
-                s.player.play(fifo_path, low_latency=True)
+                log.info("WebSocket bridge ready, playing pipe: %s", pipe_url)
+                s.player.play(pipe_url, low_latency=True)
 
         run_async(
             bridge.start(),
-            callback=_on_fifo,
+            callback=_on_ready,
             error_callback=lambda e: log.error("WebSocket bridge failed: %s", e),
         )
 

@@ -227,7 +227,7 @@ class MpvGLArea(Gtk.GLArea):
         """Start playing a stream URL.
 
         When *low_latency* is True, disable caching and read-ahead so the
-        stream plays in near real-time (used for WebSocket FIFO bridges).
+        stream plays in near real-time (used for WebSocket pipe bridges).
         """
         self._url = url
         if self._initialized and self._mpv:

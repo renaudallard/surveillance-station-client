@@ -41,26 +41,49 @@ class SessionExpiredError(AuthError):
     """Session has expired, needs re-login."""
 
 
-async def login(api: SurveillanceAPI, username: str, password: str) -> str:
+async def login(
+    api: SurveillanceAPI,
+    username: str,
+    password: str,
+    otp_code: str = "",
+    device_id: str = "",
+    device_name: str = "",
+    enable_device_token: bool = False,
+) -> str:
     """Login to Synology and return session ID.
 
     Uses SYNO.API.Auth with Surveillance Station session.
+    Supports OTP codes and trusted device tokens for MFA.
     """
+    params: dict[str, str] = {
+        "account": username,
+        "passwd": password,
+        "session": "SurveillanceStation",
+        "format": "sid",
+    }
+    if otp_code:
+        params["otp_code"] = otp_code
+    if enable_device_token:
+        params["enable_device_token"] = "yes"  # noqa: S105
+    if device_id:
+        params["device_id"] = device_id
+    if device_name:
+        params["device_name"] = device_name
+
     data = await api.raw_request(
         api="SYNO.API.Auth",
         method="Login",
         version=6,
-        extra_params={
-            "account": username,
-            "passwd": password,
-            "session": "SurveillanceStation",
-            "format": "sid",
-        },
+        extra_params=params,
     )
 
     sid = data.get("sid", "")
     if not sid:
         raise AuthError("Login succeeded but no SID returned")
+
+    did = data.get("did", "")
+    if did:
+        api.device_id = did
 
     api.sid = sid
     api.username = username

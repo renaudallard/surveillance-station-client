@@ -36,6 +36,11 @@ View motion detection events and camera alerts with notification popover and bad
 .B Home Mode
 Toggle Surveillance Station home mode from the header bar.
 .TP
+.B Two-Factor Authentication
+MFA/OTP login support. Prompts for a 6-digit authenticator code when 2FA is
+enabled and optionally registers as a trusted device to skip OTP on future
+logins.
+.TP
 .B License Management
 View, add, and delete camera licenses. Supports online and offline activation.
 .SH OPTIONS
@@ -49,7 +54,9 @@ Configuration is stored in TOML format at:
 .I ~/.config/surveillance-station/config.toml
 .PP
 Connection profiles define NAS host, port, HTTPS, and SSL verification settings.
-Credentials are stored securely via the system keyring.
+Credentials are stored securely via the system keyring. When two-factor
+authentication is enabled, trusted device tokens are stored per profile in the
+config file.
 .PP
 The
 .B [session]

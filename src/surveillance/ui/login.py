@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 from typing import TYPE_CHECKING, Any
 
 import gi
@@ -37,7 +38,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.auth import login
-from surveillance.api.client import SurveillanceAPI
+from surveillance.api.client import OtpRequiredError, SurveillanceAPI
 from surveillance.config import ConnectionProfile, add_profile
 from surveillance.credentials import get_credentials, store_credentials
 from surveillance.util.async_bridge import run_async
@@ -193,17 +194,31 @@ class LoginDialog(Gtk.Dialog):
         self.status_label.set_text("Connecting...")
         self.connect_btn.set_sensitive(False)
 
+        # Carry over device_id from existing profile if available
+        existing = self.app.config.profiles.get(profile_name)
         profile = ConnectionProfile(
             name=profile_name,
             host=host,
             port=port,
             https=self.https_check.get_active(),
             verify_ssl=self.verify_ssl_check.get_active(),
+            device_id=existing.device_id if existing else "",
         )
 
         api = SurveillanceAPI(profile)
+        self._current_api = api
+        self._current_profile = profile
+        self._current_username = username
+        self._current_password = password
         run_async(
-            self._do_connect(api, profile, username, password),
+            self._do_connect(
+                api,
+                profile,
+                username,
+                password,
+                device_id=profile.device_id,
+                device_name=platform.node() if profile.device_id else "",
+            ),
             callback=self._on_connect_success,
             error_callback=self._on_connect_error,
         )
@@ -214,13 +229,30 @@ class LoginDialog(Gtk.Dialog):
         profile: ConnectionProfile,
         username: str,
         password: str,
+        otp_code: str = "",
+        device_id: str = "",
+        device_name: str = "",
+        enable_device_token: bool = False,
     ) -> tuple[SurveillanceAPI, ConnectionProfile, str, str]:
-        await api.discover_apis()
-        await login(api, username, password)
+        if not api._api_info:
+            await api.discover_apis()
+        await login(
+            api,
+            username,
+            password,
+            otp_code=otp_code,
+            device_id=device_id,
+            device_name=device_name,
+            enable_device_token=enable_device_token,
+        )
         return api, profile, username, password
 
     def _on_connect_success(self, result: Any) -> None:
         api, profile, username, password = result
+
+        # Save device_id from server if returned (trusted device token)
+        if api.device_id and api.device_id != profile.device_id:
+            profile.device_id = api.device_id
 
         # Save profile
         add_profile(self.app.config, profile)
@@ -239,5 +271,102 @@ class LoginDialog(Gtk.Dialog):
         self.destroy()
 
     def _on_connect_error(self, error: Exception) -> None:
+        if isinstance(error, OtpRequiredError):
+            # Clear stored device_id since it did not bypass OTP
+            if self._current_profile.device_id:
+                self._current_profile.device_id = ""
+                add_profile(self.app.config, self._current_profile)
+            self.status_label.set_text("")
+            self.connect_btn.set_sensitive(True)
+            self._show_otp_dialog()
+            return
         self.status_label.set_text(f"Connection failed: {error}")
         self.connect_btn.set_sensitive(True)
+
+    def _show_otp_dialog(self) -> None:
+        """Show dialog to enter a 6-digit OTP code for two-factor auth."""
+        dialog = Gtk.Dialog(
+            title="Two-Factor Authentication",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.set_default_size(350, -1)
+
+        content = dialog.get_content_area()
+        content.set_spacing(12)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        label = Gtk.Label(label="Enter the 6-digit code from your authenticator app")
+        label.set_wrap(True)
+        content.append(label)
+
+        otp_entry = Gtk.Entry()
+        otp_entry.set_max_length(6)
+        otp_entry.set_placeholder_text("000000")
+        otp_entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        content.append(otp_entry)
+
+        trust_check = Gtk.CheckButton(label="Trust this device")
+        trust_check.set_active(True)
+        content.append(trust_check)
+
+        otp_status = Gtk.Label(label="")
+        otp_status.add_css_class("error")
+        content.append(otp_status)
+
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        verify_btn = dialog.add_button("Verify", Gtk.ResponseType.OK)
+        verify_btn.add_css_class("suggested-action")
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        def on_otp_response(_dialog: Gtk.Dialog, response_id: int) -> None:
+            if response_id != Gtk.ResponseType.OK:
+                dialog.destroy()
+                return
+
+            code = otp_entry.get_text().strip()
+            if not code or len(code) != 6 or not code.isdigit():
+                otp_status.set_text("Enter a valid 6-digit code")
+                return
+
+            verify_btn.set_sensitive(False)
+            otp_status.set_text("Verifying...")
+
+            enable_trust = trust_check.get_active()
+            run_async(
+                self._do_connect(
+                    self._current_api,
+                    self._current_profile,
+                    self._current_username,
+                    self._current_password,
+                    otp_code=code,
+                    device_id=self._current_profile.device_id,
+                    device_name=platform.node() if enable_trust else "",
+                    enable_device_token=enable_trust,
+                ),
+                callback=lambda result: _on_otp_success(result),
+                error_callback=lambda err: _on_otp_error(err),
+            )
+
+        def _on_otp_success(result: Any) -> None:
+            dialog.destroy()
+            self._on_connect_success(result)
+
+        def _on_otp_error(error: Exception) -> None:
+            verify_btn.set_sensitive(True)
+            if isinstance(error, OtpRequiredError) and error.code == 404:
+                otp_status.set_text("Invalid OTP code. Try again.")
+                otp_entry.set_text("")
+                otp_entry.grab_focus()
+            elif isinstance(error, OtpRequiredError):
+                otp_status.set_text("OTP required. Try again.")
+                otp_entry.set_text("")
+                otp_entry.grab_focus()
+            else:
+                otp_status.set_text(f"Error: {error}")
+
+        dialog.connect("response", on_otp_response)
+        dialog.present()

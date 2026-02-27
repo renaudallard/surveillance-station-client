@@ -67,6 +67,7 @@ class ConnectionProfile:
     port: int = 5001
     https: bool = True
     verify_ssl: bool = False
+    device_id: str = ""
 
     @property
     def base_url(self) -> str:
@@ -74,12 +75,15 @@ class ConnectionProfile:
         return f"{scheme}://{self.host}:{self.port}"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "host": self.host,
             "port": self.port,
             "https": self.https,
             "verify_ssl": self.verify_ssl,
         }
+        if self.device_id:
+            d["device_id"] = self.device_id
+        return d
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> ConnectionProfile:
@@ -89,6 +93,7 @@ class ConnectionProfile:
             port=data.get("port", 5001),
             https=data.get("https", True),
             verify_ssl=data.get("verify_ssl", False),
+            device_id=data.get("device_id", ""),
         )
 
 

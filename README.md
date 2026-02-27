@@ -31,6 +31,7 @@
 - **Home Mode** &mdash; Toggle Surveillance Station home mode directly from the header bar.
 - **License Management** &mdash; View, add, and delete camera licenses. Online and offline activation.
 - **Session Persistence** &mdash; Grid layout, active page, and camera assignments are restored on restart.
+- **Two-Factor Authentication** &mdash; MFA/OTP login support. When 2FA is enabled on your Synology account, the client prompts for a 6-digit authenticator code and optionally registers as a trusted device to skip OTP on future logins.
 - **Multi-Profile** &mdash; Save multiple NAS connection profiles and switch between them from the login screen.
 - **Secure Credentials** &mdash; Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain).
 - **Theming** &mdash; Auto (follow OS), dark, or light theme selectable from the header bar.
@@ -181,6 +182,12 @@ right-click a camera in the sidebar to choose the protocol.
 
 Credentials are **never** stored in the config file. They are kept in the
 system keyring under the service name `surveillance-station`.
+
+When two-factor authentication (2FA/MFA) is enabled on the Synology account, the
+client will prompt for a 6-digit OTP code after entering credentials. Checking
+"Trust this device" stores a device token in the profile so subsequent logins
+skip the OTP step. If the trust is revoked on the NAS, the client will prompt
+for OTP again automatically.
 
 ---
 

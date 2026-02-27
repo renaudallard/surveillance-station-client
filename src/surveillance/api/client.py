@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 from typing import Any
 
 import httpx
@@ -52,12 +53,16 @@ ERRORS: dict[int, str] = {
     400: "Execution failed",
     401: "Parameter invalid",
     402: "Camera disabled",
+    403: "Two-factor authentication required",
+    404: "Invalid OTP code",
+    406: "Two-factor authentication enforced",
     407: "CMS closed",
     412: "Need to run as admin",
     413: "Need to enable home mode first",
 }
 
 SESSION_ERRORS = {105, 106, 107, 119}
+OTP_ERRORS = {403, 404, 406}
 
 
 class ApiError(Exception):
@@ -69,6 +74,10 @@ class ApiError(Exception):
         super().__init__(self.message)
 
 
+class OtpRequiredError(ApiError):
+    """Two-factor authentication code required."""
+
+
 class SurveillanceAPI:
     """Async client for Synology Surveillance Station REST API."""
 
@@ -78,6 +87,7 @@ class SurveillanceAPI:
         self.sid = ""
         self.username = ""
         self.password = ""
+        self.device_id = ""
         self._api_info: dict[str, ApiInfo] = {}
         self._client: httpx.AsyncClient | None = None
 
@@ -170,6 +180,8 @@ class SurveillanceAPI:
 
         if not result.get("success"):
             code = result.get("error", {}).get("code", 100)
+            if code in OTP_ERRORS:
+                raise OtpRequiredError(code)
             raise ApiError(code)
 
         data: Any = result.get("data", {})
@@ -192,7 +204,13 @@ class SurveillanceAPI:
             if e.code in SESSION_ERRORS and self.username and self.password:
                 log.info("Session error %d, attempting re-login", e.code)
                 try:
-                    await login(self, self.username, self.password)
+                    await login(
+                        self,
+                        self.username,
+                        self.password,
+                        device_id=self.device_id,
+                        device_name=platform.node(),
+                    )
                 except AuthError:
                     raise SessionExpiredError("Re-login failed") from e
                 return await self.raw_request(api, method, version, extra_params)

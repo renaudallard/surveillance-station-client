@@ -32,10 +32,10 @@ from pathlib import Path
 from surveillance.config import (
     AppConfig,
     ConnectionProfile,
+    _write_config,
     add_profile,
     load_config,
     remove_profile,
-    save_config,
 )
 
 
@@ -102,7 +102,7 @@ class TestSaveLoadConfig:
         )
         config.profiles["mynas"] = profile
 
-        save_config(config)
+        _write_config(config)
         assert config_file.exists()
 
         loaded = load_config()

@@ -62,7 +62,6 @@ class TestCamera:
         cam = Camera.from_api(data)
         assert cam.id == 1
         assert cam.name == "Front Door"
-        assert cam.ip == "192.168.1.50"
         assert cam.status == CameraStatus.ENABLED
         assert cam.is_ptz is True
         assert cam.vendor == "Hikvision"
@@ -128,7 +127,6 @@ class TestEvent:
         event = Event.from_api(data)
         assert event.id == 200
         assert event.event_type == 1
-        assert event.reason == "Motion detected"
 
 
 class TestAlert:

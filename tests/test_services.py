@@ -89,6 +89,14 @@ class TestCameraService:
 
 class TestLiveService:
     @pytest.mark.asyncio
+    async def test_get_live_view_path_auto_websocket(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.live import get_live_view_path
+
+        url = await get_live_view_path(api, 1)
+        assert url.startswith("wss://")
+        assert "id=1" in url
+
+    @pytest.mark.asyncio
     async def test_get_live_view_path_rtsp(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_live_view_path
 
@@ -102,7 +110,7 @@ class TestLiveService:
         }
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            url = await get_live_view_path(api, 1)
+            url = await get_live_view_path(api, 1, protocol="rtsp")
             assert url == "rtsp://192.168.1.50:554/live"
 
     @pytest.mark.asyncio
@@ -117,11 +125,11 @@ class TestLiveService:
         ]
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            url = await get_live_view_path(api, 1)
+            url = await get_live_view_path(api, 1, protocol="rtsp")
             assert url == "rtsp://192.168.1.50:554/Sms/1/1/1"
 
     @pytest.mark.asyncio
-    async def test_get_live_view_path_mjpeg_fallback(self, api: SurveillanceAPI) -> None:
+    async def test_get_live_view_path_mjpeg(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_live_view_path
 
         mock_data = {
@@ -134,7 +142,7 @@ class TestLiveService:
         }
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            url = await get_live_view_path(api, 1)
+            url = await get_live_view_path(api, 1, protocol="mjpeg")
             assert "/mjpeg/1" in url
 
 

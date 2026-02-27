@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml"><img src="https://github.com/renaudallard/synology-surveillance-station-client/actions/workflows/lint.yml/badge.svg" alt="Lint & Type Check"></a>
-  <a href="https://github.com/renaudallard/synology-surveillance-station-client/releases/latest"><img src="https://img.shields.io/github/v/release/renaudallard/synology-surveillance-station-client?label=release" alt="Latest Release"></a>
+  <a href="https://github.com/renaudallard/surveillance-station-client/actions/workflows/lint.yml"><img src="https://github.com/renaudallard/surveillance-station-client/actions/workflows/lint.yml/badge.svg" alt="Lint & Type Check"></a>
+  <a href="https://github.com/renaudallard/surveillance-station-client/releases/latest"><img src="https://img.shields.io/github/v/release/renaudallard/surveillance-station-client?label=release" alt="Latest Release"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/GTK-4-green" alt="GTK4">
-  <img src="https://img.shields.io/github/license/renaudallard/synology-surveillance-station-client" alt="License">
+  <img src="https://img.shields.io/github/license/renaudallard/surveillance-station-client" alt="License">
 </p>
 
 <p align="center">
@@ -43,7 +43,7 @@
 ### AppImage (Linux, no install needed)
 
 Download the latest AppImage for your architecture from the
-[Releases](https://github.com/renaudallard/synology-surveillance-station-client/releases/latest)
+[Releases](https://github.com/renaudallard/surveillance-station-client/releases/latest)
 page:
 
 ```sh
@@ -60,8 +60,8 @@ automatically every time the version is bumped.
 2. Clone and install:
 
 ```sh
-git clone https://github.com/renaudallard/synology-surveillance-station-client.git
-cd synology-surveillance-station-client
+git clone https://github.com/renaudallard/surveillance-station-client.git
+cd surveillance-station-client
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install .
@@ -298,7 +298,7 @@ pkg_add gtk4 mpv py3-gobject3 py3-cairo
 Three event systems are integrated:
 
 - **GLib main loop** drives the GTK4 UI
-- **asyncio** is integrated into GLib via PyGObject 3.50+ native support
+- **asyncio** runs in a background thread, bridged to GLib via `GLib.idle_add()`
 - **mpv threads** bridge back to the main thread via `GLib.idle_add()`
 
 Video is rendered through mpv's OpenGL render API into a `Gtk.GLArea` widget,
@@ -308,7 +308,7 @@ which works on both X11 and Wayland without window ID embedding.
 <summary><b>Project structure</b></summary>
 
 ```
-synology-surveillance-station-client/
+surveillance-station-client/
 ├── pyproject.toml
 ├── README.md
 ├── surveillance.1                      man page
@@ -436,7 +436,7 @@ with the publicly documented Synology Web API. Use it at your own risk.
 
 ## License
 
-BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/synology-surveillance-station-client/blob/main/pyproject.toml) for details.
+BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/surveillance-station-client/blob/main/pyproject.toml) for details.
 
 ```
 Copyright (c) 2026, Renaud Allard <renaud@allard.it>

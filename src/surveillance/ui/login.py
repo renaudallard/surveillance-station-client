@@ -347,8 +347,8 @@ class LoginDialog(Gtk.Dialog):
                     device_name=platform.node() if enable_trust else "",
                     enable_device_token=enable_trust,
                 ),
-                callback=lambda result: _on_otp_success(result),
-                error_callback=lambda err: _on_otp_error(err),
+                callback=_on_otp_success,
+                error_callback=_on_otp_error,
             )
 
         def _on_otp_success(result: Any) -> None:

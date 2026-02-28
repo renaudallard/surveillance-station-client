@@ -33,6 +33,7 @@ import logging
 import os
 import ssl
 import struct
+import threading
 
 import websockets.asyncio.client as ws_client
 
@@ -48,6 +49,7 @@ class WebSocketBridge:
         self._sid = sid
         self._read_fd: int = -1
         self._write_fd: int = -1
+        self._fd_lock = threading.Lock()
         self._pump_task: asyncio.Task[None] | None = None
 
     async def start(self) -> str:
@@ -127,10 +129,16 @@ class WebSocketBridge:
         except Exception:
             log.exception("WebSocket bridge error")
         finally:
-            if self._write_fd >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(self._write_fd)
-                self._write_fd = -1
+            self._close_write_fd()
+
+    def _close_write_fd(self) -> None:
+        """Atomically close the write fd. Thread-safe, idempotent."""
+        with self._fd_lock:
+            fd = self._write_fd
+            self._write_fd = -1
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
     def close_write_end(self) -> None:
         """Close the write end of the pipe immediately.
@@ -139,10 +147,7 @@ class WebSocketBridge:
         and signals EOF to mpv on the read end. Safe to call from
         any thread, idempotent.
         """
-        if self._write_fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(self._write_fd)
-            self._write_fd = -1
+        self._close_write_fd()
 
     async def stop(self) -> None:
         """Cancel the pump task and close pipe fds."""

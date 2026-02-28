@@ -43,9 +43,6 @@ PROTOCOL_LABELS: dict[str, str] = {
     "direct": "Direct RTSP URL",
 }
 
-# Ordered list of API response fields tried by "auto" (after websocket)
-_AUTO_FIELDS = ("mjpegHttpPath", "rtspOverHttpPath", "rtspPath", "multicstPath")
-
 # Map protocol name -> API response field
 _PROTO_FIELD: dict[str, str] = {
     "rtsp": "rtspPath",

@@ -129,9 +129,14 @@ def _offline_encrypt(content: str, serial: str, seed: int) -> str:
     return base64.b64encode(ciphertext).decode()
 
 
-async def offline_get_timestamp(api: SurveillanceAPI) -> int:
+async def offline_get_timestamp(
+    api: SurveillanceAPI,
+    serial: str = "",
+    model: str = "",
+) -> int:
     """Get timestamp from Synology license server."""
-    serial, model = await get_device_info(api)
+    if not serial or not model:
+        serial, model = await get_device_info(api)
     seed = random.randint(100000, 999999)
     payload = json.dumps({"method": "GetTimestamp"})
     cipher_text = _offline_encrypt(payload, serial, seed)
@@ -148,7 +153,10 @@ async def offline_get_timestamp(api: SurveillanceAPI) -> int:
         )
         resp.raise_for_status()
         result: dict[str, Any] = resp.json()
-        return int(result.get("timestamp", 0))
+        ts = int(result.get("timestamp", 0))
+        if not ts:
+            raise RuntimeError("License server returned no timestamp")
+        return ts
 
 
 async def offline_activate(api: SurveillanceAPI, license_keys: list[str]) -> dict[str, Any]:
@@ -187,7 +195,7 @@ async def offline_activate(api: SurveillanceAPI, license_keys: list[str]) -> dic
 async def offline_deactivate(api: SurveillanceAPI, license_keys: list[str]) -> dict[str, Any]:
     """Deactivate licenses offline via Synology license server."""
     serial, model = await get_device_info(api)
-    timestamp = await offline_get_timestamp(api)
+    timestamp = await offline_get_timestamp(api, serial, model)
     seed = random.randint(100000, 999999)
 
     lic_list = [{"dsModel": model, "dsSerial": serial, "key": key} for key in license_keys]

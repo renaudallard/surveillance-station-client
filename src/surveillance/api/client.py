@@ -216,14 +216,14 @@ class SurveillanceAPI:
                 return await self.raw_request(api, method, version, extra_params)
             raise
 
-    async def download(
+    async def _raw_download(
         self,
         api: str,
         method: str,
         version: int = 1,
         extra_params: dict[str, Any] | None = None,
     ) -> bytes:
-        """Download binary data from an API endpoint."""
+        """Download binary data from an API endpoint (no auto-reconnect)."""
         path = self._get_api_path(api)
         ver = self._get_api_version(api, version)
 
@@ -249,6 +249,32 @@ class SurveillanceAPI:
 
         content: bytes = resp.content
         return content
+
+    async def download(
+        self,
+        api: str,
+        method: str,
+        version: int = 1,
+        extra_params: dict[str, Any] | None = None,
+    ) -> bytes:
+        """Download binary data with auto-reconnect on session errors."""
+        try:
+            return await self._raw_download(api, method, version, extra_params)
+        except ApiError as e:
+            if e.code in SESSION_ERRORS and self.username and self.password:
+                log.info("Session error %d during download, attempting re-login", e.code)
+                try:
+                    await login(
+                        self,
+                        self.username,
+                        self.password,
+                        device_id=self.device_id,
+                        device_name=platform.node(),
+                    )
+                except AuthError:
+                    raise SessionExpiredError("Re-login failed") from e
+                return await self._raw_download(api, method, version, extra_params)
+            raise
 
     def get_stream_url(self, path: str, extra_params: dict[str, Any] | None = None) -> str:
         """Build a full URL for streaming endpoints."""

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class LoginDialog(Gtk.Dialog):
+class LoginDialog(Gtk.Window):
     """Login dialog for connecting to a Synology NAS."""
 
     def __init__(self, app: SurveillanceApp, parent: Gtk.Window) -> None:
@@ -61,8 +61,11 @@ class LoginDialog(Gtk.Dialog):
         self.app = app
         self.set_default_size(400, 350)
 
-        content = self.get_content_area()
-        content.set_spacing(12)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(outer)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_vexpand(True)
         content.set_margin_top(12)
         content.set_margin_bottom(12)
         content.set_margin_start(12)
@@ -124,13 +127,27 @@ class LoginDialog(Gtk.Dialog):
         self.status_label.add_css_class("error")
         content.append(self.status_label)
 
-        # Buttons
-        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        self.connect_btn = self.add_button("Connect", Gtk.ResponseType.OK)
-        self.connect_btn.add_css_class("suggested-action")
-        self.set_default_response(Gtk.ResponseType.OK)
+        outer.append(content)
 
-        self.connect("response", self._on_response)
+        # Button bar
+        btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_bar.set_margin_top(8)
+        btn_bar.set_margin_bottom(12)
+        btn_bar.set_margin_start(12)
+        btn_bar.set_margin_end(12)
+        btn_bar.set_halign(Gtk.Align.END)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", lambda _: self.close())
+        btn_bar.append(cancel_btn)
+
+        self.connect_btn = Gtk.Button(label="Connect")
+        self.connect_btn.add_css_class("suggested-action")
+        self.connect_btn.connect("clicked", self._on_connect_clicked)
+        btn_bar.append(self.connect_btn)
+
+        outer.append(Gtk.Separator())
+        outer.append(btn_bar)
 
         # Load default profile if available
         self._on_profile_changed(self.profile_combo)
@@ -170,11 +187,7 @@ class LoginDialog(Gtk.Dialog):
             self.user_entry.set_text("")
             self.pass_entry.set_text("")
 
-    def _on_response(self, dialog: Gtk.Dialog, response_id: int) -> None:
-        if response_id != Gtk.ResponseType.OK:
-            self.destroy()
-            return
-
+    def _on_connect_clicked(self, btn: Gtk.Button) -> None:
         host = self.host_entry.get_text().strip()
         port_str = self.port_entry.get_text().strip()
         username = self.user_entry.get_text().strip()
@@ -268,7 +281,7 @@ class LoginDialog(Gtk.Dialog):
         if parent and hasattr(parent, "on_connected"):
             parent.on_connected()
 
-        self.destroy()
+        self.close()
 
     def _on_connect_error(self, error: Exception) -> None:
         if isinstance(error, OtpRequiredError):
@@ -285,15 +298,18 @@ class LoginDialog(Gtk.Dialog):
 
     def _show_otp_dialog(self) -> None:
         """Show dialog to enter a 6-digit OTP code for two-factor auth."""
-        dialog = Gtk.Dialog(
+        dialog = Gtk.Window(
             title="Two-Factor Authentication",
             transient_for=self,
             modal=True,
         )
         dialog.set_default_size(350, -1)
 
-        content = dialog.get_content_area()
-        content.set_spacing(12)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        dialog.set_child(outer)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_vexpand(True)
         content.set_margin_top(12)
         content.set_margin_bottom(12)
         content.set_margin_start(12)
@@ -317,16 +333,28 @@ class LoginDialog(Gtk.Dialog):
         otp_status.add_css_class("error")
         content.append(otp_status)
 
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        verify_btn = dialog.add_button("Verify", Gtk.ResponseType.OK)
+        outer.append(content)
+
+        # Button bar
+        btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_bar.set_margin_top(8)
+        btn_bar.set_margin_bottom(12)
+        btn_bar.set_margin_start(12)
+        btn_bar.set_margin_end(12)
+        btn_bar.set_halign(Gtk.Align.END)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", lambda _: dialog.close())
+        btn_bar.append(cancel_btn)
+
+        verify_btn = Gtk.Button(label="Verify")
         verify_btn.add_css_class("suggested-action")
-        dialog.set_default_response(Gtk.ResponseType.OK)
+        btn_bar.append(verify_btn)
 
-        def on_otp_response(_dialog: Gtk.Dialog, response_id: int) -> None:
-            if response_id != Gtk.ResponseType.OK:
-                dialog.destroy()
-                return
+        outer.append(Gtk.Separator())
+        outer.append(btn_bar)
 
+        def _on_verify(_btn: Gtk.Button) -> None:
             code = otp_entry.get_text().strip()
             if not code or len(code) != 6 or not code.isdigit():
                 otp_status.set_text("Enter a valid 6-digit code")
@@ -352,7 +380,7 @@ class LoginDialog(Gtk.Dialog):
             )
 
         def _on_otp_success(result: Any) -> None:
-            dialog.destroy()
+            dialog.close()
             self._on_connect_success(result)
 
         def _on_otp_error(error: Exception) -> None:
@@ -368,5 +396,5 @@ class LoginDialog(Gtk.Dialog):
             else:
                 otp_status.set_text(f"Error: {error}")
 
-        dialog.connect("response", on_otp_response)
+        verify_btn.connect("clicked", _on_verify)
         dialog.present()

@@ -260,35 +260,35 @@ class RecordingsView(Gtk.Box):
         if self._search_to_time:
             to_time = datetime.fromtimestamp(self._search_to_time)
 
+        def _on_search(
+            camera_ids: list[int] | None,
+            from_dt: datetime | None,
+            to_dt: datetime | None,
+        ) -> None:
+            self._search_camera_ids = camera_ids
+            self._search_from_time = int(from_dt.timestamp()) if from_dt else None
+            self._search_to_time = int(to_dt.timestamp()) if to_dt else None
+            self._offset = 0
+            self._save_search_to_config()
+            self._load_recordings()
+
+        def _on_reset() -> None:
+            self._search_camera_ids = None
+            self._search_from_time = None
+            self._search_to_time = None
+            self._offset = 0
+            self._save_search_to_config()
+            self._load_recordings()
+
         dialog = RecordingSearchDialog(
             self.window,
             self.window.sidebar.cameras,
+            on_search=_on_search,
+            on_reset=_on_reset,
             selected_ids=self._search_camera_ids,
             from_time=from_time,
             to_time=to_time,
         )
-
-        def on_response(dlg: RecordingSearchDialog, response: int) -> None:
-            if response == Gtk.ResponseType.OK:
-                camera_ids = dlg.get_selected_camera_ids()
-                from_dt = dlg.get_from_time()
-                to_dt = dlg.get_to_time()
-                self._search_camera_ids = camera_ids
-                self._search_from_time = int(from_dt.timestamp()) if from_dt else None
-                self._search_to_time = int(to_dt.timestamp()) if to_dt else None
-                self._offset = 0
-                self._save_search_to_config()
-                self._load_recordings()
-            elif response == Gtk.ResponseType.REJECT:
-                self._search_camera_ids = None
-                self._search_from_time = None
-                self._search_to_time = None
-                self._offset = 0
-                self._save_search_to_config()
-                self._load_recordings()
-            dlg.destroy()
-
-        dialog.connect("response", on_response)
         dialog.present()
 
     def _on_load_error(self, error: Exception) -> None:

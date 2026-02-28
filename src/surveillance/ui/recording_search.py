@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import gi
 
@@ -43,13 +43,15 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class RecordingSearchDialog(Gtk.Dialog):
+class RecordingSearchDialog(Gtk.Window):
     """Dialog for configuring recording search filters."""
 
     def __init__(
         self,
         parent: Gtk.Window,
         cameras: list[Camera],
+        on_search: Callable[[list[int] | None, datetime | None, datetime | None], None],
+        on_reset: Callable[[], None],
         selected_ids: list[int] | None = None,
         from_time: datetime | None = None,
         to_time: datetime | None = None,
@@ -62,11 +64,16 @@ class RecordingSearchDialog(Gtk.Dialog):
         self._cameras = cameras
         self._camera_checks: dict[int, Gtk.CheckButton] = {}
         self._time_preset_used = from_time is not None or to_time is not None
+        self._on_search = on_search
+        self._on_reset = on_reset
 
         self.set_default_size(450, 400)
 
-        content = self.get_content_area()
-        content.set_spacing(12)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(outer)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_vexpand(True)
         content.set_margin_top(12)
         content.set_margin_bottom(12)
         content.set_margin_start(12)
@@ -159,11 +166,34 @@ class RecordingSearchDialog(Gtk.Dialog):
         cam_frame.set_child(cam_scroll)
         content.append(cam_frame)
 
-        self.add_button("Reset", Gtk.ResponseType.REJECT)
-        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        search_btn = self.add_button("Search", Gtk.ResponseType.OK)
+        outer.append(content)
+
+        # Button bar
+        btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_bar.set_margin_top(8)
+        btn_bar.set_margin_bottom(12)
+        btn_bar.set_margin_start(12)
+        btn_bar.set_margin_end(12)
+
+        reset_btn = Gtk.Button(label="Reset")
+        reset_btn.connect("clicked", self._on_reset_clicked)
+        btn_bar.append(reset_btn)
+
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        btn_bar.append(spacer)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", lambda _: self.close())
+        btn_bar.append(cancel_btn)
+
+        search_btn = Gtk.Button(label="Search")
         search_btn.add_css_class("suggested-action")
-        self.set_default_response(Gtk.ResponseType.OK)
+        search_btn.connect("clicked", self._on_search_clicked)
+        btn_bar.append(search_btn)
+
+        outer.append(Gtk.Separator())
+        outer.append(btn_bar)
 
         if from_time:
             self._set_datetime(self.from_date, self.from_time_entry, from_time)
@@ -227,20 +257,32 @@ class RecordingSearchDialog(Gtk.Dialog):
             hour, minute, second = 0, 0, 0
         return datetime(year, month, day, hour, minute, second)
 
-    def get_selected_camera_ids(self) -> list[int] | None:
+    def _get_selected_camera_ids(self) -> list[int] | None:
         """Return selected camera IDs, or None for all cameras."""
         if self.all_cam_btn.get_active():
             return None
         return [cam_id for cam_id, check in self._camera_checks.items() if check.get_active()]
 
-    def get_from_time(self) -> datetime | None:
+    def _get_from_time(self) -> datetime | None:
         """Return the start of the time range, or None if not set."""
         if not self.from_time_entry.get_text().strip() and not self._time_preset_used:
             return None
         return self._get_datetime(self.from_date, self.from_time_entry, "00:00:00")
 
-    def get_to_time(self) -> datetime | None:
+    def _get_to_time(self) -> datetime | None:
         """Return the end of the time range, or None if not set."""
         if not self.to_time_entry.get_text().strip() and not self._time_preset_used:
             return None
         return self._get_datetime(self.to_date, self.to_time_entry, "23:59:59")
+
+    def _on_search_clicked(self, btn: Gtk.Button) -> None:
+        self._on_search(
+            self._get_selected_camera_ids(),
+            self._get_from_time(),
+            self._get_to_time(),
+        )
+        self.close()
+
+    def _on_reset_clicked(self, btn: Gtk.Button) -> None:
+        self._on_reset()
+        self.close()

@@ -103,6 +103,11 @@ class PlayerDialog(Gtk.Window):
         self.position_scale.set_draw_value(False)
         self._seeking = False
         self.position_scale.connect("change-value", self._on_seek)
+        click = Gtk.GestureClick()
+        click.connect("pressed", lambda *_: setattr(self, "_seeking", True))
+        click.connect("released", lambda *_: setattr(self, "_seeking", False))
+        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.position_scale.add_controller(click)
         controls.append(self.position_scale)
 
         # Time label
@@ -155,6 +160,9 @@ class PlayerDialog(Gtk.Window):
 
     def _update_position(self) -> bool:
         """Update position slider and time label."""
+        if self._seeking:
+            return True
+
         pos = self.player.time_pos
         duration = self.player.duration
 

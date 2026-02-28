@@ -148,6 +148,12 @@ class CameraSidebar(Gtk.Box):
         ):
             return
 
+        # Remember selected camera before rebuilding
+        selected_row = self.listbox.get_selected_row()
+        selected_id: int | None = None
+        if selected_row is not None:
+            selected_id = selected_row.camera.id  # type: ignore[attr-defined]
+
         self.cameras = cameras
 
         # Remove old rows
@@ -157,10 +163,12 @@ class CameraSidebar(Gtk.Box):
                 break
             self.listbox.remove(row)
 
-        # Add camera rows
+        # Add camera rows and restore selection
         for cam in cameras:
             row = self._create_camera_row(cam)
             self.listbox.append(row)
+            if cam.id == selected_id:
+                self.listbox.select_row(row)
 
     def _create_camera_row(self, cam: Camera) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()

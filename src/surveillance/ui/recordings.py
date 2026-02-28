@@ -30,6 +30,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import logging
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -491,7 +492,8 @@ class RecordingsView(Gtk.Box):
         """Download recording to disk."""
         dialog = Gtk.FileDialog()
         start = datetime.fromtimestamp(rec.start_time)
-        dialog.set_initial_name(f"{rec.camera_name}_{start:%Y%m%d_%H%M%S}.mp4")
+        safe_name = re.sub(r'[/\\<>:"|?*]', "_", rec.camera_name)
+        dialog.set_initial_name(f"{safe_name}_{start:%Y%m%d_%H%M%S}.mp4")
 
         def _on_save(d: Gtk.FileDialog, result: object) -> None:
             try:

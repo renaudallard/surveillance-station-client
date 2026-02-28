@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -163,7 +164,8 @@ class SnapshotsView(Gtk.Box):
 
         snap_dir = Path(self.app.config.snapshot_dir)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = snap_dir / f"{camera.name}_{timestamp}.jpg"
+        safe_name = re.sub(r'[/\\<>:"|?*]', "_", camera.name)
+        output = snap_dir / f"{safe_name}_{timestamp}.jpg"
 
         run_async(
             save_snapshot(self.app.api, camera.id, output),

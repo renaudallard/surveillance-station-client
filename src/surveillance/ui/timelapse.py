@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -349,7 +350,8 @@ class TimeLapseView(Gtk.Box):
     def _on_download(self, btn: Gtk.Button, rec: TimeLapseRecording) -> None:
         dialog = Gtk.FileDialog()
         start = datetime.fromtimestamp(rec.start_time)
-        dialog.set_initial_name(f"timelapse_{rec.camera_name}_{start:%Y%m%d_%H%M%S}.mp4")
+        safe_name = re.sub(r'[/\\<>:"|?*]', "_", rec.camera_name)
+        dialog.set_initial_name(f"timelapse_{safe_name}_{start:%Y%m%d_%H%M%S}.mp4")
 
         def _on_save(d: Gtk.FileDialog, result: object) -> None:
             try:

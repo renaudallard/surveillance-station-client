@@ -203,13 +203,30 @@ class SnapshotsView(Gtk.Box):
         dialog.save(self.window, None, _on_save)
 
     def _on_delete(self, btn: Gtk.Button, snap: Snapshot) -> None:
-        if not self.app.api:
+        api = self.app.api
+        if not api:
             return
-        run_async(
-            delete_snapshot(self.app.api, snap.id),
-            callback=lambda _: self._load_snapshots(),
-            error_callback=lambda e: log.error("Delete failed: %s", e),
-        )
+
+        dialog = Gtk.AlertDialog()
+        dialog.set_message("Delete snapshot?")
+        dialog.set_detail("This cannot be undone.")
+        dialog.set_buttons(["Cancel", "Delete"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(0)
+
+        def _on_response(d: Gtk.AlertDialog, result: object) -> None:
+            try:
+                idx = d.choose_finish(result)
+            except Exception:
+                return
+            if idx == 1:
+                run_async(
+                    delete_snapshot(api, snap.id),
+                    callback=lambda _: self._load_snapshots(),
+                    error_callback=lambda e: log.error("Delete failed: %s", e),
+                )
+
+        dialog.choose(self.window, None, _on_response)
 
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection from sidebar."""

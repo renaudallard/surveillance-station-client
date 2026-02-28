@@ -392,13 +392,30 @@ class TimeLapseView(Gtk.Box):
             )
 
     def _on_delete(self, btn: Gtk.Button, rec: TimeLapseRecording) -> None:
-        if not self.app.api:
+        api = self.app.api
+        if not api:
             return
-        run_async(
-            delete_recordings(self.app.api, [rec.id]),
-            callback=lambda _: self._load_recordings(),
-            error_callback=lambda e: log.error("Delete failed: %s", e),
-        )
+
+        dialog = Gtk.AlertDialog()
+        dialog.set_message("Delete time lapse recording?")
+        dialog.set_detail("This cannot be undone.")
+        dialog.set_buttons(["Cancel", "Delete"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(0)
+
+        def _on_response(d: Gtk.AlertDialog, result: object) -> None:
+            try:
+                idx = d.choose_finish(result)
+            except Exception:
+                return
+            if idx == 1:
+                run_async(
+                    delete_recordings(api, [rec.id]),
+                    callback=lambda _: self._load_recordings(),
+                    error_callback=lambda e: log.error("Delete failed: %s", e),
+                )
+
+        dialog.choose(self.window, None, _on_response)
 
     def _on_prev(self, btn: Gtk.Button) -> None:
         self._offset = max(0, self._offset - _PAGE_SIZE)

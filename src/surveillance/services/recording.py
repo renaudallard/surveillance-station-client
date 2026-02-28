@@ -151,10 +151,8 @@ async def download_recording(
     return output_path
 
 
-_snapshot_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
 _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
 
-_MAX_SNAPSHOT_CACHE = 32
 _MAX_THUMBNAIL_CACHE = 128
 
 
@@ -168,8 +166,7 @@ def _cache_put(
 
 
 def clear_snapshot_cache() -> None:
-    """Clear the thumbnail snapshot cache."""
-    _snapshot_cache.clear()
+    """Clear the thumbnail cache."""
     _recording_thumbnail_cache.clear()
 
 

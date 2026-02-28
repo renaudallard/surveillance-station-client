@@ -41,6 +41,15 @@ class _RedactFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
             record.msg = _REDACT_RE.sub(r"\1=***", record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _REDACT_RE.sub(r"\1=***", a) if isinstance(a, str) else a for a in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = {
+                k: _REDACT_RE.sub(r"\1=***", v) if isinstance(v, str) else v
+                for k, v in record.args.items()
+            }
         return True
 
 
@@ -57,7 +66,7 @@ def main() -> None:
     logging.getLogger().addFilter(_RedactFilter())
 
     # Suppress chatty third-party loggers in debug mode
-    for name in ("OpenGL", "websockets", "hpack", "httpcore"):
+    for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):
         logging.getLogger(name).setLevel(max(level, logging.WARNING))
 
     import os

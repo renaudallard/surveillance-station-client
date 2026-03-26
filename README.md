@@ -425,6 +425,14 @@ Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 
 ---
 
+## Support
+
+If you find this project useful, you can support its development:
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?logo=paypal)](https://www.paypal.me/RenaudAllard)
+
+---
+
 ## Disclaimer
 
 This project is **not affiliated with, endorsed by, or sponsored by Synology Inc.**

@@ -40,6 +40,20 @@ import websockets.asyncio.client as ws_client
 log = logging.getLogger(__name__)
 
 
+def _classify_error(exc: BaseException) -> str:
+    """Return a human-readable description of a WebSocket connection failure."""
+    exc_type = type(exc).__name__
+    exc_str = str(exc)
+    low = exc_str.lower()
+    if "502" in exc_str or "bad gateway" in low:
+        return "HTTP 502 (NAS overloaded or camera stream not ready)"
+    if "invalidstatus" in exc_type.lower() or "reject" in low:
+        return f"handshake failed: {exc_str}"
+    if "ssl" in exc_type.lower() or "ssl" in low:
+        return f"TLS error: {exc_str}"
+    return f"{exc_type}: {exc_str}"
+
+
 class WebSocketBridge:
     """Bridge a WebSocket video stream to an in-memory pipe for mpv."""
 
@@ -126,8 +140,8 @@ class WebSocketBridge:
                             await asyncio.to_thread(os.write, self._write_fd, payload)
         except (asyncio.CancelledError, BrokenPipeError):
             log.debug("WebSocket bridge cancelled")
-        except Exception:
-            log.exception("WebSocket bridge error")
+        except Exception as exc:
+            log.exception("WebSocket bridge error: %s", _classify_error(exc))
         finally:
             self._close_write_fd()
 

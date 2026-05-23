@@ -432,3 +432,32 @@ class TestRecordingService:
             assert call_kwargs[1]["extra_params"]["toTime"] == "1700086400"
             assert call_kwargs[1]["extra_params"]["offset"] == "100"
             assert call_kwargs[1]["extra_params"]["limit"] == "20"
+
+
+class TestWsBridgeClassify:
+    def test_http_502_in_message(self) -> None:
+        from surveillance.services.ws_bridge import _classify_error
+
+        msg = _classify_error(Exception("server rejected WebSocket connection: HTTP 502"))
+        assert "502" in msg
+
+    def test_bad_gateway_case_insensitive(self) -> None:
+        from surveillance.services.ws_bridge import _classify_error
+
+        msg = _classify_error(Exception("Server returned: Bad Gateway"))
+        assert "502" in msg
+
+    def test_tls_error(self) -> None:
+        import ssl
+
+        from surveillance.services.ws_bridge import _classify_error
+
+        msg = _classify_error(ssl.SSLError("certificate verify failed"))
+        assert "TLS" in msg
+
+    def test_generic_fallback(self) -> None:
+        from surveillance.services.ws_bridge import _classify_error
+
+        msg = _classify_error(RuntimeError("something else"))
+        assert "RuntimeError" in msg
+        assert "something else" in msg

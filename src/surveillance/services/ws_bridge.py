@@ -141,7 +141,8 @@ class WebSocketBridge:
         except (asyncio.CancelledError, BrokenPipeError):
             log.debug("WebSocket bridge cancelled")
         except Exception as exc:
-            log.exception("WebSocket bridge error: %s", _classify_error(exc))
+            classified = _classify_error(exc)
+            log.exception("WebSocket bridge error: %s", classified)
         finally:
             self._close_write_fd()
 

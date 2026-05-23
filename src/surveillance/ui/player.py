@@ -46,6 +46,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_PLAYBACK_START_TIMEOUT_MS = 7000
+
 
 class PlayerDialog(Gtk.Window):
     """Recording playback window with transport controls."""
@@ -55,6 +57,8 @@ class PlayerDialog(Gtk.Window):
         self.app = app
         self.recording = recording
         self._tick_id: int = 0
+        self._playback_check_id: int = 0
+        self._loading = True
 
         start = datetime.fromtimestamp(recording.start_time)
         self.set_title(f"{recording.camera_name} - {start:%Y-%m-%d %H:%M:%S}")
@@ -69,6 +73,15 @@ class PlayerDialog(Gtk.Window):
         self.player = MpvGLArea(tls_verify=verify_ssl)
         self.player.set_vexpand(True)
         main_box.append(self.player)
+
+        # Status line shown while loading or on failure
+        self._status_label = Gtk.Label(label="Loading…")
+        self._status_label.add_css_class("dim-label")
+        self._status_label.add_css_class("caption")
+        self._status_label.set_margin_start(8)
+        self._status_label.set_margin_top(2)
+        self._status_label.set_xalign(0)
+        main_box.append(self._status_label)
 
         # Transport controls
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -140,6 +153,33 @@ class PlayerDialog(Gtk.Window):
         self.player.play(url)
         self.player.set_volume(50)
         self._tick_id = GLib.timeout_add(500, self._update_position)
+        self._playback_check_id = GLib.timeout_add(
+            _PLAYBACK_START_TIMEOUT_MS, self._check_playback_started
+        )
+
+    def _check_playback_started(self) -> bool:
+        """One-shot: if no frame has been decoded yet, surface a failure dialog."""
+        self._playback_check_id = 0
+        if self.player.time_pos is None:
+            log.warning(
+                "Recording playback did not start within %dms: camera=%s id=%d",
+                _PLAYBACK_START_TIMEOUT_MS,
+                self.recording.camera_name,
+                self.recording.id,
+            )
+            self._loading = False
+            self._status_label.set_text("Playback failed")
+            dialog = Gtk.AlertDialog()
+            dialog.set_message("Playback failed")
+            dialog.set_detail(
+                f"The recording from '{self.recording.camera_name}' could not be played.\n\n"
+                "The stream URL may have expired (close and reopen the dialog), "
+                "the codec may need hardware decoding, or mpv cannot parse this "
+                "stream. Downloading the recording often works as a workaround."
+            )
+            dialog.set_buttons(["OK"])
+            dialog.show(self)
+        return False
 
     def _on_play_pause(self, btn: Gtk.Button) -> None:
         self.player.pause()
@@ -166,17 +206,26 @@ class PlayerDialog(Gtk.Window):
         pos = self.player.time_pos
         duration = self.player.duration
 
-        if pos is not None and duration is not None and duration > 0:
-            self.position_scale.set_value(pos / duration * 100)
-
-            pos_min, pos_sec = divmod(int(pos), 60)
-            dur_min, dur_sec = divmod(int(duration), 60)
-            self.time_label.set_text(f"{pos_min:02d}:{pos_sec:02d} / {dur_min:02d}:{dur_sec:02d}")
+        if pos is not None:
+            if self._loading:
+                self._loading = False
+                self._status_label.set_text("")
+            if duration is not None and duration > 0:
+                self.position_scale.set_value(pos / duration * 100)
+                pos_min, pos_sec = divmod(int(pos), 60)
+                dur_min, dur_sec = divmod(int(duration), 60)
+                self.time_label.set_text(
+                    f"{pos_min:02d}:{pos_sec:02d} / {dur_min:02d}:{dur_sec:02d}"
+                )
 
         return True  # continue ticking
 
     def _on_close(self, window: Gtk.Window) -> bool:
         if self._tick_id:
             GLib.source_remove(self._tick_id)
+            self._tick_id = 0
+        if self._playback_check_id:
+            GLib.source_remove(self._playback_check_id)
+            self._playback_check_id = 0
         self.player.stop()
         return False

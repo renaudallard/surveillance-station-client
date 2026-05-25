@@ -547,7 +547,7 @@ class TestMpvSafeSetOption:
     @pytest.fixture(autouse=True)
     def _require_gtk(self) -> None:
         try:
-            import gi  # noqa: F401
+            import gi
 
             gi.require_version("Gtk", "4.0")
             from gi.repository import Gtk  # noqa: F401
@@ -605,7 +605,7 @@ class TestWebSocketBridgeErrors:
 
     @pytest.mark.asyncio
     async def test_connection_error_calls_on_error_callback(self) -> None:
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         from surveillance.services.ws_bridge import WebSocketBridge
 

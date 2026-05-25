@@ -59,6 +59,7 @@ class LoginDialog(Gtk.Window):
             modal=True,
         )
         self.app = app
+        self._current_api: SurveillanceAPI | None = None
         self.set_default_size(400, 350)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -218,6 +219,9 @@ class LoginDialog(Gtk.Window):
             device_id=existing.device_id if existing else "",
         )
 
+        if self._current_api is not None:
+            run_async(self._current_api.close())
+
         api = SurveillanceAPI(profile)
         self._current_api = api
         self._current_profile = profile
@@ -295,6 +299,9 @@ class LoginDialog(Gtk.Window):
             return
         self.status_label.set_text(f"Connection failed: {error}")
         self.connect_btn.set_sensitive(True)
+        if self._current_api is not None:
+            run_async(self._current_api.close())
+            self._current_api = None
 
     def _show_otp_dialog(self) -> None:
         """Show dialog to enter a 6-digit OTP code for two-factor auth."""
@@ -343,8 +350,14 @@ class LoginDialog(Gtk.Window):
         btn_bar.set_margin_end(12)
         btn_bar.set_halign(Gtk.Align.END)
 
+        def _on_otp_cancel(_btn: Gtk.Button) -> None:
+            dialog.close()
+            if self._current_api is not None:
+                run_async(self._current_api.close())
+                self._current_api = None
+
         cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect("clicked", lambda _: dialog.close())
+        cancel_btn.connect("clicked", _on_otp_cancel)
         btn_bar.append(cancel_btn)
 
         verify_btn = Gtk.Button(label="Verify")
@@ -358,6 +371,10 @@ class LoginDialog(Gtk.Window):
             code = otp_entry.get_text().strip()
             if not code or len(code) != 6 or not code.isdigit():
                 otp_status.set_text("Enter a valid 6-digit code")
+                return
+
+            if self._current_api is None:
+                otp_status.set_text("No active connection")
                 return
 
             verify_btn.set_sensitive(False)

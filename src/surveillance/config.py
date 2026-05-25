@@ -116,6 +116,7 @@ class AppConfig:
     search_camera_ids: list[int] = field(default_factory=list)
     search_from_time: str = ""
     search_to_time: str = ""
+    search_time_preset: str = ""  # "today", "yesterday", "last24h", "last7d", or ""
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -177,6 +178,7 @@ def load_config() -> AppConfig:
         search_camera_ids=session.get("search_camera_ids", []),
         search_from_time=session.get("search_from_time", ""),
         search_to_time=session.get("search_to_time", ""),
+        search_time_preset=session.get("search_time_preset", ""),
     )
 
 
@@ -234,6 +236,7 @@ def _write_config(config: AppConfig) -> None:
             "search_camera_ids": config.search_camera_ids,
             "search_from_time": config.search_from_time,
             "search_to_time": config.search_to_time,
+            "search_time_preset": config.search_time_preset,
         },
         "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
         "camera_protocols": {

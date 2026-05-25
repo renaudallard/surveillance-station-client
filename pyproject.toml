@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "surveillance"
-version = "0.3.4"
+version = "0.3.5"
 description = "Native desktop client for Synology Surveillance Station"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -53,6 +53,7 @@ ignore = [
 "src/surveillance/app.py" = ["E402", "PLC0415"]
 "src/surveillance/__main__.py" = ["PLC0415"]
 "src/surveillance/config.py" = ["PLC0415"]
+"tests/*.py" = ["S101", "PLC0415", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"

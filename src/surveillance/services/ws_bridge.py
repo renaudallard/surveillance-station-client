@@ -34,6 +34,7 @@ import os
 import ssl
 import struct
 import threading
+from collections.abc import Callable
 
 import websockets.asyncio.client as ws_client
 
@@ -41,16 +42,38 @@ log = logging.getLogger(__name__)
 
 
 class WebSocketBridge:
-    """Bridge a WebSocket video stream to an in-memory pipe for mpv."""
+    """Bridge a WebSocket video stream to an in-memory pipe for mpv.
 
-    def __init__(self, ws_url: str, verify_ssl: bool, sid: str) -> None:
+    The bridge connects to a Synology WebSocket stream, strips the proprietary
+    4-byte-length framing, and writes raw Annex-B NAL units to a Unix pipe so
+    mpv can play them via fd://<read_fd>.
+
+    Connection failures (including HTTP 502) are caught, logged, and reported
+    via the optional *on_error* callback.  They never propagate as unhandled
+    exceptions.
+    """
+
+    def __init__(
+        self,
+        ws_url: str,
+        verify_ssl: bool,
+        sid: str,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
         self._ws_url = ws_url
         self._verify_ssl = verify_ssl
         self._sid = sid
+        self._on_error = on_error
         self._read_fd: int = -1
         self._write_fd: int = -1
         self._fd_lock = threading.Lock()
         self._pump_task: asyncio.Task[None] | None = None
+        self._error: str | None = None
+
+    @property
+    def error(self) -> str | None:
+        """Most recent error message, or None if the bridge is healthy."""
+        return self._error
 
     async def start(self) -> str:
         """Create pipe, start pump task, return fd:// URL for mpv."""
@@ -89,6 +112,31 @@ class WebSocketBridge:
         # as its last 4 bytes.  Prepend it so mpv can detect NAL boundaries.
         return b"\x00\x00\x00\x01" + payload
 
+    def _classify_error(self, exc: BaseException) -> str:
+        """Return a human-readable description for a WebSocket connection error."""
+        exc_type = type(exc).__name__
+        exc_str = str(exc)
+
+        # HTTP 502 Bad Gateway: NAS overloaded, camera stream not ready, or
+        # Surveillance Station proxy rejected the connection.
+        if "502" in exc_str or "Bad Gateway" in exc_str.lower():
+            return (
+                "WebSocket connection rejected with HTTP 502 — "
+                "the NAS may be overloaded or the camera stream is not ready. "
+                "Try RTSP or MJPEG protocol as a fallback."
+            )
+
+        # Other non-2xx HTTP status during WebSocket handshake
+        if "InvalidStatus" in exc_type or "reject" in exc_str.lower():
+            return f"WebSocket handshake failed: {exc_str}"
+
+        # TLS/SSL issues
+        if "ssl" in exc_type.lower() or "SSL" in exc_str:
+            return f"WebSocket TLS error: {exc_str}"
+
+        # Generic connection failure
+        return f"WebSocket error ({exc_type}): {exc_str}"
+
     async def _pump(self) -> None:
         """Connect to the WebSocket and write video frames to the pipe.
 
@@ -97,6 +145,10 @@ class WebSocketBridge:
         video payload (Annex B H.264/H.265 NAL units) to the pipe.
         Audio frames are dropped since mpv cannot demux interleaved
         raw audio in a raw video byte stream.
+
+        Any connection failure is caught, classified, and reported via
+        the on_error callback.  The write end of the pipe is always
+        closed in the finally block so mpv sees EOF and terminates cleanly.
         """
         ssl_ctx: ssl.SSLContext | bool | None = None
         if self._ws_url.startswith("wss://"):
@@ -126,8 +178,15 @@ class WebSocketBridge:
                             await asyncio.to_thread(os.write, self._write_fd, payload)
         except (asyncio.CancelledError, BrokenPipeError):
             log.debug("WebSocket bridge cancelled")
-        except Exception:
-            log.exception("WebSocket bridge error")
+        except Exception as exc:
+            error_msg = self._classify_error(exc)
+            log.error("surveillance.services.ws_bridge: %s", error_msg)  # noqa: TRY400
+            self._error = error_msg
+            if self._on_error is not None:
+                try:
+                    self._on_error(error_msg)
+                except Exception:
+                    log.debug("ws_bridge on_error callback raised", exc_info=True)
         finally:
             self._close_write_fd()
 

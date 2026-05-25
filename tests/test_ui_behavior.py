@@ -316,7 +316,7 @@ class TestPresetRange:
 
         from_ts, to_ts = preset_range("last7d")
         diff_days = (to_ts - from_ts) / 86400
-        # from_ts is midnight 7 days ago; to_ts is now — window is 7–8 days wide
+        # from_ts is midnight 7 days ago; to_ts is now - window is 7-8 days wide
         assert 7.0 <= diff_days < 8.0
 
     def test_unknown_preset_raises(self) -> None:

@@ -245,9 +245,24 @@ class SurveillanceAPI:
             result = resp.json()
             if not result.get("success"):
                 code = result.get("error", {}).get("code", 100)
-                raise ApiError(code)
+                syno_msg = result.get("error", {}).get("message", "")
+                raise ApiError(code, syno_msg)
+        elif "text/html" in content_type:
+            # DSM redirected to the login page — the session has expired.
+            log.warning(
+                "Download endpoint returned HTML (content-type=%s); "
+                "session may have expired",
+                content_type,
+            )
+            raise ApiError(
+                119,
+                "Server returned an HTML page — session expired or access denied",
+            )
 
         content: bytes = resp.content
+        if not content:
+            raise ApiError(100, "Server returned an empty response body")
+
         return content
 
     async def download(

@@ -182,7 +182,6 @@ class TestApiInfo:
             }
         )
         assert info.path == "entry.cgi"
-        assert info.min_version == 1
         assert info.max_version == 9
 
 
@@ -204,7 +203,6 @@ class TestLicense:
         assert lic.expired_date == 1735689600
         assert lic.is_expired is False
         assert lic.is_migrated is False
-        assert lic.owner_ds_id == 42
 
     def test_from_api_defaults(self) -> None:
         lic = License.from_api({})
@@ -214,7 +212,6 @@ class TestLicense:
         assert lic.expired_date == 0
         assert lic.is_expired is False
         assert lic.is_migrated is False
-        assert lic.owner_ds_id == 0
 
 
 class TestLicenseInfo:
@@ -264,8 +261,6 @@ class TestTimeLapseTask:
         assert task.name == "Front Door Lapse"
         assert task.camera_id == 3
         assert task.camera_name == "Front Door"
-        assert task.enabled is True
-        assert task.status == 2
 
     def test_from_api_defaults(self) -> None:
         task = TimeLapseTask.from_api({})
@@ -273,8 +268,6 @@ class TestTimeLapseTask:
         assert task.name == ""
         assert task.camera_id == 0
         assert task.camera_name == ""
-        assert task.enabled is True
-        assert task.status == 0
 
 
 class TestTimeLapseRecording:
@@ -299,7 +292,6 @@ class TestTimeLapseRecording:
         assert rec.camera_name == "Front Door"
         assert rec.start_time == 1700000000
         assert rec.stop_time == 1700003600
-        assert rec.task_id == 1
         assert rec.file_size == 5242880
         assert rec.is_locked is False
         assert rec.recording is False

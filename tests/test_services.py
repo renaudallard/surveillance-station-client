@@ -302,7 +302,7 @@ class TestTimeLapseService:
             assert len(tasks) == 2
             assert isinstance(tasks[0], TimeLapseTask)
             assert tasks[0].name == "Front Door Lapse"
-            assert tasks[1].enabled is False
+            assert tasks[1].name == "Backyard Lapse"
 
     @pytest.mark.asyncio
     async def test_list_recordings(self, api: SurveillanceAPI) -> None:

@@ -23,29 +23,18 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Tests for UI-level routing and recording filter / download logic (no GTK required)."""
+"""Tests for recording filter, download, and preset logic (no GTK required)."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
-from surveillance.api.models import Camera, CameraStatus
 from surveillance.config import AppConfig, ConnectionProfile
-
-
-def _make_camera(cam_id: int, name: str = "Cam") -> Camera:
-    return Camera(
-        id=cam_id,
-        name=name,
-        model="",
-        vendor="",
-        status=CameraStatus.ENABLED,
-    )
 
 
 @pytest.fixture
@@ -60,92 +49,6 @@ def api(profile: ConnectionProfile) -> SurveillanceAPI:
     return client
 
 
-# ---------------------------------------------------------------------------
-# Sidebar camera click routing
-# ---------------------------------------------------------------------------
-
-
-class TestCameraClickRouting:
-    """on_camera_selected routes to the active page handler."""
-
-    def _make_mock_page(self, has_handler: bool = True) -> MagicMock:
-        page = MagicMock()
-        if not has_handler:
-            del page.on_camera_selected
-        return page
-
-    def test_routes_to_page_with_handler(self) -> None:
-        camera = _make_camera(1, "Front Door")
-        page = MagicMock()
-        page.on_camera_selected = MagicMock()
-
-        # Simulate window.on_camera_selected logic
-        if hasattr(page, "on_camera_selected"):
-            page.on_camera_selected(camera)
-
-        page.on_camera_selected.assert_called_once_with(camera)
-
-    def test_no_call_when_page_lacks_handler(self) -> None:
-        camera = _make_camera(1, "Front Door")
-        page = MagicMock(spec=[])  # no attributes at all
-
-        called = []
-        if hasattr(page, "on_camera_selected"):
-            page.on_camera_selected(camera)
-            called.append(True)
-
-        assert called == []
-
-    def test_live_page_receives_camera(self) -> None:
-        """When on Live View, the live view handler is called."""
-        camera = _make_camera(3, "Garage")
-        live_page = MagicMock()
-        live_page.on_camera_selected = MagicMock()
-
-        # window routes to current visible page
-        current_page = live_page
-        if hasattr(current_page, "on_camera_selected"):
-            current_page.on_camera_selected(camera)
-
-        live_page.on_camera_selected.assert_called_once_with(camera)
-
-    def test_recordings_page_receives_camera(self) -> None:
-        """When on Recordings, the recordings handler is called (not live view)."""
-        camera = _make_camera(7, "Backyard")
-        recordings_page = MagicMock()
-        recordings_page.on_camera_selected = MagicMock()
-        live_page = MagicMock()
-        live_page.on_camera_selected = MagicMock()
-
-        # Simulate being on recordings page
-        current_page = recordings_page
-        if hasattr(current_page, "on_camera_selected"):
-            current_page.on_camera_selected(camera)
-
-        recordings_page.on_camera_selected.assert_called_once_with(camera)
-        live_page.on_camera_selected.assert_not_called()
-
-    def test_different_cameras_routed_independently(self) -> None:
-        """Multiple sequential camera selections each route correctly."""
-        cam_a = _make_camera(1, "CamA")
-        cam_b = _make_camera(2, "CamB")
-        page = MagicMock()
-        page.on_camera_selected = MagicMock()
-
-        for cam in (cam_a, cam_b):
-            if hasattr(page, "on_camera_selected"):
-                page.on_camera_selected(cam)
-
-        assert page.on_camera_selected.call_count == 2
-        assert page.on_camera_selected.call_args_list[0][0][0].id == 1
-        assert page.on_camera_selected.call_args_list[1][0][0].id == 2
-
-
-# ---------------------------------------------------------------------------
-# Recording filter parameter generation
-# ---------------------------------------------------------------------------
-
-
 class TestRecordingFilterParams:
     """list_recordings sends the correct query params for filter combinations."""
 
@@ -153,8 +56,9 @@ class TestRecordingFilterParams:
     async def test_no_filters(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api)
             params = mock.call_args[1]["extra_params"]
             assert "cameraIds" not in params
@@ -167,8 +71,9 @@ class TestRecordingFilterParams:
     async def test_single_camera_filter(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, camera_ids=[5])
             params = mock.call_args[1]["extra_params"]
             assert params["cameraIds"] == "5"
@@ -177,8 +82,9 @@ class TestRecordingFilterParams:
     async def test_multi_camera_filter(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, camera_ids=[1, 3, 7])
             params = mock.call_args[1]["extra_params"]
             assert params["cameraIds"] == "1,3,7"
@@ -187,8 +93,9 @@ class TestRecordingFilterParams:
     async def test_time_range_filter(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, from_time=1700000000, to_time=1700086400)
             params = mock.call_args[1]["extra_params"]
             assert params["fromTime"] == "1700000000"
@@ -198,8 +105,9 @@ class TestRecordingFilterParams:
     async def test_from_time_only(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, from_time=1700000000)
             params = mock.call_args[1]["extra_params"]
             assert params["fromTime"] == "1700000000"
@@ -209,8 +117,9 @@ class TestRecordingFilterParams:
     async def test_to_time_only(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, to_time=1700086400)
             params = mock.call_args[1]["extra_params"]
             assert "fromTime" not in params
@@ -220,8 +129,9 @@ class TestRecordingFilterParams:
     async def test_combined_camera_and_time(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(
                 api,
                 camera_ids=[2, 4],
@@ -241,8 +151,9 @@ class TestRecordingFilterParams:
     async def test_pagination_offset(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, offset=100, limit=50)
             params = mock.call_args[1]["extra_params"]
             assert params["offset"] == "100"
@@ -253,8 +164,9 @@ class TestRecordingFilterParams:
         """Single camera_id (legacy) is sent as cameraIds."""
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, camera_id=9)
             params = mock.call_args[1]["extra_params"]
             assert params["cameraIds"] == "9"
@@ -264,16 +176,12 @@ class TestRecordingFilterParams:
         """camera_ids wins over camera_id when both are provided."""
         from surveillance.services.recording import list_recordings
 
-        with patch.object(api, "request", new_callable=AsyncMock,
-                          return_value={"events": [], "total": 0}) as mock:
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"events": [], "total": 0}
+        ) as mock:
             await list_recordings(api, camera_id=1, camera_ids=[2, 3])
             params = mock.call_args[1]["extra_params"]
             assert params["cameraIds"] == "2,3"
-
-
-# ---------------------------------------------------------------------------
-# Recording preset range calculation
-# ---------------------------------------------------------------------------
 
 
 class TestPresetRange:
@@ -331,11 +239,6 @@ class TestPresetRange:
         for preset in ("today", "yesterday", "last24h", "last7d"):
             from_ts, to_ts = preset_range(preset)
             assert to_ts > from_ts, f"preset={preset}: to_ts <= from_ts"
-
-
-# ---------------------------------------------------------------------------
-# Recording download parameter variants
-# ---------------------------------------------------------------------------
 
 
 class TestRecordingDownloadParams:
@@ -402,11 +305,6 @@ class TestRecordingDownloadParams:
 
         assert isinstance(result, Path)
         assert result == output
-
-
-# ---------------------------------------------------------------------------
-# Recording config persistence (search filters)
-# ---------------------------------------------------------------------------
 
 
 class TestRecordingFilterConfig:

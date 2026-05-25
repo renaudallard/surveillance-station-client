@@ -29,8 +29,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from surveillance.config import AppConfig, _write_config, load_config
 
 
@@ -111,7 +109,7 @@ class TestLayoutCamerasConfigRoundTrip:
         # Simulate state after switching: both layouts are present in config
         config = AppConfig(grid_layout="1x1")
         config.layout_cameras["2x2"] = [1, 2, 3, 4]  # preserved from before switch
-        config.layout_cameras["1x1"] = [5]             # new 1x1 selection
+        config.layout_cameras["1x1"] = [5]  # new 1x1 selection
 
         _write_config(config)
         loaded = load_config()
@@ -163,98 +161,3 @@ class TestCameraProtocolPersistence:
         loaded = load_config()
 
         assert loaded.camera_overrides[42] == "rtsp://10.0.0.1:554/stream1"
-
-
-class TestRestoreSessionLogic:
-    """Test the pure logic of restore_session without GTK."""
-
-    def test_camera_map_lookup(self) -> None:
-        """Camera IDs in layout_cameras map correctly to Camera objects."""
-        from surveillance.api.models import Camera, CameraStatus
-
-        cameras = [
-            Camera(id=1, name="Cam1", model="", vendor="", status=CameraStatus.ENABLED),
-            Camera(id=2, name="Cam2", model="", vendor="", status=CameraStatus.ENABLED),
-            Camera(id=3, name="Cam3", model="", vendor="", status=CameraStatus.ENABLED),
-        ]
-        cam_map = {c.id: c for c in cameras}
-        saved_ids = [2, 0, 1, 0]
-
-        # Simulate what restore_session does: map saved IDs to cameras
-        result = []
-        seen: set[int] = set()
-        for cam_id in saved_ids:
-            if cam_id and cam_id in cam_map and cam_id not in seen:
-                seen.add(cam_id)
-                result.append(cam_map[cam_id])
-            else:
-                result.append(None)
-
-        assert result[0] is not None and result[0].name == "Cam2"
-        assert result[1] is None  # slot 1 was empty (0)
-        assert result[2] is not None and result[2].name == "Cam1"
-        assert result[3] is None  # slot 3 was empty (0)
-
-    def test_duplicate_camera_id_skipped(self) -> None:
-        """A camera ID appearing twice in saved list is only assigned once."""
-        from surveillance.api.models import Camera, CameraStatus
-
-        cam = Camera(id=5, name="CamA", model="", vendor="", status=CameraStatus.ENABLED)
-        cam_map = {5: cam}
-        saved_ids = [5, 5, 5, 5]
-
-        result = []
-        seen: set[int] = set()
-        for cam_id in saved_ids:
-            if cam_id and cam_id in cam_map and cam_id not in seen:
-                seen.add(cam_id)
-                result.append(cam_map[cam_id])
-            else:
-                result.append(None)
-
-        assigned = [r for r in result if r is not None]
-        assert len(assigned) == 1
-        assert assigned[0].id == 5
-
-    def test_unknown_camera_id_skipped(self) -> None:
-        """Camera IDs not in the current camera list are silently skipped."""
-        from surveillance.api.models import Camera, CameraStatus
-
-        cameras = [
-            Camera(id=10, name="Known", model="", vendor="", status=CameraStatus.ENABLED),
-        ]
-        cam_map = {c.id: c for c in cameras}
-        saved_ids = [10, 99, 0, 42]  # 99 and 42 don't exist
-
-        result = []
-        seen: set[int] = set()
-        for cam_id in saved_ids:
-            if cam_id and cam_id in cam_map and cam_id not in seen:
-                seen.add(cam_id)
-                result.append(cam_map[cam_id])
-            else:
-                result.append(None)
-
-        assigned = [r for r in result if r is not None]
-        assert len(assigned) == 1
-        assert assigned[0].id == 10
-
-    @pytest.mark.parametrize(
-        "layout,expected_slots",
-        [
-            ("1x1", [0]),
-            ("2x2", [0, 1, 4, 5]),
-            ("3x3", [0, 1, 2, 4, 5, 6, 8, 9, 10]),
-            ("4x4", list(range(16))),
-        ],
-    )
-    def test_layout_visible_slots(self, layout: str, expected_slots: list[int]) -> None:
-        """Each layout maps to the correct physical slot indices (mirrors _LAYOUT_VISIBLE)."""
-        # These values mirror the constants in liveview.py — test that the mapping is correct.
-        _LAYOUT_VISIBLE: dict[str, list[int]] = {
-            "1x1": [0],
-            "2x2": [0, 1, 4, 5],
-            "3x3": [0, 1, 2, 4, 5, 6, 8, 9, 10],
-            "4x4": list(range(16)),
-        }
-        assert _LAYOUT_VISIBLE[layout] == expected_slots

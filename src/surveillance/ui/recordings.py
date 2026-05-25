@@ -363,6 +363,11 @@ class RecordingsView(Gtk.Box):
         self._loading = True
         self.prev_btn.set_sensitive(False)
         self.next_btn.set_sensitive(False)
+
+        # Recompute time range so presets like "Today" stay current after midnight
+        if self._search_time_preset:
+            self._search_from_time, self._search_to_time = preset_range(self._search_time_preset)
+
         self._update_filter_summary()
 
         camera_ids = self._search_camera_ids

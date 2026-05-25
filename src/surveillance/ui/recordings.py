@@ -44,24 +44,14 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # type: ignore[import-untyp
 from surveillance.api.models import Camera, Recording, decode_detection_labels
 from surveillance.config import save_config
 from surveillance.services.recording import (
-    PRESET_LAST7D as _PRESET_LAST7D,
-)
-from surveillance.services.recording import (
-    PRESET_LAST24H as _PRESET_LAST24H,
-)
-from surveillance.services.recording import (
-    PRESET_TODAY as _PRESET_TODAY,
-)
-from surveillance.services.recording import (
-    PRESET_YESTERDAY as _PRESET_YESTERDAY,
-)
-from surveillance.services.recording import (
+    PRESET_LAST7D,
+    PRESET_LAST24H,
+    PRESET_TODAY,
+    PRESET_YESTERDAY,
     download_recording,
     fetch_recording_thumbnail,
     list_recordings,
-)
-from surveillance.services.recording import (
-    preset_range as _preset_range,
+    preset_range,
 )
 from surveillance.ui.recording_search import RecordingSearchDialog
 from surveillance.util.async_bridge import run_async
@@ -96,7 +86,7 @@ class RecordingsView(Gtk.Box):
 
         self._load_search_from_config()
 
-        # ── Toolbar row 1 ────────────────────────────────────────────────
+        # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         toolbar.set_margin_top(8)
         toolbar.set_margin_bottom(4)
@@ -138,7 +128,7 @@ class RecordingsView(Gtk.Box):
 
         self.append(toolbar)
 
-        # ── Toolbar row 2: quick date presets ────────────────────────────
+        # Quick date presets
         preset_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         preset_bar.set_margin_start(8)
         preset_bar.set_margin_end(8)
@@ -151,10 +141,10 @@ class RecordingsView(Gtk.Box):
 
         self._preset_buttons: dict[str, Gtk.ToggleButton] = {}
         for key, text in [
-            (_PRESET_TODAY, "Today"),
-            (_PRESET_YESTERDAY, "Yesterday"),
-            (_PRESET_LAST24H, "Last 24 h"),
-            (_PRESET_LAST7D, "Last 7 days"),
+            (PRESET_TODAY, "Today"),
+            (PRESET_YESTERDAY, "Yesterday"),
+            (PRESET_LAST24H, "Last 24 h"),
+            (PRESET_LAST7D, "Last 7 days"),
         ]:
             btn = Gtk.ToggleButton(label=text)
             btn.add_css_class("flat")
@@ -165,7 +155,7 @@ class RecordingsView(Gtk.Box):
 
         self.append(preset_bar)
 
-        # ── Active filter summary ─────────────────────────────────────────
+        # Filter summary
         self.filter_summary = Gtk.Label(label="")
         self.filter_summary.set_margin_start(8)
         self.filter_summary.set_margin_bottom(4)
@@ -177,7 +167,7 @@ class RecordingsView(Gtk.Box):
 
         self.append(Gtk.Separator())
 
-        # ── Recording list ────────────────────────────────────────────────
+        # Recording list
         scroll = Gtk.ScrolledWindow()
         scroll.set_vexpand(True)
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -187,7 +177,7 @@ class RecordingsView(Gtk.Box):
         scroll.set_child(self.row_box)
         self.append(scroll)
 
-        # ── Download status bar ───────────────────────────────────────────
+        # Download status bar
         self._status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._status_bar.set_margin_start(8)
         self._status_bar.set_margin_end(8)
@@ -208,7 +198,7 @@ class RecordingsView(Gtk.Box):
         self.append(self._status_bar)
         self._last_download_dir: str = ""
 
-        # ── Pagination ────────────────────────────────────────────────────
+        # Pagination
         page_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         page_box.set_halign(Gtk.Align.CENTER)
         page_box.set_margin_top(4)
@@ -234,10 +224,6 @@ class RecordingsView(Gtk.Box):
         self._update_camera_filter()
         self._load_recordings()
 
-    # ------------------------------------------------------------------
-    # Camera filter helpers
-    # ------------------------------------------------------------------
-
     def _update_camera_filter(self) -> None:
         """Populate camera filter from sidebar camera list."""
         self._known_camera_ids: set[int] = set()
@@ -247,6 +233,7 @@ class RecordingsView(Gtk.Box):
                 self._known_camera_ids.add(cam.id)
 
     def _ensure_camera_in_combo(self, camera_id: int, name: str) -> None:
+        """Add a camera to the combo if not already present."""
         if not hasattr(self, "_known_camera_ids"):
             self._known_camera_ids = set()
         if camera_id not in self._known_camera_ids:
@@ -275,10 +262,6 @@ class RecordingsView(Gtk.Box):
         self.camera_combo.handler_unblock_by_func(self._on_filter_changed)
         self._load_recordings()
 
-    # ------------------------------------------------------------------
-    # Date preset helpers
-    # ------------------------------------------------------------------
-
     def _sync_preset_buttons(self) -> None:
         """Update toggle state of preset buttons to match current preset."""
         for key, btn in self._preset_buttons.items():
@@ -300,7 +283,7 @@ class RecordingsView(Gtk.Box):
 
         # Activating this preset — deactivate all others
         self._search_time_preset = key
-        from_ts, to_ts = _preset_range(key)
+        from_ts, to_ts = preset_range(key)
         self._search_from_time = from_ts
         self._search_to_time = to_ts
         self._offset = 0
@@ -313,10 +296,6 @@ class RecordingsView(Gtk.Box):
 
         self._save_search_to_config()
         self._load_recordings()
-
-    # ------------------------------------------------------------------
-    # Reset / advanced search
-    # ------------------------------------------------------------------
 
     def _on_reset_clicked(self, btn: Gtk.Button) -> None:
         self._search_camera_ids = None
@@ -333,6 +312,7 @@ class RecordingsView(Gtk.Box):
         self._load_recordings()
 
     def _on_search_clicked(self, btn: Gtk.Button) -> None:
+        """Open the search dialog."""
         from_time = None
         to_time = None
         if self._search_from_time:
@@ -368,10 +348,6 @@ class RecordingsView(Gtk.Box):
             to_time=to_time,
         )
         dialog.present()
-
-    # ------------------------------------------------------------------
-    # Loading
-    # ------------------------------------------------------------------
 
     def _load_recordings(self) -> None:
         log.debug(
@@ -426,10 +402,10 @@ class RecordingsView(Gtk.Box):
 
     def _time_filter_parts(self) -> list[str]:
         _PRESET_LABELS = {
-            _PRESET_TODAY: "Today",
-            _PRESET_YESTERDAY: "Yesterday",
-            _PRESET_LAST24H: "Last 24 h",
-            _PRESET_LAST7D: "Last 7 days",
+            PRESET_TODAY: "Today",
+            PRESET_YESTERDAY: "Yesterday",
+            PRESET_LAST24H: "Last 24 h",
+            PRESET_LAST7D: "Last 7 days",
         }
         if self._search_time_preset:
             label = _PRESET_LABELS.get(self._search_time_preset, self._search_time_preset)
@@ -478,6 +454,7 @@ class RecordingsView(Gtk.Box):
                 deferred.append((picture, rec))
 
         if deferred:
+
             def _load_rest() -> bool:
                 if self._thumb_generation != generation:
                     return False
@@ -494,6 +471,7 @@ class RecordingsView(Gtk.Box):
         self.page_label.set_text(f"Page {page} of {total_pages} ({total} total)")
 
     def _load_thumbnail(self, picture: Gtk.Picture, rec: Recording) -> None:
+        """Async-load a thumbnail for a recording row."""
         if not self.app.api:
             return
 
@@ -523,10 +501,6 @@ class RecordingsView(Gtk.Box):
             error_callback=lambda e: log.warning("Thumbnail fetch failed: %s", e),
         )
         self._thumb_futures.append(future)
-
-    # ------------------------------------------------------------------
-    # Recording row
-    # ------------------------------------------------------------------
 
     def _create_recording_row(self, rec: Recording) -> tuple[Gtk.Box, Gtk.Picture]:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -597,25 +571,10 @@ class RecordingsView(Gtk.Box):
         dl_btn = Gtk.Button()
         dl_btn.set_icon_name("document-save-symbolic")
         dl_btn.set_tooltip_text("Download")
-        dl_btn.connect("clicked", self._on_download, rec, dl_btn)
+        dl_btn.connect("clicked", self._on_download, rec)
         box.append(dl_btn)
 
         return box, picture
-
-    # ------------------------------------------------------------------
-    # Playback / download
-    # ------------------------------------------------------------------
-
-    def _show_error_dialog(self, title: str, message: str) -> None:
-        """Show a non-blocking error alert to the user."""
-        try:
-            dialog = Gtk.AlertDialog()
-            dialog.set_message(title)
-            dialog.set_detail(message)
-            dialog.set_buttons(["OK"])
-            dialog.show(self.window)
-        except Exception:
-            log.exception("Could not show error dialog: %s — %s", title, message)
 
     def _on_play(self, btn: Gtk.Button, rec: Recording) -> None:
         log.debug("PLAY CLICKED: rec_id=%s", rec.id)
@@ -624,8 +583,8 @@ class RecordingsView(Gtk.Box):
         dialog = PlayerDialog(self.window, self.app, rec)
         dialog.present()
 
-    def _on_download(self, btn: Gtk.Button, rec: Recording, dl_btn: Gtk.Button) -> None:
-        """Download recording to disk with progress feedback and error reporting."""
+    def _on_download(self, btn: Gtk.Button, rec: Recording) -> None:
+        """Download recording to disk with button feedback and error dialog."""
         dialog = Gtk.FileDialog()
         start = datetime.fromtimestamp(rec.start_time)
         safe_name = re.sub(r'[/\\<>:"|?*]', "_", rec.camera_name)
@@ -635,55 +594,39 @@ class RecordingsView(Gtk.Box):
             try:
                 gfile = d.save_finish(result)
             except Exception:
-                # User cancelled or dialog error — nothing to do
                 return
-
-            if not gfile:
+            if gfile is None:
                 return
             path = gfile.get_path()
-            if not path:
+            if not path or self.app.api is None:
                 return
 
-            if self.app.api is None:
-                self._show_error_dialog(
-                    "Not Connected",
-                    "Cannot download: no active API session.",
-                )
-                return
-
-            dl_btn.set_sensitive(False)
-            dl_btn.set_icon_name("emblem-synchronizing-symbolic")
-            dl_btn.set_tooltip_text("Downloading…")
+            btn.set_sensitive(False)
+            btn.set_icon_name("content-loading-symbolic")
             self._show_status("Downloading…", download_dir=None)
 
-            def _on_done(p: Path) -> None:
-                dl_btn.set_sensitive(True)
-                dl_btn.set_icon_name("emblem-ok-symbolic")
-                dl_btn.set_tooltip_text(f"Downloaded: {p}")
-                self._show_status(f"Saved to {p}", download_dir=str(p.parent))
-                log.info("Downloaded recording to %s", p)
+            def _restore() -> None:
+                btn.set_sensitive(True)
+                btn.set_icon_name("document-save-symbolic")
 
-            def _on_err(e: Exception) -> None:
-                dl_btn.set_sensitive(True)
-                dl_btn.set_icon_name("document-save-symbolic")
-                dl_btn.set_tooltip_text("Download")
-                log.error(
-                    "Download failed: camera=%s rec_id=%d error=%s",
-                    rec.camera_name,
-                    rec.id,
-                    e,
-                )
-                self._show_error_dialog(
-                    "Download Failed",
-                    f"Could not download recording from camera '{rec.camera_name}'.\n\n"
-                    f"{e}\n\n"
-                    "Check the application log for details.",
-                )
+            def _on_success(p: Path) -> None:
+                _restore()
+                self._show_status(f"Saved to {p}", download_dir=str(p.parent))
+                log.info("Recording %d downloaded to %s", rec.id, p)
+
+            def _on_error(exc: Exception) -> None:
+                _restore()
+                log.error("Download failed for recording %d: %s", rec.id, exc)
+                err = Gtk.AlertDialog()
+                err.set_message("Download failed")
+                err.set_detail(f"Could not download from '{rec.camera_name}'.\n\n{exc}")
+                err.set_buttons(["OK"])
+                err.show(self.window)
 
             run_async(
                 download_recording(self.app.api, rec.id, Path(path)),
-                callback=_on_done,
-                error_callback=_on_err,
+                callback=_on_success,
+                error_callback=_on_error,
             )
 
         dialog.save(self.window, None, _on_save)
@@ -707,10 +650,6 @@ class RecordingsView(Gtk.Box):
             except Exception as exc:
                 log.warning("Could not open folder %s: %s", self._last_download_dir, exc)
 
-    # ------------------------------------------------------------------
-    # Pagination
-    # ------------------------------------------------------------------
-
     def _on_prev(self, btn: Gtk.Button) -> None:
         self._offset = max(0, self._offset - 50)
         self._load_recordings()
@@ -719,12 +658,8 @@ class RecordingsView(Gtk.Box):
         self._offset += 50
         self._load_recordings()
 
-    # ------------------------------------------------------------------
-    # Sidebar camera click → filter
-    # ------------------------------------------------------------------
-
     def on_camera_selected(self, camera: Camera) -> None:
-        """Handle camera selection from sidebar — filter recordings by this camera."""
+        """Handle camera selection from sidebar."""
         log.debug("RecordingsView.on_camera_selected: cam=%s id=%d", camera.name, camera.id)
         self._ensure_camera_in_combo(camera.id, camera.name)
         self._camera_id = camera.id
@@ -734,11 +669,8 @@ class RecordingsView(Gtk.Box):
         self.camera_combo.handler_unblock_by_func(self._on_filter_changed)
         self._load_recordings()
 
-    # ------------------------------------------------------------------
-    # Config persistence
-    # ------------------------------------------------------------------
-
     def _load_search_from_config(self) -> None:
+        """Load search filters from config."""
         cfg = self.app.config
         if cfg.search_camera_ids:
             self._search_camera_ids = cfg.search_camera_ids
@@ -753,6 +685,7 @@ class RecordingsView(Gtk.Box):
         self._search_time_preset = cfg.search_time_preset
 
     def _save_search_to_config(self) -> None:
+        """Save search filters to config."""
         cfg = self.app.config
         cfg.search_camera_ids = self._search_camera_ids or []
         cfg.search_from_time = ""

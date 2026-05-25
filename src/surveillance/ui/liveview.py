@@ -37,7 +37,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
-from surveillance.config import save_config
+from surveillance.config import save_config_now
 from surveillance.services.live import get_live_view_path
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.mpv_widget import MpvGLArea
@@ -281,16 +281,20 @@ class LiveView(Gtk.Box):
         for i in self._active:
             cam = self._slots[i].camera
             cam_ids.append(cam.id if cam else 0)
+        log.debug("layout_cameras save: [%s] = %s", self._current_layout, cam_ids)
         self.app.config.layout_cameras[self._current_layout] = cam_ids
 
     def _restore_layout_cameras(self) -> None:
         """Restore saved camera assignments for the current layout."""
         layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids = self.app.config.layout_cameras.get(layout, [])
-        if not cam_ids or not self._cameras:
+        log.debug("layout_cameras restore: [%s] = %s", layout, cam_ids)
+        # Prefer fresh camera list from sidebar; fall back to locally cached list.
+        cameras = self.window.sidebar.cameras or self._cameras
+        if not cam_ids or not cameras:
             return
 
-        cam_map = {c.id: c for c in self._cameras}
+        cam_map = {c.id: c for c in cameras}
         seen: set[int] = set()
         for i, cam_id in enumerate(cam_ids):
             if i >= len(self._active):
@@ -472,13 +476,15 @@ class LiveView(Gtk.Box):
             cam_ids.append(cam.id if cam else 0)
         self.app.config.grid_layout = layout
         self.app.config.layout_cameras[layout] = cam_ids
-        save_config(self.app.config)
+        log.debug("layout_cameras session save: [%s] = %s", layout, cam_ids)
+        save_config_now(self.app.config)
 
     def restore_session(self, cameras: list[Camera]) -> None:
         """Restore camera assignments from config."""
         self._cameras = cameras
         layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids = self.app.config.layout_cameras.get(layout, [])
+        log.debug("layout_cameras restore_session: layout=%s cam_ids=%s", layout, cam_ids)
         if not cam_ids:
             return
 

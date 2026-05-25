@@ -33,6 +33,7 @@ import collections
 import json
 import logging
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,30 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _thumbnail_semaphore = asyncio.Semaphore(8)
+
+PRESET_TODAY = "today"
+PRESET_YESTERDAY = "yesterday"
+PRESET_LAST24H = "last24h"
+PRESET_LAST7D = "last7d"
+
+
+def preset_range(preset: str) -> tuple[int, int]:
+    """Return (from_time, to_time) unix timestamps for a named time preset."""
+    now = datetime.now()
+    if preset == PRESET_TODAY:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(start.timestamp()), int(now.timestamp())
+    if preset == PRESET_YESTERDAY:
+        yesterday = now - timedelta(days=1)
+        start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
+        return int(start.timestamp()), int(end.timestamp())
+    if preset == PRESET_LAST24H:
+        return int((now - timedelta(hours=24)).timestamp()), int(now.timestamp())
+    if preset == PRESET_LAST7D:
+        start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(start.timestamp()), int(now.timestamp())
+    raise ValueError(f"unknown preset: {preset}")
 
 
 async def list_recordings(

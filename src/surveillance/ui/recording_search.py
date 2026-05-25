@@ -93,6 +93,14 @@ class RecordingSearchDialog(Gtk.Window):
         self.today_btn.connect("clicked", self._on_preset_today)
         preset_box.append(self.today_btn)
 
+        self.yesterday_btn = Gtk.Button(label="Yesterday")
+        self.yesterday_btn.connect("clicked", self._on_preset_yesterday)
+        preset_box.append(self.yesterday_btn)
+
+        self.last24h_btn = Gtk.Button(label="Last 24 h")
+        self.last24h_btn.connect("clicked", self._on_preset_last24h)
+        preset_box.append(self.last24h_btn)
+
         self.week_btn = Gtk.Button(label="Last 7 days")
         self.week_btn.connect("clicked", self._on_preset_week)
         preset_box.append(self.week_btn)
@@ -219,6 +227,22 @@ class RecordingSearchDialog(Gtk.Window):
         self._time_preset_used = True
         now = datetime.now()
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        self._set_datetime(self.from_date, self.from_time_entry, start)
+        self._set_datetime(self.to_date, self.to_time_entry, now)
+
+    def _on_preset_yesterday(self, btn: Gtk.Button) -> None:
+        self._time_preset_used = True
+        now = datetime.now()
+        yesterday = now - timedelta(days=1)
+        start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
+        self._set_datetime(self.from_date, self.from_time_entry, start)
+        self._set_datetime(self.to_date, self.to_time_entry, end)
+
+    def _on_preset_last24h(self, btn: Gtk.Button) -> None:
+        self._time_preset_used = True
+        now = datetime.now()
+        start = now - timedelta(hours=24)
         self._set_datetime(self.from_date, self.from_time_entry, start)
         self._set_datetime(self.to_date, self.to_time_entry, now)
 

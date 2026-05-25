@@ -39,7 +39,7 @@ from urllib.parse import urlparse
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus
-from surveillance.config import save_config
+from surveillance.config import save_config_now
 from surveillance.services.camera import list_cameras
 from surveillance.services.live import PROTOCOL_LABELS
 from surveillance.util.async_bridge import run_async
@@ -381,7 +381,7 @@ class CameraSidebar(Gtk.Box):
         else:
             self.app.config.camera_overrides.pop(cam.id, None)
 
-        save_config(self.app.config)
+        save_config_now(self.app.config)
         dialog.close()
 
         # Restart the stream if the camera is currently displayed

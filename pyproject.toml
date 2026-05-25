@@ -53,6 +53,7 @@ ignore = [
 "src/surveillance/app.py" = ["E402", "PLC0415"]
 "src/surveillance/__main__.py" = ["PLC0415"]
 "src/surveillance/config.py" = ["PLC0415"]
+"tests/*.py" = ["S101", "S105", "S106", "PLC0415", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"

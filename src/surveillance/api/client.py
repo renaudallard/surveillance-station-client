@@ -250,8 +250,7 @@ class SurveillanceAPI:
         elif "text/html" in content_type:
             # DSM redirected to the login page — the session has expired.
             log.warning(
-                "Download endpoint returned HTML (content-type=%s); "
-                "session may have expired",
+                "Download endpoint returned HTML (content-type=%s); session may have expired",
                 content_type,
             )
             raise ApiError(

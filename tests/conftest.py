@@ -51,5 +51,5 @@ def api(profile: ConnectionProfile) -> SurveillanceAPI:
     client = SurveillanceAPI(profile)
     client.sid = "test-sid-12345"
     client.username = "admin"
-    client.password = "password"
+    client.password = "password"  # noqa: S105
     return client

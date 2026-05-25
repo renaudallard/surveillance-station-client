@@ -432,3 +432,256 @@ class TestRecordingService:
             assert call_kwargs[1]["extra_params"]["toTime"] == "1700086400"
             assert call_kwargs[1]["extra_params"]["offset"] == "100"
             assert call_kwargs[1]["extra_params"]["limit"] == "20"
+
+
+class TestDownloadRecordingValidation:
+    """Tests for download_recording response validation."""
+
+    @pytest.mark.asyncio
+    async def test_empty_response_raises(self, api: SurveillanceAPI, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from surveillance.services.recording import download_recording
+
+        out = Path(str(tmp_path)) / "out.mp4"
+        with (
+            patch.object(api, "download", new_callable=AsyncMock, return_value=b""),
+            pytest.raises(ValueError, match="empty response"),
+        ):
+            await download_recording(api, 1, out)
+        assert not out.exists()
+
+    @pytest.mark.asyncio
+    async def test_html_doctype_response_raises(
+        self, api: SurveillanceAPI, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+
+        from surveillance.services.recording import download_recording
+
+        html = b"<!doctype html><html><body>Login</body></html>"
+        out = Path(str(tmp_path)) / "out.mp4"
+        with (
+            patch.object(api, "download", new_callable=AsyncMock, return_value=html),
+            pytest.raises(ValueError, match="HTML page"),
+        ):
+            await download_recording(api, 1, out)
+        assert not out.exists()
+
+    @pytest.mark.asyncio
+    async def test_html_tag_response_raises(
+        self, api: SurveillanceAPI, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+
+        from surveillance.services.recording import download_recording
+
+        html = b"<html><body>Login</body></html>"
+        out = Path(str(tmp_path)) / "out.mp4"
+        with (
+            patch.object(api, "download", new_callable=AsyncMock, return_value=html),
+            pytest.raises(ValueError, match="HTML page"),
+        ):
+            await download_recording(api, 1, out)
+
+    @pytest.mark.asyncio
+    async def test_json_error_body_raises(self, api: SurveillanceAPI, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from surveillance.services.recording import download_recording
+
+        json_err = b'{"success":false,"error":{"code":105}}'
+        out = Path(str(tmp_path)) / "out.mp4"
+        with (
+            patch.object(api, "download", new_callable=AsyncMock, return_value=json_err),
+            pytest.raises(ValueError, match="error code 105"),
+        ):
+            await download_recording(api, 1, out)
+        assert not out.exists()
+
+    @pytest.mark.asyncio
+    async def test_successful_download_writes_file(
+        self, api: SurveillanceAPI, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+
+        from surveillance.services.recording import download_recording
+
+        # Minimal ftyp-box header so it looks like a real MP4
+        video_data = b"\x00\x00\x00\x18ftyp" + b"isom" + b"\x00" * 8
+        out = Path(str(tmp_path)) / "recording.mp4"
+        with patch.object(api, "download", new_callable=AsyncMock, return_value=video_data):
+            result = await download_recording(api, 42, out)
+        assert result == out
+        assert out.exists()
+        assert out.read_bytes() == video_data
+
+    @pytest.mark.asyncio
+    async def test_write_error_cleans_up_file(
+        self, api: SurveillanceAPI, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+        from unittest.mock import patch as _patch
+
+        from surveillance.services.recording import download_recording
+
+        video_data = b"\x00\x00\x00\x18ftyp" + b"\x00" * 12
+        out = Path(str(tmp_path)) / "recording.mp4"
+        with (
+            patch.object(api, "download", new_callable=AsyncMock, return_value=video_data),
+            _patch.object(Path, "write_bytes", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            await download_recording(api, 42, out)
+        assert not out.exists()
+
+
+class TestMpvSafeSetOption:
+    """Tests for safe_set_mpv_option() without requiring a real mpv instance.
+
+    These tests import from surveillance.ui.mpv_widget which in turn imports
+    GTK4 via gi.repository.  They are skipped automatically in environments
+    where GTK4 (PyGObject + C extension) is not installed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_gtk(self) -> None:
+        try:
+            import gi  # noqa: F401
+
+            gi.require_version("Gtk", "4.0")
+            from gi.repository import Gtk  # noqa: F401
+        except Exception:
+            pytest.skip("GTK4 not available in this environment")
+
+    def test_normal_set_succeeds(self) -> None:
+        from unittest.mock import MagicMock
+
+        from surveillance.ui.mpv_widget import safe_set_mpv_option
+
+        mock_player = MagicMock()
+        result = safe_set_mpv_option(mock_player, "cache", "no")
+        assert result is True
+        mock_player.__setitem__.assert_called_once_with("cache", "no")
+
+    def test_type_error_returns_false_without_raising(self) -> None:
+        from unittest.mock import MagicMock
+
+        from surveillance.ui.mpv_widget import safe_set_mpv_option
+
+        mock_player = MagicMock()
+        mock_player.__setitem__ = MagicMock(
+            side_effect=TypeError(
+                "Tried to get/set mpv property using wrong format, "
+                "or passed invalid value\noptions/demuxer-lavf-probesize\nvalue: b'0'"
+            )
+        )
+        result = safe_set_mpv_option(mock_player, "demuxer-lavf-probesize", 0)
+        assert result is False  # no crash, just False
+
+    def test_value_error_returns_false_without_raising(self) -> None:
+        from unittest.mock import MagicMock
+
+        from surveillance.ui.mpv_widget import safe_set_mpv_option
+
+        mock_player = MagicMock()
+        mock_player.__setitem__ = MagicMock(side_effect=ValueError("bad value"))
+        result = safe_set_mpv_option(mock_player, "container-fps-override", 0)
+        assert result is False
+
+    def test_arbitrary_exception_returns_false_without_raising(self) -> None:
+        from unittest.mock import MagicMock
+
+        from surveillance.ui.mpv_widget import safe_set_mpv_option
+
+        mock_player = MagicMock()
+        mock_player.__setitem__ = MagicMock(side_effect=RuntimeError("mpv died"))
+        result = safe_set_mpv_option(mock_player, "untimed", True)
+        assert result is False
+
+
+class TestWebSocketBridgeErrors:
+    """Tests for WebSocketBridge error handling without a real WebSocket server."""
+
+    @pytest.mark.asyncio
+    async def test_connection_error_calls_on_error_callback(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from surveillance.services.ws_bridge import WebSocketBridge
+
+        errors: list[str] = []
+        bridge = WebSocketBridge(
+            "wss://192.0.2.1/stream",  # TEST-NET address, guaranteed to fail
+            verify_ssl=False,
+            sid="test-sid",
+            on_error=errors.append,
+        )
+
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=OSError("Connection refused"),
+        ):
+            await bridge.start()
+            # Give the pump task time to run and fail
+            import asyncio
+
+            await asyncio.sleep(0.05)
+            await bridge.stop()
+
+        assert bridge.error is not None
+        assert len(errors) == 1
+
+    @pytest.mark.asyncio
+    async def test_http_502_classified_correctly(self) -> None:
+        from unittest.mock import patch
+
+        from surveillance.services.ws_bridge import WebSocketBridge
+
+        errors: list[str] = []
+        bridge = WebSocketBridge(
+            "wss://192.0.2.1/stream",
+            verify_ssl=False,
+            sid="test-sid",
+            on_error=errors.append,
+        )
+
+        # Simulate an InvalidStatus-like error message containing "502"
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=Exception("server rejected WebSocket connection: HTTP 502"),
+        ):
+            await bridge.start()
+            import asyncio
+
+            await asyncio.sleep(0.05)
+            await bridge.stop()
+
+        assert bridge.error is not None
+        assert "502" in bridge.error
+
+    @pytest.mark.asyncio
+    async def test_no_on_error_does_not_crash(self) -> None:
+        """Bridge with no on_error callback should still handle errors gracefully."""
+        from unittest.mock import patch
+
+        from surveillance.services.ws_bridge import WebSocketBridge
+
+        bridge = WebSocketBridge(
+            "wss://192.0.2.1/stream",
+            verify_ssl=False,
+            sid="test-sid",
+            # no on_error
+        )
+
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=OSError("Connection refused"),
+        ):
+            await bridge.start()
+            import asyncio
+
+            await asyncio.sleep(0.05)
+            await bridge.stop()
+
+        # Just verify no exception propagated and error is recorded
+        assert bridge.error is not None

@@ -85,11 +85,36 @@ def _get_gl_proc_address(_ctx: ctypes.c_void_p, name: bytes) -> int:
     return 0
 
 
+def safe_set_mpv_option(player: Any, name: str, value: Any) -> bool:
+    """Set an mpv property, catching any type or value errors.
+
+    python-mpv uses mpv_set_property_string for __setitem__, which means integer 0
+    becomes b'0' — a string that mpv rejects for options expecting INT64 format (e.g.
+    demuxer-lavf-probesize, container-fps-override). This wrapper swallows those errors
+    so a bad option never crashes the application.
+
+    Returns True if the option was set successfully.
+    """
+    try:
+        player[name] = value
+    except (TypeError, ValueError) as e:
+        log.warning("mpv option %r = %r rejected (%s): %s", name, value, type(e).__name__, e)
+        return False
+    except Exception as e:
+        log.warning("mpv option %r = %r failed (%s): %s", name, value, type(e).__name__, e)
+        return False
+    else:
+        return True
+
+
 class MpvGLArea(Gtk.GLArea):
     """GTK4 GLArea widget that renders mpv video via OpenGL.
 
     Each instance has its own mpv player and render context.
     Works on both X11 and Wayland without wid embedding.
+
+    Use play_live() for live camera streams (low-latency profile)
+    and play_recording() for stored recordings (stability profile).
     """
 
     def __init__(self, tls_verify: bool = True) -> None:
@@ -100,6 +125,7 @@ class MpvGLArea(Gtk.GLArea):
         self._initialized = False
         self._render_pending = False
         self._tls_verify = tls_verify
+        self._low_latency: bool = False  # stored so _on_realize can apply correct profile
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -148,8 +174,9 @@ class MpvGLArea(Gtk.GLArea):
             self._ctx.update_cb = self._mpv_update_cb
             self._initialized = True
 
-            # If URL was set before realization, start playing
+            # If URL was set before realization, apply options and start playing
             if self._url:
+                self._apply_playback_options()
                 self._mpv.play(self._url)
 
         except Exception:
@@ -223,36 +250,70 @@ class MpvGLArea(Gtk.GLArea):
         elif loglevel == "warn":
             log.warning("mpv [%s]: %s", component, message.strip())
 
+    def _apply_playback_options(self) -> None:
+        """Apply buffering/latency options to mpv based on the current playback mode.
+
+        Called both from play() (when already realized) and from _on_realize()
+        (when play() was called before the widget was shown).
+
+        All options are set via safe_set_mpv_option() so a rejected option
+        never crashes the application — it is logged as a warning instead.
+        """
+        if not self._mpv:
+            return
+
+        if self._low_latency:
+            # Live view: minimise latency, short buffer, best-effort frame timing.
+            # demuxer-lavf-probesize=32 and container-fps-override=25 are
+            # non-zero integers accepted by mpv's string-based property API.
+            safe_set_mpv_option(self._mpv, "cache", "no")
+            safe_set_mpv_option(self._mpv, "demuxer-max-bytes", "512KiB")
+            safe_set_mpv_option(self._mpv, "demuxer-readahead-secs", 0)
+            safe_set_mpv_option(self._mpv, "demuxer-lavf-analyzeduration", 0)
+            safe_set_mpv_option(self._mpv, "demuxer-lavf-probesize", 32)
+            safe_set_mpv_option(self._mpv, "correct-pts", False)
+            safe_set_mpv_option(self._mpv, "untimed", True)
+            safe_set_mpv_option(self._mpv, "container-fps-override", 25)
+        else:
+            # Recording playback: prioritise stability and correct timing.
+            # Omit demuxer-lavf-probesize and container-fps-override entirely so
+            # mpv uses its own defaults (5 MB probe / auto FPS).  Setting either
+            # of these to 0 causes python-mpv to pass b'0' (string format) which
+            # mpv rejects for INT64/float options with a TypeError.
+            safe_set_mpv_option(self._mpv, "cache", "auto")
+            safe_set_mpv_option(self._mpv, "demuxer-max-bytes", "150MiB")
+            safe_set_mpv_option(self._mpv, "demuxer-readahead-secs", 2)
+            safe_set_mpv_option(self._mpv, "correct-pts", True)
+            safe_set_mpv_option(self._mpv, "untimed", False)
+
     def play(self, url: str, *, low_latency: bool = False) -> None:
         """Start playing a stream URL.
 
+        Prefer play_live() or play_recording() for clearer intent.
         When *low_latency* is True, disable caching and read-ahead so the
         stream plays in near real-time (used for WebSocket pipe bridges).
         """
         self._url = url
+        self._low_latency = low_latency
         if self._initialized and self._mpv:
             try:
-                if low_latency:
-                    self._mpv["cache"] = "no"
-                    self._mpv["demuxer-max-bytes"] = "512KiB"
-                    self._mpv["demuxer-readahead-secs"] = 0
-                    self._mpv["demuxer-lavf-analyzeduration"] = 0
-                    self._mpv["demuxer-lavf-probesize"] = 32
-                    self._mpv["correct-pts"] = False
-                    self._mpv["untimed"] = True
-                    self._mpv["container-fps-override"] = 25
-                else:
-                    self._mpv["cache"] = "auto"
-                    self._mpv["demuxer-max-bytes"] = "150MiB"
-                    self._mpv["demuxer-readahead-secs"] = 1
-                    self._mpv["demuxer-lavf-analyzeduration"] = 0  # ffmpeg default
-                    self._mpv["demuxer-lavf-probesize"] = 0  # ffmpeg default
-                    self._mpv["correct-pts"] = True
-                    self._mpv["untimed"] = False
-                    self._mpv["container-fps-override"] = 0
+                self._apply_playback_options()
                 self._mpv.play(url)
             except Exception:
                 log.exception("Failed to play %s", url)
+
+    def play_live(self, url: str) -> None:
+        """Start a live camera stream with the low-latency profile."""
+        self.play(url, low_latency=True)
+
+    def play_recording(self, url: str) -> None:
+        """Start recording playback with the stability-focused profile.
+
+        Uses conservative buffering and lets mpv auto-detect format parameters,
+        avoiding the low-latency settings that can cause crashes or glitches
+        with stored recordings served over HTTPS.
+        """
+        self.play(url, low_latency=False)
 
     def stop(self) -> None:
         """Stop playback."""

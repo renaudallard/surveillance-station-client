@@ -46,6 +46,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# How long to wait for mpv to produce a video frame before declaring failure.
+_PLAYBACK_START_TIMEOUT_MS = 7000
+
 
 class PlayerDialog(Gtk.Window):
     """Recording playback window with transport controls."""
@@ -55,6 +58,8 @@ class PlayerDialog(Gtk.Window):
         self.app = app
         self.recording = recording
         self._tick_id: int = 0
+        self._playback_check_id: int = 0
+        self._stream_url: str = ""
 
         start = datetime.fromtimestamp(recording.start_time)
         self.set_title(f"{recording.camera_name} - {start:%Y-%m-%d %H:%M:%S}")
@@ -69,6 +74,16 @@ class PlayerDialog(Gtk.Window):
         self.player = MpvGLArea(tls_verify=verify_ssl)
         self.player.set_vexpand(True)
         main_box.append(self.player)
+
+        # Status bar shown while loading / on error
+        self._status_label = Gtk.Label(label="")
+        self._status_label.add_css_class("dim-label")
+        self._status_label.add_css_class("caption")
+        self._status_label.set_margin_start(8)
+        self._status_label.set_margin_top(2)
+        self._status_label.set_xalign(0)
+        self._status_label.set_visible(False)
+        main_box.append(self._status_label)
 
         # Transport controls
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -130,16 +145,77 @@ class PlayerDialog(Gtk.Window):
         self._start_playback()
 
     def _start_playback(self) -> None:
-        """Get stream URL and start playback."""
+        """Get stream URL and start playback using the recording stability profile."""
         if not self.app.api:
             return
         url = get_stream_url(self.app.api, self.recording)
+        self._stream_url = url
+        log.debug(
+            "Recording stream URL for camera=%s id=%d: %.120s",
+            self.recording.camera_name,
+            self.recording.id,
+            url,
+        )
+        self._set_status("Loading…")
         self._on_stream_url(url)
 
     def _on_stream_url(self, url: str) -> None:
-        self.player.play(url)
+        # Use the recording-specific profile: stable buffering, auto FPS detection,
+        # no low-latency flags that can cause mpv option crashes.
+        self.player.play_recording(url)
         self.player.set_volume(50)
         self._tick_id = GLib.timeout_add(500, self._update_position)
+        # Schedule a single check to detect playback that never starts.
+        self._playback_check_id = GLib.timeout_add(
+            _PLAYBACK_START_TIMEOUT_MS, self._check_playback_started
+        )
+
+    def _check_playback_started(self) -> bool:
+        """One-shot: if mpv hasn't produced a frame yet, show an error."""
+        self._playback_check_id = 0
+        if self.player.time_pos is None:
+            cam = self.recording.camera_name
+            log.warning(
+                "Recording playback did not start within %dms — "
+                "camera=%s rec_id=%d url=%.80s",
+                _PLAYBACK_START_TIMEOUT_MS,
+                cam,
+                self.recording.id,
+                self._stream_url,
+            )
+            self._set_status("Playback failed — see error dialog")
+            self._show_error(
+                "Playback Failed",
+                f"The recording from camera '{cam}' could not be played.\n\n"
+                "Possible causes:\n"
+                "• The stream URL may have expired — close and reopen this dialog\n"
+                "• The recording format (H.265/HEVC) may need hardware decoding\n"
+                "• mpv cannot parse this stream type\n\n"
+                "You can try downloading the recording instead.",
+            )
+        else:
+            self._set_status("")
+        return False  # one-shot, remove the GLib source
+
+    def _set_status(self, text: str) -> None:
+        """Update the status label below the video area."""
+        if text:
+            self._status_label.set_text(text)
+            self._status_label.set_visible(True)
+        else:
+            self._status_label.set_text("")
+            self._status_label.set_visible(False)
+
+    def _show_error(self, title: str, message: str) -> None:
+        """Show a non-blocking error dialog."""
+        try:
+            dialog = Gtk.AlertDialog()
+            dialog.set_message(title)
+            dialog.set_detail(message)
+            dialog.set_buttons(["OK"])
+            dialog.show(self)
+        except Exception:
+            log.exception("Could not show error dialog: %s — %s", title, message)
 
     def _on_play_pause(self, btn: Gtk.Button) -> None:
         self.player.pause()
@@ -167,6 +243,10 @@ class PlayerDialog(Gtk.Window):
         duration = self.player.duration
 
         if pos is not None and duration is not None and duration > 0:
+            # Clear the loading status once playback is underway
+            if self._status_label.get_visible() and self._status_label.get_text() == "Loading…":
+                self._set_status("")
+
             self.position_scale.set_value(pos / duration * 100)
 
             pos_min, pos_sec = divmod(int(pos), 60)
@@ -178,5 +258,9 @@ class PlayerDialog(Gtk.Window):
     def _on_close(self, window: Gtk.Window) -> bool:
         if self._tick_id:
             GLib.source_remove(self._tick_id)
+            self._tick_id = 0
+        if self._playback_check_id:
+            GLib.source_remove(self._playback_check_id)
+            self._playback_check_id = 0
         self.player.stop()
         return False

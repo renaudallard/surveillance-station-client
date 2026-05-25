@@ -37,6 +37,14 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
+from surveillance.services.recording import (
+    PRESET_LAST7D,
+    PRESET_LAST24H,
+    PRESET_TODAY,
+    PRESET_YESTERDAY,
+    preset_range,
+)
+
 if TYPE_CHECKING:
     from surveillance.api.models import Camera
 
@@ -92,6 +100,14 @@ class RecordingSearchDialog(Gtk.Window):
         self.today_btn = Gtk.Button(label="Today")
         self.today_btn.connect("clicked", self._on_preset_today)
         preset_box.append(self.today_btn)
+
+        self.yesterday_btn = Gtk.Button(label="Yesterday")
+        self.yesterday_btn.connect("clicked", self._on_preset_yesterday)
+        preset_box.append(self.yesterday_btn)
+
+        self.last24h_btn = Gtk.Button(label="Last 24 h")
+        self.last24h_btn.connect("clicked", self._on_preset_last24h)
+        preset_box.append(self.last24h_btn)
 
         self.week_btn = Gtk.Button(label="Last 7 days")
         self.week_btn.connect("clicked", self._on_preset_week)
@@ -215,19 +231,24 @@ class RecordingSearchDialog(Gtk.Window):
         any_selected = any(c.get_active() for c in self._camera_checks.values())
         self.all_cam_btn.set_active(not any_selected)
 
-    def _on_preset_today(self, btn: Gtk.Button) -> None:
+    def _apply_preset(self, preset: str) -> None:
+        """Apply a named time preset using the shared preset_range helper."""
         self._time_preset_used = True
-        now = datetime.now()
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        self._set_datetime(self.from_date, self.from_time_entry, start)
-        self._set_datetime(self.to_date, self.to_time_entry, now)
+        from_ts, to_ts = preset_range(preset)
+        self._set_datetime(self.from_date, self.from_time_entry, datetime.fromtimestamp(from_ts))
+        self._set_datetime(self.to_date, self.to_time_entry, datetime.fromtimestamp(to_ts))
+
+    def _on_preset_today(self, btn: Gtk.Button) -> None:
+        self._apply_preset(PRESET_TODAY)
+
+    def _on_preset_yesterday(self, btn: Gtk.Button) -> None:
+        self._apply_preset(PRESET_YESTERDAY)
+
+    def _on_preset_last24h(self, btn: Gtk.Button) -> None:
+        self._apply_preset(PRESET_LAST24H)
 
     def _on_preset_week(self, btn: Gtk.Button) -> None:
-        self._time_preset_used = True
-        now = datetime.now()
-        start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        self._set_datetime(self.from_date, self.from_time_entry, start)
-        self._set_datetime(self.to_date, self.to_time_entry, now)
+        self._apply_preset(PRESET_LAST7D)
 
     def _on_preset_month(self, btn: Gtk.Button) -> None:
         self._time_preset_used = True

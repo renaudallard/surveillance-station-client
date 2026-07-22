@@ -303,6 +303,12 @@ class MainWindow(Gtk.ApplicationWindow):
         if live_view and hasattr(live_view, "restart_camera"):
             live_view.restart_camera(camera_id)
 
+    def clear_selected_slot(self) -> None:
+        """Clear the camera in the currently selected live-view grid slot, if any."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "clear_selected_slot"):
+            live_view.clear_selected_slot()
+
     def show_page(self, page_name: str) -> None:
         """Switch to a content page, pausing/resuming live streams as needed."""
         previous = self.stack.get_visible_child_name()

@@ -141,6 +141,8 @@ class CameraSidebar(Gtk.Box):
         )
 
     def _update_camera_list(self, cameras: list[Camera]) -> None:
+        cameras = sorted(cameras, key=lambda c: (c.name.casefold(), c.id))
+
         # Skip rebuild if camera list is unchanged
         if len(cameras) == len(self.cameras) and all(
             a.id == b.id and a.status == b.status and a.name == b.name
@@ -151,7 +153,7 @@ class CameraSidebar(Gtk.Box):
         # Remember selected camera before rebuilding
         selected_row = self.listbox.get_selected_row()
         selected_id: int | None = None
-        if selected_row is not None:
+        if selected_row is not None and getattr(selected_row, "camera", None) is not None:
             selected_id = selected_row.camera.id  # type: ignore[attr-defined]
 
         self.cameras = cameras
@@ -169,6 +171,9 @@ class CameraSidebar(Gtk.Box):
             self.listbox.append(row)
             if cam.id == selected_id:
                 self.listbox.select_row(row)
+
+        # Pinned row at the end: clears the currently selected grid slot
+        self.listbox.append(self._create_clear_slot_row())
 
     def _create_camera_row(self, cam: Camera) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
@@ -387,10 +392,38 @@ class CameraSidebar(Gtk.Box):
         # Restart the stream if the camera is currently displayed
         self.window.restart_camera_stream(cam.id)
 
+    def _create_clear_slot_row(self) -> Gtk.ListBoxRow:
+        """Pinned row that clears whichever grid slot is currently selected."""
+        row = Gtk.ListBoxRow()
+        row.camera = None  # type: ignore[attr-defined]
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        icon = Gtk.Image.new_from_icon_name("edit-clear-symbolic")
+        box.append(icon)
+
+        label = Gtk.Label(label="Empty Slot")
+        label.set_xalign(0)
+        label.add_css_class("dim-label")
+        label.set_hexpand(True)
+        box.append(label)
+
+        row.set_child(box)
+        row.set_tooltip_text("Select a grid slot, then click here to clear it")
+        return row
+
     def _on_row_selected(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             return
         cam = row.camera  # type: ignore[attr-defined]
+        if cam is None:
+            self.window.clear_selected_slot()
+            self.listbox.unselect_all()
+            return
         self.window.on_camera_selected(cam)
 
     def _on_nav_clicked(self, btn: Gtk.Button, page_name: str) -> None:

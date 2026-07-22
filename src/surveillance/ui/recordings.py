@@ -93,12 +93,6 @@ class RecordingsView(Gtk.Box):
         toolbar.set_margin_start(8)
         toolbar.set_margin_end(8)
 
-        label = Gtk.Label(label="Recordings")
-        label.add_css_class("title-4")
-        label.set_hexpand(True)
-        label.set_xalign(0)
-        toolbar.append(label)
-
         filter_label = Gtk.Label(label="Camera:")
         toolbar.append(filter_label)
 

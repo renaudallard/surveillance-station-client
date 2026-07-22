@@ -170,38 +170,15 @@ class LiveView(Gtk.Box):
         self.set_hexpand(True)
         self.set_vexpand(True)
 
-        # Toolbar
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        toolbar.set_margin_top(4)
-        toolbar.set_margin_bottom(4)
-        toolbar.set_margin_start(8)
-        toolbar.set_margin_end(8)
-
-        label = Gtk.Label(label="Live View")
-        label.add_css_class("title-4")
-        label.set_hexpand(True)
-        label.set_xalign(0)
-        toolbar.append(label)
-
-        # Layout selector
-        layout_label = Gtk.Label(label="Layout:")
-        toolbar.append(layout_label)
-
+        # Layout selector: not shown directly (grid layout + clear are
+        # controlled from the header bar's grid button), but kept as the
+        # single source of truth for the current layout and its "changed"
+        # signal, which drives _on_layout_changed.
         self.layout_combo = Gtk.ComboBoxText()
         for layout_name in LAYOUTS:
             self.layout_combo.append(layout_name, layout_name)
         self.layout_combo.set_active_id(self.app.config.grid_layout)
         self.layout_combo.connect("changed", self._on_layout_changed)
-        toolbar.append(self.layout_combo)
-
-        clear_btn = Gtk.Button()
-        clear_btn.set_icon_name("edit-clear-all-symbolic")
-        clear_btn.set_tooltip_text("Clear all streams")
-        clear_btn.connect("clicked", self._on_clear_clicked)
-        toolbar.append(clear_btn)
-
-        self.append(toolbar)
-        self.append(Gtk.Separator())
 
         # Grid container
         self.grid = Gtk.Grid()
@@ -339,8 +316,11 @@ class LiveView(Gtk.Box):
     # User interactions
     # ------------------------------------------------------------------
 
-    def _on_clear_clicked(self, btn: Gtk.Button) -> None:
-        """Confirm, then clear all streams and camera assignments in this layout."""
+    def confirm_clear_layout(self) -> None:
+        """Confirm, then clear all streams and camera assignments in this layout.
+
+        Called from the header bar's grid-layout menu.
+        """
         dialog = Gtk.AlertDialog()
         dialog.set_message("Clear all streams in this layout?")
         dialog.set_detail(

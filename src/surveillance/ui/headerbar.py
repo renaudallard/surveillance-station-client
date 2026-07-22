@@ -51,10 +51,10 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.window = window
         self.app: SurveillanceApp = window.get_application()  # type: ignore[assignment]
 
-        # Title
-        title = Gtk.Label(label="Surveillance Station")
-        title.add_css_class("title")
-        self.set_title_widget(title)
+        # Title (updated with the current page name, e.g. "Surveillance Station — Live View")
+        self.title_label = Gtk.Label(label="Surveillance Station")
+        self.title_label.add_css_class("title")
+        self.set_title_widget(self.title_label)
 
         # Home mode toggle (left side)
         self.home_btn = Gtk.ToggleButton()
@@ -69,6 +69,8 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.grid_btn = Gtk.MenuButton()
         self.grid_btn.set_icon_name("view-grid-symbolic")
         self.grid_btn.set_tooltip_text("Grid Layout")
+        self.grid_btn.set_sensitive(False)
+        self._build_grid_popover()
         self.pack_end(self.grid_btn)
 
         # Notification bell
@@ -117,6 +119,73 @@ class AppHeaderBar(Gtk.HeaderBar):
             switch_homemode(self.app.api, btn.get_active()),
             error_callback=lambda e: log.error("Home mode toggle failed: %s", e),
         )
+
+    def _build_grid_popover(self) -> None:
+        """Build the grid-layout popover: layout choice + clear current layout."""
+        from surveillance.ui.liveview import LAYOUTS
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        self._layout_radios: dict[str, Gtk.CheckButton] = {}
+        group: Gtk.CheckButton | None = None
+        for layout_name in LAYOUTS:
+            radio = Gtk.CheckButton(label=layout_name)
+            if group is not None:
+                radio.set_group(group)
+            else:
+                group = radio
+            radio.connect("toggled", self._on_grid_radio_toggled, layout_name)
+            box.append(radio)
+            self._layout_radios[layout_name] = radio
+
+        box.append(Gtk.Separator())
+
+        clear_btn = Gtk.Button(label="Clear Current Layout")
+        clear_btn.add_css_class("destructive-action")
+        clear_btn.connect("clicked", self._on_clear_layout_clicked)
+        box.append(clear_btn)
+
+        self._grid_popover = Gtk.Popover()
+        self._grid_popover.set_child(box)
+        self._grid_popover.connect("show", self._on_grid_popover_show)
+        self.grid_btn.set_popover(self._grid_popover)
+
+    def _live_view(self) -> Gtk.Widget | None:
+        return self.window.stack.get_child_by_name("live")
+
+    def _on_grid_popover_show(self, popover: Gtk.Popover) -> None:
+        """Sync the radio selection to the live view's current layout."""
+        live_view = self._live_view()
+        if not live_view or not hasattr(live_view, "layout_combo"):
+            return
+        current = live_view.layout_combo.get_active_id() or "2x2"  # type: ignore[attr-defined]
+        radio = self._layout_radios.get(current)
+        if radio:
+            radio.handler_block_by_func(self._on_grid_radio_toggled)
+            radio.set_active(True)
+            radio.handler_unblock_by_func(self._on_grid_radio_toggled)
+
+    def _on_grid_radio_toggled(self, radio: Gtk.CheckButton, layout_name: str) -> None:
+        if not radio.get_active():
+            return
+        live_view = self._live_view()
+        if live_view and hasattr(live_view, "layout_combo"):
+            live_view.layout_combo.set_active_id(layout_name)  # type: ignore[attr-defined]
+        self._grid_popover.popdown()
+
+    def _on_clear_layout_clicked(self, btn: Gtk.Button) -> None:
+        self._grid_popover.popdown()
+        live_view = self._live_view()
+        if live_view and hasattr(live_view, "confirm_clear_layout"):
+            live_view.confirm_clear_layout()  # type: ignore[attr-defined]
+
+    def set_page_title(self, page_title: str) -> None:
+        """Update the header bar title to reflect the current page."""
+        self.title_label.set_label(f"Surveillance Station — {page_title}")
 
     _THEME_ICONS: ClassVar[dict[str, str]] = {
         "auto": "display-brightness-symbolic",
@@ -184,3 +253,4 @@ class AppHeaderBar(Gtk.HeaderBar):
         """Enable/disable controls based on connection state."""
         self.home_btn.set_sensitive(connected)
         self.notif_btn.set_sensitive(connected)
+        self.grid_btn.set_sensitive(connected)

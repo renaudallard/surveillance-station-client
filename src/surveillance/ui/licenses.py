@@ -76,11 +76,6 @@ class LicensesView(Gtk.Box):
         toolbar.set_margin_start(8)
         toolbar.set_margin_end(8)
 
-        label = Gtk.Label(label="Licenses")
-        label.add_css_class("title-4")
-        label.set_xalign(0)
-        toolbar.append(label)
-
         self.summary_label = Gtk.Label(label="")
         self.summary_label.add_css_class("dim-label")
         self.summary_label.set_hexpand(True)

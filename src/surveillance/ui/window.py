@@ -45,6 +45,15 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+PAGE_TITLES: dict[str, str] = {
+    "live": "Live View",
+    "recordings": "Recordings",
+    "snapshots": "Snapshots",
+    "events": "Events",
+    "timelapse": "Time Lapse",
+    "licenses": "Licenses",
+}
+
 
 class MainWindow(Gtk.ApplicationWindow):
     """Main application window with sidebar and content stack."""
@@ -87,6 +96,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
 
         self.stack.set_visible_child_name("live")
+        self.headerbar.set_page_title(PAGE_TITLES["live"])
 
         # Selected camera
         self.selected_camera: Camera | None = None
@@ -195,7 +205,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.stack.get_child_by_name(last_page):
             self.stack.set_visible_child_name(last_page)
         else:
-            self.stack.set_visible_child_name("live")
+            last_page = "live"
+            self.stack.set_visible_child_name(last_page)
+        self.headerbar.set_page_title(PAGE_TITLES.get(last_page, last_page))
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
@@ -313,6 +325,7 @@ class MainWindow(Gtk.ApplicationWindow):
         """Switch to a content page, pausing/resuming live streams as needed."""
         previous = self.stack.get_visible_child_name()
         self.stack.set_visible_child_name(page_name)
+        self.headerbar.set_page_title(PAGE_TITLES.get(page_name, page_name))
         self.app.config.last_page = page_name
         from surveillance.config import save_config
 

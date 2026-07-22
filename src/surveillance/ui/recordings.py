@@ -216,10 +216,10 @@ class RecordingsView(Gtk.Box):
 
         # Restore preset button state, populate cameras, load
         self._sync_preset_buttons()
-        self._update_camera_filter()
+        self.refresh_camera_filter()
         self._load_recordings()
 
-    def _update_camera_filter(self) -> None:
+    def refresh_camera_filter(self) -> None:
         """Populate camera filter from sidebar camera list."""
         self._known_camera_ids: set[int] = set()
         for cam in self.window.sidebar.cameras:

@@ -192,10 +192,23 @@ class MainWindow(Gtk.ApplicationWindow):
         self._start_polling()
 
     def _restore_live_session(self, cameras: list[Camera]) -> None:
-        """Restore live view camera assignments from last session."""
+        """Restore live view camera assignments and refresh other pages' camera filters.
+
+        Runs once the sidebar's camera list has actually loaded. Recordings
+        and Events build their camera filter dropdown from that same list
+        at construction time, which happens before this — so without this,
+        their filter would only ever show whatever camera happened to
+        already be loaded (usually none) plus any camera the user later
+        clicked in the sidebar.
+        """
         live_view = self.stack.get_child_by_name("live")
         if live_view and hasattr(live_view, "restore_session"):
             live_view.restore_session(cameras)
+
+        for page_name in ("recordings", "events"):
+            page = self.stack.get_child_by_name(page_name)
+            if page and hasattr(page, "refresh_camera_filter"):
+                page.refresh_camera_filter()
 
     def _setup_content_pages(self) -> None:
         """Replace placeholders with real content widgets."""

@@ -56,6 +56,14 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.title_label.add_css_class("title")
         self.set_title_widget(self.title_label)
 
+        # Sidebar toggle (left side, left of Home Mode)
+        self.sidebar_btn = Gtk.ToggleButton()
+        self.sidebar_btn.set_icon_name("sidebar-show-symbolic")
+        self.sidebar_btn.set_active(self.app.config.sidebar_visible)
+        self._update_sidebar_tooltip(self.app.config.sidebar_visible)
+        self.sidebar_btn.connect("toggled", self._on_sidebar_toggled)
+        self.pack_start(self.sidebar_btn)
+
         # Home mode toggle (left side)
         self.home_btn = Gtk.ToggleButton()
         self.home_btn.set_icon_name("go-home-symbolic")
@@ -108,6 +116,14 @@ class AppHeaderBar(Gtk.HeaderBar):
         logout_btn.set_tooltip_text("Logout")
         logout_btn.set_action_name("app.logout")
         self.pack_end(logout_btn)
+
+    def _update_sidebar_tooltip(self, visible: bool) -> None:
+        self.sidebar_btn.set_tooltip_text("Hide Panel" if visible else "Show Panel")
+
+    def _on_sidebar_toggled(self, btn: Gtk.ToggleButton) -> None:
+        visible = btn.get_active()
+        self._update_sidebar_tooltip(visible)
+        self.window.toggle_sidebar(visible)
 
     def _on_home_toggled(self, btn: Gtk.ToggleButton) -> None:
         if not self.app.api:

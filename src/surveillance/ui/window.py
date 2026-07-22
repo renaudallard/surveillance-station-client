@@ -74,6 +74,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Sidebar
         self.sidebar = CameraSidebar(self)
+        self.sidebar.set_visible(self.app.config.sidebar_visible)
         self.paned.set_start_child(self.sidebar)
         self.paned.set_resize_start_child(False)
         self.paned.set_shrink_start_child(False)
@@ -320,6 +321,15 @@ class MainWindow(Gtk.ApplicationWindow):
         live_view = self.stack.get_child_by_name("live")
         if live_view and hasattr(live_view, "clear_selected_slot"):
             live_view.clear_selected_slot()
+
+    def toggle_sidebar(self, visible: bool) -> None:
+        """Show or hide the camera sidebar panel."""
+        self.sidebar.set_visible(visible)
+        self.app.config.sidebar_visible = visible
+
+        from surveillance.config import save_config
+
+        save_config(self.app.config)
 
     def show_page(self, page_name: str) -> None:
         """Switch to a content page, pausing/resuming live streams as needed."""

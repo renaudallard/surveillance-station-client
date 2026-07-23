@@ -22,19 +22,27 @@ What to try:
 2. Right-click the camera in the sidebar and switch to MJPEG or RTSP over HTTP.
 3. Check *Control Panel > Log Center* on DSM for NAS-side errors.
 
-## A live view slot keeps reconnecting
+## A live view slot's log fills with "reconnecting on the same pipe"
 
 ```
-WARNING surveillance.ui.liveview: Stream for Front Door dropped after 12s
-  (ConnectionClosedError: no close frame received or sent); reconnecting in 2s
+WARNING surveillance.services.ws_bridge: WebSocket dropped after 18s
+  (ConnectionClosedError: no close frame received or sent); reconnecting on the same pipe
 ```
 
-The NAS closed the WebSocket streaming session without a closing handshake.
-The slot header shows *(reconnecting)* and the stream is restarted with a
-growing delay; after five attempts in a row it stops and shows *(stream lost)*.
+This is expected, not an error: Surveillance Station's WebSocket streaming
+backend ends every session on its own after roughly 15-25 seconds as routine
+behavior (confirmed against a real NAS and against DSM's own web client,
+which reconnects the same way). The client reconnects on the same pipe
+without ever stopping playback, so there is no visible interruption — this
+log line alone is not something to act on.
 
-If a camera does this constantly, right-click it in the sidebar and switch its
-protocol to RTSP, which does not go through the WebSocket streaming backend.
+## A live view slot shows "(stream lost)"
+
+This means the WebSocket bridge tried several times in a row and never
+managed to establish a real connection at all (not just the routine
+session-rotation above). Right-click the camera in the sidebar and switch
+its protocol to RTSP, which does not go through the WebSocket streaming
+backend.
 
 ## Recording playback never starts
 

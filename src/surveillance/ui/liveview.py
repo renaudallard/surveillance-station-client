@@ -38,7 +38,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, GLib, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.config import save_config_now
@@ -58,11 +58,6 @@ log = logging.getLogger(__name__)
 # Internal grid is always 4x4 (16 slots).  Positions: idx = row*4 + col.
 _GRID_COLS = 4
 _MAX_SLOTS = 16
-
-# Reconnect policy for WebSocket streams the NAS drops on its own.
-_WS_MAX_RETRIES = 5
-_WS_MAX_DELAY = 30  # seconds between attempts
-_WS_HEALTHY_SECS = 30  # a session lasting this long is not a repeat failure
 
 
 class CameraSlot(Gtk.Box):
@@ -134,7 +129,6 @@ class CameraSlot(Gtk.Box):
         self._ws_bridge: WebSocketBridge | None = None
         self._click_callback: object = None
         self._status = ""  # stream state shown after the camera name
-        self.retries = 0  # consecutive dropped WebSocket streams
         self._snapshot_callback: object = None
         self._open_1x1_callback: object = None
         self._clear_slot_callback: object = None
@@ -238,7 +232,6 @@ class CameraSlot(Gtk.Box):
     def assign(self, camera: Camera) -> None:
         self.camera = camera
         self._status = ""
-        self.retries = 0
         self._header.set_label(camera.name)
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -262,7 +255,6 @@ class CameraSlot(Gtk.Box):
         self.stop_stream()
         self.camera = None
         self._status = ""
-        self.retries = 0
         self._header.set_label(f"Slot {self._display_index + 1}")
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -653,51 +645,29 @@ class LiveView(Gtk.Box):
             callback=_on_ready,
             error_callback=lambda e: log.error("WebSocket bridge failed: %s", e),
         )
-        # The NAS drops streaming sessions on its own. Without this the pipe
-        # just reaches EOF and mpv sits on its last frame, looking live.
+        # The NAS drops this WebSocket session routinely, every ~15-25s, as
+        # normal behavior — WebSocketBridge reconnects on the same pipe
+        # internally and never surfaces those as a "closed" event, so mpv
+        # never sees a real EOF and just keeps playing through them. This
+        # only fires once the bridge has genuinely given up (a run of
+        # attempts that never even connect) or on a deliberate stop (empty
+        # reason, ignored below).
         run_async(
             bridge.wait_closed(),
-            callback=lambda reason: self._on_stream_dropped(slot_idx, cam_id, bridge, reason),
+            callback=lambda reason: self._on_stream_gave_up(slot_idx, cam_id, bridge, reason),
         )
 
-    def _on_stream_dropped(
+    def _on_stream_gave_up(
         self, slot_idx: int, cam_id: int, bridge: WebSocketBridge, reason: str
     ) -> None:
-        """Reconnect a slot whose WebSocket stream ended unexpectedly."""
+        """Show a slot whose WebSocket bridge gave up after repeated failures."""
         slot = self._slots[slot_idx]
         if not reason or slot._ws_bridge is not bridge:
             return  # we stopped it ourselves, or the slot moved on
         if not slot.get_visible() or not slot.camera or slot.camera.id != cam_id:
             return
-
-        # A session that ran for a while and then dropped is a fresh failure,
-        # not part of a run of them.
-        if bridge.uptime >= _WS_HEALTHY_SECS:
-            slot.retries = 0
-        slot.retries += 1
-
-        if slot.retries > _WS_MAX_RETRIES:
-            log.error("Stream for %s kept dropping (%s); giving up", slot.camera.name, reason)
-            slot.set_status("stream lost")
-            return
-
-        delay = min(2 ** (slot.retries - 1), _WS_MAX_DELAY)
-        log.warning(
-            "Stream for %s dropped after %.0fs (%s); reconnecting in %ds",
-            slot.camera.name,
-            bridge.uptime,
-            reason,
-            delay,
-        )
-        slot.set_status("reconnecting")
-        GLib.timeout_add_seconds(delay, self._reconnect_slot, slot_idx, cam_id)
-
-    def _reconnect_slot(self, slot_idx: int, cam_id: int) -> bool:
-        """Restart a dropped stream. Returns False so the timeout fires once."""
-        slot = self._slots[slot_idx]
-        if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
-            self._start_stream(slot_idx, slot.camera)
-        return False
+        log.error("Stream for %s gave up (%s)", slot.camera.name, reason)
+        slot.set_status("stream lost")
 
     # ------------------------------------------------------------------
     # Session persistence

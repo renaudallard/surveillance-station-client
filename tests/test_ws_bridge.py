@@ -70,10 +70,21 @@ def connect(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Replace the real WebSocket connect with a configurable fake."""
 
     def _install(result: Any) -> None:
+        """*result* is a single value reused for every call, or a list
+        consumed one per call (the last entry is reused once exhausted) —
+        used to simulate a sequence of reconnect attempts with different
+        outcomes."""
+        sequence = list(result) if isinstance(result, list) else None
+
         def _fake(url: str, **kwargs: Any) -> Any:
-            if isinstance(result, BaseException):
-                raise result
-            return result
+            value = (
+                sequence.pop(0)
+                if sequence and len(sequence) > 1
+                else (sequence[0] if sequence else result)
+            )
+            if isinstance(value, BaseException):
+                raise value
+            return value
 
         monkeypatch.setattr(ws_bridge, "_ws_connect", _fake)
 
@@ -89,13 +100,31 @@ class TestWaitClosed:
         assert "ConnectionRefusedError" in reason
         await bridge.stop()
 
-    async def test_reports_server_closing_the_stream(self, connect: Any) -> None:
-        """The NAS dropping the session must not look like a clean shutdown."""
+    async def test_gives_up_after_repeated_clean_closes(self, connect: Any) -> None:
+        """A single clean close (e.g. code 1005) is absorbed and reconnected
+        internally — that's the NAS's normal ~15-25s session rotation, not a
+        failure. But a run of closes that never last long enough to look
+        like a real connection must still eventually surface, rather than
+        retrying forever in a tight loop."""
         connect(_FakeWS([_frame(b"mediaType=1", b"frame")]))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
-        assert await bridge.wait_closed() == "stream ended"
+        reason = await bridge.wait_closed()
+        assert reason
         await bridge.stop()
+
+    async def test_absorbs_a_single_clean_close_and_reconnects(self, connect: Any) -> None:
+        """One clean close must not surface as a drop: the bridge should
+        reconnect on the same pipe and keep running silently, exactly like
+        the NAS's routine WebSocket session rotation."""
+        connect([_FakeWS([_frame(b"mediaType=1", b"frame")]), _FakeWS([], hang=True)])
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        await asyncio.sleep(0.5)  # let it clean-close once and reconnect into the hanging fake
+        assert bridge._pump_task is not None
+        assert not bridge._pump_task.done()
+        await bridge.stop()
+        assert await bridge.wait_closed() == ""
 
     async def test_silent_when_we_stop_it(self, connect: Any) -> None:
         connect(_FakeWS([], hang=True))

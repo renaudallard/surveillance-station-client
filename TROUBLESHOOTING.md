@@ -22,6 +22,20 @@ What to try:
 2. Right-click the camera in the sidebar and switch to MJPEG or RTSP over HTTP.
 3. Check *Control Panel > Log Center* on DSM for NAS-side errors.
 
+## A live view slot keeps reconnecting
+
+```
+WARNING surveillance.ui.liveview: Stream for Front Door dropped after 12s
+  (ConnectionClosedError: no close frame received or sent); reconnecting in 2s
+```
+
+The NAS closed the WebSocket streaming session without a closing handshake.
+The slot header shows *(reconnecting)* and the stream is restarted with a
+growing delay; after five attempts in a row it stops and shows *(stream lost)*.
+
+If a camera does this constantly, right-click it in the sidebar and switch its
+protocol to RTSP, which does not go through the WebSocket streaming backend.
+
 ## Recording playback never starts
 
 The player dialog opens, the video area stays black, and after seven seconds

@@ -22,7 +22,7 @@
 
 ## Features
 
-- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland.
+- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland.
 - **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
 - **PTZ Control** &mdash; Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active.
 - **Snapshots** &mdash; Take live snapshots from any camera, browse saved snapshots, download or delete.
@@ -30,7 +30,7 @@
 - **Events & Alerts** &mdash; View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds.
 - **Home Mode** &mdash; Toggle Surveillance Station home mode directly from the header bar.
 - **License Management** &mdash; View, add, and delete camera licenses. Online and offline activation.
-- **Session Persistence** &mdash; Grid layout, active page, camera assignments, and recording search filters (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
+- **Session Persistence** &mdash; Grid layout, active page, camera assignments, sidebar visibility, and recording search filters (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
 - **Two-Factor Authentication** &mdash; MFA/OTP login support. When 2FA is enabled on your Synology account, the client prompts for a 6-digit authenticator code and optionally registers as a trusted device to skip OTP on future logins.
 - **Multi-Profile** &mdash; Save multiple NAS connection profiles and switch between them from the login screen.
 - **Secure Credentials** &mdash; Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain).
@@ -105,7 +105,14 @@ On launch, a login dialog asks for your NAS connection details:
 After connecting, the camera list appears in the sidebar. Click a camera to
 start its live stream. Use the navigation buttons at the bottom of the sidebar
 to switch between **Live View**, **Recordings**, **Snapshots**, **Events**,
-**Time Lapse**, and **Licenses**.
+**Time Lapse**, and **Licenses**. The header bar shows the current page name
+and holds the panel toggle on the left, which hides or shows the whole sidebar.
+
+On **Live View**, the grid button in the header bar selects the layout and can
+clear the current one. Click a slot to select it, then click a camera to fill
+it, or click **Empty Slot** at the bottom of the camera list to empty it again.
+Clicking a camera with no slot selected switches to 1&times;1 and shows only
+that camera.
 
 ### Keyboard shortcuts
 
@@ -131,6 +138,7 @@ specification:
 [general]
 default_profile = "home-nas"
 theme = "auto"                  # "auto" (follow OS), "dark", or "light"
+sidebar_visible = true          # camera sidebar shown at startup
 poll_interval_cameras = 30      # seconds
 poll_interval_alerts = 30
 poll_interval_homemode = 60

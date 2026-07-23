@@ -12,9 +12,17 @@ recording playback, PTZ control, snapshots, events/alerts, and home mode managem
 .SH FEATURES
 .TP
 .B Live View
-View live camera streams in configurable grid layouts (1x1, 2x2, 3x3, 4x4).
+View live camera streams in configurable grid layouts (1x1, 2x2, 3x3, 4x4),
+selected from the grid button in the header bar.
 Each layout remembers its own camera arrangement independently.
+A single slot is emptied from the camera sidebar, the whole layout from the
+grid menu after a confirmation prompt.
 Video is rendered via mpv with hardware acceleration.
+.TP
+.B Camera Sidebar
+Lists the cameras alphabetically and switches between pages.
+The panel button in the header bar hides or shows it, and that choice is
+remembered across restarts.
 .TP
 .B Recording Playback
 Browse, play back, and download recordings filtered by camera and date.
@@ -58,6 +66,12 @@ Connection profiles define NAS host, port, HTTPS, and SSL verification settings.
 Credentials are stored securely via the system keyring. When two-factor
 authentication is enabled, trusted device tokens are stored per profile in the
 config file.
+.PP
+The
+.B [general]
+section stores the theme, the polling intervals, the snapshot directory, and
+.IR sidebar_visible ,
+which records whether the camera sidebar is shown.
 .PP
 The
 .B [session]

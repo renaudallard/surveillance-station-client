@@ -201,6 +201,106 @@ class TestEventService:
             count = await count_unread_alerts(api)
             assert count == 5
 
+    @pytest.mark.asyncio
+    async def test_list_granular_events_decodes_event_map(self, api: SurveillanceAPI) -> None:
+        """event_map is a run-length-encoded bitmap: [ticks, flag, reserved]
+        entries at a fixed interval. This decodes a synthetic response
+        covering baseline (flag=1), a motion event (flag=513), and the
+        "not processed yet" placeholder (flag=0) seen at the live edge of a
+        still-recording segment — which must NOT produce a phantom event.
+        event_type is the raw flag value (see services.event module
+        docstring for why: only 513 is a confirmed classification)."""
+        from surveillance.services.event import MOTION_EVENT_FLAG, list_granular_events
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 1,
+                        "event": [
+                            {
+                                "id": 555,
+                                "start": from_time,
+                                "stop": from_time + 100,
+                                "mountId": 7,
+                                "archId": 3,
+                            }
+                        ],
+                        "event_map": [
+                            [2, 1, 0],  # 10s baseline
+                            [3, 513, 0],  # 15s motion event
+                            [4, 0, 0],  # 20s "not processed yet" — not an event
+                        ],
+                    }
+                ]
+            ]
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            events = await list_granular_events(
+                api, [1], {1: "Front Door"}, from_time, from_time + 100
+            )
+
+        assert len(events) == 1
+        event = events[0]
+        assert event.id == 555
+        assert event.camera_name == "Front Door"
+        assert event.event_type == MOTION_EVENT_FLAG
+        assert event.start_time == from_time + 10
+        assert event.stop_time == from_time + 25
+        assert event.mount_id == 7
+        assert event.arch_id == 3
+        assert event.seek_offset == 10
+
+    @pytest.mark.asyncio
+    async def test_list_granular_events_unrecognized_flag_passes_through(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """A flag value we don't know the meaning of (e.g. the bit8 pattern
+        seen on cameras with Person Detect and Tampering both off) must NOT
+        be reclassified/guessed — event_type is the raw flag, unchanged."""
+        from surveillance.services.event import list_granular_events
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 40,
+                        "event": [
+                            {
+                                "id": 999,
+                                "start": from_time,
+                                "stop": from_time + 100,
+                                "mountId": 0,
+                                "archId": 0,
+                            }
+                        ],
+                        "event_map": [[5, 257, 0]],  # bit0|bit8, meaning unconfirmed
+                    }
+                ]
+            ]
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            events = await list_granular_events(
+                api, [40], {40: "CAM 59"}, from_time, from_time + 100
+            )
+
+        assert len(events) == 1
+        assert events[0].event_type == 257
+
+    @pytest.mark.asyncio
+    async def test_list_granular_events_no_cameras(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import list_granular_events
+
+        with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
+            events = await list_granular_events(api, [], {}, 1700000000, 1700000100)
+
+        assert events == []
+        mock_request.assert_not_called()
+
 
 class TestLicenseService:
     @pytest.mark.asyncio

@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,11 @@ class AppConfig:
     search_from_time: str = ""
     search_to_time: str = ""
     search_time_preset: str = ""  # "today", "yesterday", "last24h", "last7d", or ""
+    events_search_camera_ids: list[int] = field(default_factory=list)
+    events_search_from_time: str = ""
+    events_search_to_time: str = ""
+    events_search_time_preset: str = "today"
+    events_search_event_types: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -181,6 +187,11 @@ def load_config() -> AppConfig:
         search_from_time=session.get("search_from_time", ""),
         search_to_time=session.get("search_to_time", ""),
         search_time_preset=session.get("search_time_preset", ""),
+        events_search_camera_ids=session.get("events_search_camera_ids", []),
+        events_search_from_time=session.get("events_search_from_time", ""),
+        events_search_to_time=session.get("events_search_to_time", ""),
+        events_search_time_preset=session.get("events_search_time_preset", "today"),
+        events_search_event_types=session.get("events_search_event_types", []),
     )
 
 
@@ -240,6 +251,11 @@ def _write_config(config: AppConfig) -> None:
             "search_from_time": config.search_from_time,
             "search_to_time": config.search_to_time,
             "search_time_preset": config.search_time_preset,
+            "events_search_camera_ids": config.events_search_camera_ids,
+            "events_search_from_time": config.events_search_from_time,
+            "events_search_to_time": config.events_search_to_time,
+            "events_search_time_preset": config.events_search_time_preset,
+            "events_search_event_types": config.events_search_event_types,
         },
         "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
         "camera_protocols": {
@@ -270,3 +286,51 @@ def remove_profile(config: AppConfig, name: str) -> None:
     if config.default_profile == name:
         config.default_profile = next(iter(config.profiles), "")
     save_config_now(config)
+
+
+def load_search_filters(
+    cfg: AppConfig, prefix: str
+) -> tuple[list[int] | None, int | None, int | None, str]:
+    """Load persisted advanced-search filters (camera IDs, time range, preset)
+    from the `{prefix}_camera_ids`/`{prefix}_from_time`/`{prefix}_to_time`/
+    `{prefix}_time_preset` fields on AppConfig — e.g. prefix="search" for
+    Recordings, "events_search" for Events. Shared by each page's own
+    _load_search_from_config() so the parsing logic isn't tripled."""
+    camera_ids: list[int] | None = getattr(cfg, f"{prefix}_camera_ids") or None
+    from_time = None
+    from_str = getattr(cfg, f"{prefix}_from_time")
+    if from_str:
+        with contextlib.suppress(ValueError):
+            from_time = int(datetime.fromisoformat(from_str).timestamp())
+    to_time = None
+    to_str = getattr(cfg, f"{prefix}_to_time")
+    if to_str:
+        with contextlib.suppress(ValueError):
+            to_time = int(datetime.fromisoformat(to_str).timestamp())
+    time_preset: str = getattr(cfg, f"{prefix}_time_preset")
+    return camera_ids, from_time, to_time, time_preset
+
+
+def save_search_filters(
+    cfg: AppConfig,
+    prefix: str,
+    camera_ids: list[int] | None,
+    from_time: int | None,
+    to_time: int | None,
+    time_preset: str,
+) -> None:
+    """Persist advanced-search filters to the same `{prefix}_*` AppConfig
+    fields load_search_filters() reads, and write the config to disk."""
+    setattr(cfg, f"{prefix}_camera_ids", camera_ids or [])
+    setattr(
+        cfg,
+        f"{prefix}_from_time",
+        datetime.fromtimestamp(from_time).isoformat() if from_time else "",
+    )
+    setattr(
+        cfg,
+        f"{prefix}_to_time",
+        datetime.fromtimestamp(to_time).isoformat() if to_time else "",
+    )
+    setattr(cfg, f"{prefix}_time_preset", time_preset)
+    save_config(cfg)

@@ -357,7 +357,7 @@ surveillance-station-client/
 │   │   ├── liveview.py                 live stream grid
 │   │   ├── mpv_widget.py               GLArea + mpv render
 │   │   ├── recordings.py               recording browser
-│   │   ├── recording_search.py         recording search dialog
+│   │   ├── advanced_search.py          advanced search dialog (shared by Recordings/Snapshots/Events)
 │   │   ├── player.py                   playback controls
 │   │   ├── ptz_controls.py             PTZ direction pad
 │   │   ├── snapshots.py                snapshot browser

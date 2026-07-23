@@ -156,8 +156,14 @@ class SurveillanceAPI:
         method: str,
         version: int = 1,
         extra_params: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         """Make a raw API request without session error handling.
+
+        *timeout* overrides the client's default (30s) for this call only —
+        for endpoints that can legitimately take longer, e.g. RecordingPicker
+        ::EnumInterval over a wide time range with many cameras. Left unset,
+        the client default applies.
 
         Returns the 'data' field from the response (dict or list).
         """
@@ -174,7 +180,10 @@ class SurveillanceAPI:
         if extra_params:
             params.update(extra_params)
 
-        resp = await self.client.get(path, params=params)
+        get_kwargs: dict[str, Any] = {"params": params}
+        if timeout is not None:
+            get_kwargs["timeout"] = timeout
+        resp = await self.client.get(path, **get_kwargs)
         resp.raise_for_status()
         result = resp.json()
 
@@ -193,13 +202,14 @@ class SurveillanceAPI:
         method: str,
         version: int = 1,
         extra_params: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         """Make an API request with auto-reconnect on session errors.
 
         Returns the 'data' field from the response (dict or list).
         """
         try:
-            return await self.raw_request(api, method, version, extra_params)
+            return await self.raw_request(api, method, version, extra_params, timeout=timeout)
         except ApiError as e:
             if e.code in SESSION_ERRORS and self.username and self.password:
                 log.info("Session error %d, attempting re-login", e.code)
@@ -213,7 +223,7 @@ class SurveillanceAPI:
                     )
                 except AuthError:
                     raise SessionExpiredError("Re-login failed") from e
-                return await self.raw_request(api, method, version, extra_params)
+                return await self.raw_request(api, method, version, extra_params, timeout=timeout)
             raise
 
     async def _raw_download(

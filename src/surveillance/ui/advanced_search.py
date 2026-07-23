@@ -23,7 +23,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Recording search dialog with camera and time range filters."""
+"""Advanced search dialog with camera and time range filters, shared by
+Recordings, Snapshots, and Events."""
 
 from __future__ import annotations
 
@@ -51,26 +52,34 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class RecordingSearchDialog(Gtk.Window):
-    """Dialog for configuring recording search filters."""
+class AdvancedSearchDialog(Gtk.Window):
+    """Dialog for configuring advanced search filters — camera(s), time
+    range, and (Events only) event types."""
 
     def __init__(
         self,
         parent: Gtk.Window,
         cameras: list[Camera],
-        on_search: Callable[[list[int] | None, datetime | None, datetime | None], None],
+        on_search: Callable[
+            [list[int] | None, datetime | None, datetime | None, list[int] | None], None
+        ],
         on_reset: Callable[[], None],
         selected_ids: list[int] | None = None,
         from_time: datetime | None = None,
         to_time: datetime | None = None,
+        title: str = "Advanced Search",
+        event_types: list[tuple[int, str]] | None = None,
+        selected_event_type_ids: list[int] | None = None,
+        show_extended_presets: bool = True,
     ) -> None:
         super().__init__(
-            title="Search Recordings",
+            title=title,
             transient_for=parent,
             modal=True,
         )
         self._cameras = cameras
         self._camera_checks: dict[int, Gtk.CheckButton] = {}
+        self._event_type_checks: dict[int, Gtk.CheckButton] = {}
         self._time_preset_used = from_time is not None or to_time is not None
         self._on_search = on_search
         self._on_reset = on_reset
@@ -109,13 +118,16 @@ class RecordingSearchDialog(Gtk.Window):
         self.last24h_btn.connect("clicked", self._on_preset_last24h)
         preset_box.append(self.last24h_btn)
 
-        self.week_btn = Gtk.Button(label="Last 7 days")
-        self.week_btn.connect("clicked", self._on_preset_week)
-        preset_box.append(self.week_btn)
+        # Hidden for Events (see show_extended_presets) to match its
+        # quick-filter toolbar, which only offers Today/Yesterday/Last 24h.
+        if show_extended_presets:
+            self.week_btn = Gtk.Button(label="Last 7 days")
+            self.week_btn.connect("clicked", self._on_preset_week)
+            preset_box.append(self.week_btn)
 
-        self.month_btn = Gtk.Button(label="Last 30 days")
-        self.month_btn.connect("clicked", self._on_preset_month)
-        preset_box.append(self.month_btn)
+            self.month_btn = Gtk.Button(label="Last 30 days")
+            self.month_btn.connect("clicked", self._on_preset_month)
+            preset_box.append(self.month_btn)
 
         time_box.append(preset_box)
 
@@ -159,6 +171,7 @@ class RecordingSearchDialog(Gtk.Window):
         cam_scroll = Gtk.ScrolledWindow()
         cam_scroll.set_min_content_height(150)
         cam_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        cam_scroll.set_hexpand(True)
 
         self.cam_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.cam_box.set_margin_top(8)
@@ -180,7 +193,43 @@ class RecordingSearchDialog(Gtk.Window):
 
         cam_scroll.set_child(self.cam_box)
         cam_frame.set_child(cam_scroll)
-        content.append(cam_frame)
+
+        # Event types is opt-in (Events page only) — Recordings/Snapshots
+        # don't pass event_types, so this row stays just the Cameras frame
+        # at its original full width.
+        filters_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        filters_row.append(cam_frame)
+
+        if event_types is not None:
+            type_frame = Gtk.Frame(label="Event Types")
+            type_scroll = Gtk.ScrolledWindow()
+            type_scroll.set_min_content_height(150)
+            type_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            type_scroll.set_hexpand(True)
+
+            self.type_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            self.type_box.set_margin_top(8)
+            self.type_box.set_margin_bottom(8)
+            self.type_box.set_margin_start(8)
+            self.type_box.set_margin_end(8)
+
+            self.all_types_btn = Gtk.CheckButton(label="All Event Types")
+            self.all_types_btn.set_active(True)
+            self.all_types_btn.connect("toggled", self._on_all_event_types_toggled)
+            self.type_box.append(self.all_types_btn)
+
+            for type_code, label in event_types:
+                check = Gtk.CheckButton(label=label)
+                check.set_active(type_code in (selected_event_type_ids or []))
+                check.connect("toggled", self._on_event_type_toggled)
+                self._event_type_checks[type_code] = check
+                self.type_box.append(check)
+
+            type_scroll.set_child(self.type_box)
+            type_frame.set_child(type_scroll)
+            filters_row.append(type_frame)
+
+        content.append(filters_row)
 
         outer.append(content)
 
@@ -219,6 +268,10 @@ class RecordingSearchDialog(Gtk.Window):
         self._update_all_cameras_state()
         self._on_all_cameras_toggled(self.all_cam_btn)
 
+        if event_types is not None:
+            self._update_all_event_types_state()
+            self._on_all_event_types_toggled(self.all_types_btn)
+
     def _on_all_cameras_toggled(self, btn: Gtk.CheckButton) -> None:
         active = btn.get_active()
         for check in self._camera_checks.values():
@@ -230,6 +283,18 @@ class RecordingSearchDialog(Gtk.Window):
     def _update_all_cameras_state(self) -> None:
         any_selected = any(c.get_active() for c in self._camera_checks.values())
         self.all_cam_btn.set_active(not any_selected)
+
+    def _on_all_event_types_toggled(self, btn: Gtk.CheckButton) -> None:
+        active = btn.get_active()
+        for check in self._event_type_checks.values():
+            check.set_sensitive(not active)
+
+    def _on_event_type_toggled(self, btn: Gtk.CheckButton) -> None:
+        self._update_all_event_types_state()
+
+    def _update_all_event_types_state(self) -> None:
+        any_selected = any(c.get_active() for c in self._event_type_checks.values())
+        self.all_types_btn.set_active(not any_selected)
 
     def _apply_preset(self, preset: str) -> None:
         """Apply a named time preset using the shared preset_range helper."""
@@ -284,6 +349,16 @@ class RecordingSearchDialog(Gtk.Window):
             return None
         return [cam_id for cam_id, check in self._camera_checks.items() if check.get_active()]
 
+    def _get_selected_event_type_ids(self) -> list[int] | None:
+        """Return selected event type IDs, or None if this dialog wasn't
+        given an event_types list (Recordings/Snapshots) or "All Event
+        Types" is selected."""
+        if not self._event_type_checks or self.all_types_btn.get_active():
+            return None
+        return [
+            type_code for type_code, check in self._event_type_checks.items() if check.get_active()
+        ]
+
     def _get_from_time(self) -> datetime | None:
         """Return the start of the time range, or None if not set."""
         if not self.from_time_entry.get_text().strip() and not self._time_preset_used:
@@ -301,6 +376,7 @@ class RecordingSearchDialog(Gtk.Window):
             self._get_selected_camera_ids(),
             self._get_from_time(),
             self._get_to_time(),
+            self._get_selected_event_type_ids(),
         )
         self.close()
 

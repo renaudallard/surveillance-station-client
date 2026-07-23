@@ -155,6 +155,12 @@ class Event:
     mount_id: int = 0
     arch_id: int = 0
     detection_label: int = 0
+    # Seconds into the parent recording file where this event actually starts.
+    # Set when the event was decoded from RecordingPicker::EnumInterval's
+    # event_map (see services.event.list_granular_events) rather than from
+    # Event::List, since id/mount_id/arch_id there refer to the whole
+    # (much longer) recording file, not this specific moment within it.
+    seek_offset: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]

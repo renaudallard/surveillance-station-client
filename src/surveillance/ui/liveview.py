@@ -122,7 +122,7 @@ class CameraSlot(Gtk.Box):
         if selected:
             self._header.remove_css_class("dim-label")
             self._header.add_css_class("slot-selected-label")
-            self._header.set_label(f"\u25b6 Slot {self._display_index + 1} \u2014 click a camera")
+            self._header.set_label(f"▶ Slot {self._display_index + 1} — click a camera")
         elif self.camera:
             self._header.remove_css_class("slot-selected-label")
             self._header.add_css_class("dim-label")
@@ -170,38 +170,15 @@ class LiveView(Gtk.Box):
         self.set_hexpand(True)
         self.set_vexpand(True)
 
-        # Toolbar
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        toolbar.set_margin_top(4)
-        toolbar.set_margin_bottom(4)
-        toolbar.set_margin_start(8)
-        toolbar.set_margin_end(8)
-
-        label = Gtk.Label(label="Live View")
-        label.add_css_class("title-4")
-        label.set_hexpand(True)
-        label.set_xalign(0)
-        toolbar.append(label)
-
-        # Layout selector
-        layout_label = Gtk.Label(label="Layout:")
-        toolbar.append(layout_label)
-
+        # Layout selector: not shown directly (grid layout + clear are
+        # controlled from the header bar's grid button), but kept as the
+        # single source of truth for the current layout and its "changed"
+        # signal, which drives _on_layout_changed.
         self.layout_combo = Gtk.ComboBoxText()
         for layout_name in LAYOUTS:
             self.layout_combo.append(layout_name, layout_name)
         self.layout_combo.set_active_id(self.app.config.grid_layout)
         self.layout_combo.connect("changed", self._on_layout_changed)
-        toolbar.append(self.layout_combo)
-
-        clear_btn = Gtk.Button()
-        clear_btn.set_icon_name("edit-clear-all-symbolic")
-        clear_btn.set_tooltip_text("Clear all streams")
-        clear_btn.connect("clicked", self._on_clear_clicked)
-        toolbar.append(clear_btn)
-
-        self.append(toolbar)
-        self.append(Gtk.Separator())
 
         # Grid container
         self.grid = Gtk.Grid()
@@ -285,28 +262,34 @@ class LiveView(Gtk.Box):
         self.app.config.layout_cameras[self._current_layout] = cam_ids
 
     def _restore_layout_cameras(self) -> None:
-        """Restore saved camera assignments for the current layout."""
+        """Restore saved camera assignments for the current layout.
+
+        Layouts are independent: one with no saved assignment starts empty
+        rather than inheriting whatever another layout had shown, since the
+        16 physical slots are shared behind the scenes across layouts.
+        """
         layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids = self.app.config.layout_cameras.get(layout, [])
         log.debug("layout_cameras restore: [%s] = %s", layout, cam_ids)
         # Prefer fresh camera list from sidebar; fall back to locally cached list.
         cameras = self.window.sidebar.cameras or self._cameras
-        if not cam_ids or not cameras:
+        if not cameras:
             return
 
         cam_map = {c.id: c for c in cameras}
         seen: set[int] = set()
-        for i, cam_id in enumerate(cam_ids):
-            if i >= len(self._active):
-                break
-            phys = self._active[i]
-            if cam_id and cam_id in cam_map:
-                if cam_id in seen:
-                    continue
+        for i, phys in enumerate(self._active):
+            cam_id = cam_ids[i] if i < len(cam_ids) else 0
+            if cam_id and cam_id in cam_map and cam_id not in seen:
                 seen.add(cam_id)
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._start_stream(phys, cam)
+            else:
+                # Saved state says this slot is empty (or a stale duplicate) —
+                # clear it explicitly, since hidden slots from other layouts
+                # keep their camera in memory rather than resetting it.
+                self._slots[phys].clear()
         self._update_ptz_controls()
 
     # ------------------------------------------------------------------
@@ -333,8 +316,33 @@ class LiveView(Gtk.Box):
     # User interactions
     # ------------------------------------------------------------------
 
-    def _on_clear_clicked(self, btn: Gtk.Button) -> None:
-        """Clear all streams and camera assignments."""
+    def confirm_clear_layout(self) -> None:
+        """Confirm, then clear all streams and camera assignments in this layout.
+
+        Called from the header bar's grid-layout menu.
+        """
+        dialog = Gtk.AlertDialog()
+        dialog.set_message("Clear all streams in this layout?")
+        dialog.set_detail(
+            "Every camera assignment in the current grid layout will be removed. "
+            "This cannot be undone."
+        )
+        dialog.set_buttons(["Cancel", "Clear All"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(0)
+
+        def _on_response(d: Gtk.AlertDialog, result: object) -> None:
+            try:
+                idx = d.choose_finish(result)
+            except Exception:
+                return
+            if idx == 1:
+                self._do_clear_all()
+
+        dialog.choose(self.window, None, _on_response)
+
+    def _do_clear_all(self) -> None:
+        """Actually clear all streams and camera assignments."""
         for slot in self._slots:
             slot.clear()
         self._select_slot(None)
@@ -387,6 +395,15 @@ class LiveView(Gtk.Box):
             self._apply_layout()
             self._slots[0].assign(camera)
             self._start_stream(0, camera)
+        self._update_ptz_controls()
+        self._save_session()
+
+    def clear_selected_slot(self) -> None:
+        """Clear the camera assigned to the currently selected slot, if any."""
+        if self._selected_slot is None:
+            return
+        self._slots[self._selected_slot].clear()
+        self._select_slot(None)
         self._update_ptz_controls()
         self._save_session()
 
@@ -485,22 +502,20 @@ class LiveView(Gtk.Box):
         layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids = self.app.config.layout_cameras.get(layout, [])
         log.debug("layout_cameras restore_session: layout=%s cam_ids=%s", layout, cam_ids)
-        if not cam_ids:
+        if not cameras:
             return
 
         cam_map = {c.id: c for c in cameras}
         seen: set[int] = set()
-        for i, cam_id in enumerate(cam_ids):
-            if i >= len(self._active):
-                break
-            phys = self._active[i]
-            if cam_id and cam_id in cam_map:
-                if cam_id in seen:
-                    continue
+        for i, phys in enumerate(self._active):
+            cam_id = cam_ids[i] if i < len(cam_ids) else 0
+            if cam_id and cam_id in cam_map and cam_id not in seen:
                 seen.add(cam_id)
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._start_stream(phys, cam)
+            else:
+                self._slots[phys].clear()
         self._update_ptz_controls()
 
     def restart_camera(self, camera_id: int) -> None:

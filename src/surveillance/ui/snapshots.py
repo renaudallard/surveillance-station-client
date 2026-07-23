@@ -66,12 +66,6 @@ class SnapshotsView(Gtk.Box):
         toolbar.set_margin_start(8)
         toolbar.set_margin_end(8)
 
-        label = Gtk.Label(label="Snapshots")
-        label.add_css_class("title-4")
-        label.set_hexpand(True)
-        label.set_xalign(0)
-        toolbar.append(label)
-
         # Take snapshot button
         self.take_btn = Gtk.Button()
         self.take_btn.set_icon_name("camera-photo-symbolic")

@@ -45,6 +45,15 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+PAGE_TITLES: dict[str, str] = {
+    "live": "Live View",
+    "recordings": "Recordings",
+    "snapshots": "Snapshots",
+    "events": "Events",
+    "timelapse": "Time Lapse",
+    "licenses": "Licenses",
+}
+
 
 class MainWindow(Gtk.ApplicationWindow):
     """Main application window with sidebar and content stack."""
@@ -65,6 +74,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Sidebar
         self.sidebar = CameraSidebar(self)
+        self.sidebar.set_visible(self.app.config.sidebar_visible)
         self.paned.set_start_child(self.sidebar)
         self.paned.set_resize_start_child(False)
         self.paned.set_shrink_start_child(False)
@@ -87,6 +97,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
 
         self.stack.set_visible_child_name("live")
+        self.headerbar.set_page_title(PAGE_TITLES["live"])
 
         # Selected camera
         self.selected_camera: Camera | None = None
@@ -195,7 +206,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.stack.get_child_by_name(last_page):
             self.stack.set_visible_child_name(last_page)
         else:
-            self.stack.set_visible_child_name("live")
+            last_page = "live"
+            self.stack.set_visible_child_name(last_page)
+        self.headerbar.set_page_title(PAGE_TITLES.get(last_page, last_page))
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
@@ -303,10 +316,26 @@ class MainWindow(Gtk.ApplicationWindow):
         if live_view and hasattr(live_view, "restart_camera"):
             live_view.restart_camera(camera_id)
 
+    def clear_selected_slot(self) -> None:
+        """Clear the camera in the currently selected live-view grid slot, if any."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "clear_selected_slot"):
+            live_view.clear_selected_slot()
+
+    def toggle_sidebar(self, visible: bool) -> None:
+        """Show or hide the camera sidebar panel."""
+        self.sidebar.set_visible(visible)
+        self.app.config.sidebar_visible = visible
+
+        from surveillance.config import save_config
+
+        save_config(self.app.config)
+
     def show_page(self, page_name: str) -> None:
         """Switch to a content page, pausing/resuming live streams as needed."""
         previous = self.stack.get_visible_child_name()
         self.stack.set_visible_child_name(page_name)
+        self.headerbar.set_page_title(PAGE_TITLES.get(page_name, page_name))
         self.app.config.last_page = page_name
         from surveillance.config import save_config
 

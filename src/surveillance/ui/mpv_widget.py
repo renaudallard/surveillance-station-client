@@ -179,6 +179,16 @@ class MpvGLArea(Gtk.GLArea):
             return True
 
         try:
+            if not self._url:
+                # No active stream: paint black instead of asking mpv's render
+                # context to redraw, since libmpv keeps repainting the last
+                # decoded frame it has buffered until a new one arrives.
+                from OpenGL.GL import GL_COLOR_BUFFER_BIT, glClear, glClearColor
+
+                glClearColor(0.0, 0.0, 0.0, 1.0)
+                glClear(GL_COLOR_BUFFER_BIT)
+                return True
+
             width = self.get_width()
             height = self.get_height()
             scale = self.get_scale_factor()

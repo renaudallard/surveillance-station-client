@@ -88,6 +88,7 @@ class RecordingsView(Gtk.Box):
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar.set_halign(Gtk.Align.END)
         toolbar.set_margin_top(8)
         toolbar.set_margin_bottom(4)
         toolbar.set_margin_start(8)

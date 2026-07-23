@@ -40,6 +40,7 @@ from surveillance.api.models import Camera
 from surveillance.config import save_config_now
 from surveillance.services.live import get_live_view_path
 from surveillance.services.ws_bridge import WebSocketBridge
+from surveillance.ui.layouts import DEFAULT_LAYOUT, LAYOUT_VISIBLE
 from surveillance.ui.mpv_widget import MpvGLArea
 from surveillance.ui.ptz_controls import PtzControls
 from surveillance.util.async_bridge import run_async
@@ -49,24 +50,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-LAYOUTS = {
-    "1x1": (1, 1),
-    "2x2": (2, 2),
-    "3x3": (3, 3),
-    "4x4": (4, 4),
-}
-
 # Internal grid is always 4x4 (16 slots).  Positions: idx = row*4 + col.
 _GRID_COLS = 4
 _MAX_SLOTS = 16
-
-# Physical slot indices that are visible for each layout.
-_LAYOUT_VISIBLE: dict[str, list[int]] = {
-    "1x1": [0],
-    "2x2": [0, 1, 4, 5],
-    "3x3": [0, 1, 2, 4, 5, 6, 8, 9, 10],
-    "4x4": list(range(16)),
-}
 
 
 class CameraSlot(Gtk.Box):
@@ -164,21 +150,10 @@ class LiveView(Gtk.Box):
         self._selected_slot: int | None = None
         self._active: list[int] = []  # physical indices of visible slots
         self._current_layout: str = self.app.config.grid_layout
-        self._inhibit_save = False
         self._cameras: list[Camera] = []  # last known camera list
 
         self.set_hexpand(True)
         self.set_vexpand(True)
-
-        # Layout selector: not shown directly (grid layout + clear are
-        # controlled from the header bar's grid button), but kept as the
-        # single source of truth for the current layout and its "changed"
-        # signal, which drives _on_layout_changed.
-        self.layout_combo = Gtk.ComboBoxText()
-        for layout_name in LAYOUTS:
-            self.layout_combo.append(layout_name, layout_name)
-        self.layout_combo.set_active_id(self.app.config.grid_layout)
-        self.layout_combo.connect("changed", self._on_layout_changed)
 
         # Grid container
         self.grid = Gtk.Grid()
@@ -221,8 +196,7 @@ class LiveView(Gtk.Box):
 
     def _apply_layout(self) -> None:
         """Show/hide slots to match the current layout."""
-        layout_name = self.layout_combo.get_active_id() or "2x2"
-        new_active = list(_LAYOUT_VISIBLE.get(layout_name, _LAYOUT_VISIBLE["2x2"]))
+        new_active = list(LAYOUT_VISIBLE.get(self._current_layout, LAYOUT_VISIBLE[DEFAULT_LAYOUT]))
         self._select_slot(None)
 
         # Stop streams on slots that are becoming hidden
@@ -240,13 +214,13 @@ class LiveView(Gtk.Box):
         self._active = new_active
         self._update_ptz_controls()
 
-    def _on_layout_changed(self, combo: Gtk.ComboBoxText) -> None:
-        if self._inhibit_save:
+    def set_layout(self, layout: str) -> None:
+        """Switch to *layout*, keeping each layout's camera assignments."""
+        if layout == self._current_layout or layout not in LAYOUT_VISIBLE:
             return
         # Save current layout's cameras before switching
         self._save_layout_cameras()
-        # Update current layout and apply
-        self._current_layout = combo.get_active_id() or "2x2"
+        self._current_layout = layout
         self._apply_layout()
         # Restore the new layout's saved cameras
         self._restore_layout_cameras()
@@ -268,9 +242,8 @@ class LiveView(Gtk.Box):
         rather than inheriting whatever another layout had shown, since the
         16 physical slots are shared behind the scenes across layouts.
         """
-        layout = self.layout_combo.get_active_id() or "2x2"
-        cam_ids = self.app.config.layout_cameras.get(layout, [])
-        log.debug("layout_cameras restore: [%s] = %s", layout, cam_ids)
+        cam_ids = self.app.config.layout_cameras.get(self._current_layout, [])
+        log.debug("layout_cameras restore: [%s] = %s", self._current_layout, cam_ids)
         # Prefer fresh camera list from sidebar; fall back to locally cached list.
         cameras = self.window.sidebar.cameras or self._cameras
         if not cameras:
@@ -286,9 +259,9 @@ class LiveView(Gtk.Box):
                 self._slots[phys].assign(cam)
                 self._start_stream(phys, cam)
             else:
-                # Saved state says this slot is empty (or a stale duplicate) —
-                # clear it explicitly, since hidden slots from other layouts
-                # keep their camera in memory rather than resetting it.
+                # Saved state says this slot is empty (or a stale duplicate),
+                # so clear it explicitly: hidden slots from other layouts keep
+                # their camera in memory rather than resetting it.
                 self._slots[phys].clear()
         self._update_ptz_controls()
 
@@ -389,9 +362,7 @@ class LiveView(Gtk.Box):
             for i in self._active:
                 self._slots[i].clear()
             self._current_layout = "1x1"
-            self._inhibit_save = True
-            self.layout_combo.set_active_id("1x1")
-            self._inhibit_save = False
+            self.window.sync_grid_layout("1x1")
             self._apply_layout()
             self._slots[0].assign(camera)
             self._start_stream(0, camera)
@@ -486,37 +457,19 @@ class LiveView(Gtk.Box):
 
     def _save_session(self) -> None:
         """Persist grid layout and per-layout camera assignments to config."""
-        layout = self.layout_combo.get_active_id() or "2x2"
         cam_ids: list[int] = []
         for i in self._active:
             cam = self._slots[i].camera
             cam_ids.append(cam.id if cam else 0)
-        self.app.config.grid_layout = layout
-        self.app.config.layout_cameras[layout] = cam_ids
-        log.debug("layout_cameras session save: [%s] = %s", layout, cam_ids)
+        self.app.config.grid_layout = self._current_layout
+        self.app.config.layout_cameras[self._current_layout] = cam_ids
+        log.debug("layout_cameras session save: [%s] = %s", self._current_layout, cam_ids)
         save_config_now(self.app.config)
 
     def restore_session(self, cameras: list[Camera]) -> None:
         """Restore camera assignments from config."""
         self._cameras = cameras
-        layout = self.layout_combo.get_active_id() or "2x2"
-        cam_ids = self.app.config.layout_cameras.get(layout, [])
-        log.debug("layout_cameras restore_session: layout=%s cam_ids=%s", layout, cam_ids)
-        if not cameras:
-            return
-
-        cam_map = {c.id: c for c in cameras}
-        seen: set[int] = set()
-        for i, phys in enumerate(self._active):
-            cam_id = cam_ids[i] if i < len(cam_ids) else 0
-            if cam_id and cam_id in cam_map and cam_id not in seen:
-                seen.add(cam_id)
-                cam = cam_map[cam_id]
-                self._slots[phys].assign(cam)
-                self._start_stream(phys, cam)
-            else:
-                self._slots[phys].clear()
-        self._update_ptz_controls()
+        self._restore_layout_cameras()
 
     def restart_camera(self, camera_id: int) -> None:
         """Restart the stream for a camera if it is currently displayed."""

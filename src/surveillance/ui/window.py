@@ -34,7 +34,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gtk  # type: ignore[import-untyped]
+from gi.repository import Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.ui.headerbar import AppHeaderBar
@@ -44,15 +44,6 @@ if TYPE_CHECKING:
     from surveillance.app import SurveillanceApp
 
 log = logging.getLogger(__name__)
-
-PAGE_TITLES: dict[str, str] = {
-    "live": "Live View",
-    "recordings": "Recordings",
-    "snapshots": "Snapshots",
-    "events": "Events",
-    "timelapse": "Time Lapse",
-    "licenses": "Licenses",
-}
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -65,6 +56,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_default_size(1280, 720)
 
         # Header bar
+        self._setup_actions()
         self.headerbar = AppHeaderBar(self)
         self.set_titlebar(self.headerbar)
 
@@ -97,7 +89,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
 
         self.stack.set_visible_child_name("live")
-        self.headerbar.set_page_title(PAGE_TITLES["live"])
+        self.headerbar.set_page("live")
 
         # Selected camera
         self.selected_camera: Camera | None = None
@@ -111,6 +103,35 @@ class MainWindow(Gtk.ApplicationWindow):
         # Show login if not connected
         if not self.app.api:
             self._schedule_login()
+
+    def _setup_actions(self) -> None:
+        """Register the window actions driven by the header bar menus."""
+        self._grid_layout_action = Gio.SimpleAction.new_stateful(
+            "grid-layout",
+            GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self.app.config.grid_layout),
+        )
+        self._grid_layout_action.connect("change-state", self._on_grid_layout_action)
+        self.add_action(self._grid_layout_action)
+
+        clear_action = Gio.SimpleAction.new("clear-layout", None)
+        clear_action.connect("activate", self._on_clear_layout_action)
+        self.add_action(clear_action)
+
+    def _on_grid_layout_action(self, action: Gio.SimpleAction, value: GLib.Variant) -> None:
+        action.set_state(value)
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "set_layout"):
+            live_view.set_layout(value.get_string())
+
+    def _on_clear_layout_action(self, action: Gio.SimpleAction, param: None) -> None:
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "confirm_clear_layout"):
+            live_view.confirm_clear_layout()
+
+    def sync_grid_layout(self, layout: str) -> None:
+        """Reflect a layout change made by the live view itself in the menu."""
+        self._grid_layout_action.set_state(GLib.Variant.new_string(layout))
 
     def do_close_request(self) -> bool:
         """Vfunc override for close-request."""
@@ -203,12 +224,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Restore last active page
         last_page = self.app.config.last_page
-        if self.stack.get_child_by_name(last_page):
-            self.stack.set_visible_child_name(last_page)
-        else:
+        if not self.stack.get_child_by_name(last_page):
             last_page = "live"
-            self.stack.set_visible_child_name(last_page)
-        self.headerbar.set_page_title(PAGE_TITLES.get(last_page, last_page))
+        self.stack.set_visible_child_name(last_page)
+        self.headerbar.set_page(last_page)
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
@@ -335,7 +354,7 @@ class MainWindow(Gtk.ApplicationWindow):
         """Switch to a content page, pausing/resuming live streams as needed."""
         previous = self.stack.get_visible_child_name()
         self.stack.set_visible_child_name(page_name)
-        self.headerbar.set_page_title(PAGE_TITLES.get(page_name, page_name))
+        self.headerbar.set_page(page_name)
         self.app.config.last_page = page_name
         from surveillance.config import save_config
 

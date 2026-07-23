@@ -240,6 +240,7 @@ class MainWindow(Gtk.ApplicationWindow):
             last_page = "live"
         self.stack.set_visible_child_name(last_page)
         self.headerbar.set_page(last_page)
+        self.sidebar.set_active_page(last_page)
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
@@ -363,6 +364,7 @@ class MainWindow(Gtk.ApplicationWindow):
         previous = self.stack.get_visible_child_name()
         self.stack.set_visible_child_name(page_name)
         self.headerbar.set_page(page_name)
+        self.sidebar.set_active_page(page_name)
         self.app.config.last_page = page_name
         from surveillance.config import save_config
 

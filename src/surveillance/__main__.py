@@ -29,28 +29,29 @@ import logging
 import re
 import sys
 
-_REDACT_RE = re.compile(
-    r"(passwd|_sid|account)=[^&\s\"]+",
+_LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
+
+# Credentials the client sends as query parameters.
+_REDACT_PARAMS = re.compile(
+    r"\b(passwd|password|account|otp_code|device_id|_sid)=[^&\s\"']+",
     re.IGNORECASE,
 )
 
+# Credentials embedded in a stream URL, as in the rtsp://user:pass@host
+# overrides from [camera_overrides].
+_REDACT_USERINFO = re.compile(r"(\w+://)[^/\s@]+@")
 
-class _RedactFilter(logging.Filter):
-    """Strip passwords, session IDs, and usernames from log messages."""
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.msg, str):
-            record.msg = _REDACT_RE.sub(r"\1=***", record.msg)
-        if isinstance(record.args, tuple):
-            record.args = tuple(
-                _REDACT_RE.sub(r"\1=***", a) if isinstance(a, str) else a for a in record.args
-            )
-        elif isinstance(record.args, dict):
-            record.args = {
-                k: _REDACT_RE.sub(r"\1=***", v) if isinstance(v, str) else v
-                for k, v in record.args.items()
-            }
-        return True
+class _RedactFormatter(logging.Formatter):
+    """Strip credentials from log output.
+
+    Redacting the formatted text rather than the record covers exception
+    tracebacks too, which quote request URLs with the session id in them.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = _REDACT_PARAMS.sub(r"\1=***", super().format(record))
+        return _REDACT_USERINFO.sub(r"\1***@", text)
 
 
 def main() -> None:
@@ -59,11 +60,11 @@ def main() -> None:
         sys.argv.remove("--debug")
 
     level = logging.DEBUG if debug else logging.WARNING
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
-    logging.getLogger().addFilter(_RedactFilter())
+    logging.basicConfig(level=level, format=_LOG_FORMAT)
+    # On the handler, not the root logger: a logger's own filters never see
+    # records propagated up from the module loggers the application uses.
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(_RedactFormatter(_LOG_FORMAT))
 
     # Suppress chatty third-party loggers in debug mode
     for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):

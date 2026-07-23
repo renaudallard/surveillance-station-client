@@ -56,7 +56,9 @@ View, add, and delete camera licenses. Supports online and offline activation.
 .TP
 .B \-\-debug
 Enable debug logging to stderr.
-Passwords, session tokens, and usernames are automatically redacted.
+Passwords, session tokens, usernames, one-time codes, and credentials
+embedded in stream URLs are redacted from the output, including inside
+exception tracebacks.
 .SH CONFIGURATION
 Configuration is stored in TOML format at:
 .PP

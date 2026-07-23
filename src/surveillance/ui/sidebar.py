@@ -91,6 +91,7 @@ class CameraSidebar(Gtk.Box):
         self.listbox = Gtk.ListBox()
         self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.listbox.connect("row-selected", self._on_row_selected)
+        self.listbox.connect("row-activated", self._on_row_activated)
         scroll.set_child(self.listbox)
         self.append(scroll)
 
@@ -153,7 +154,7 @@ class CameraSidebar(Gtk.Box):
         # Remember selected camera before rebuilding
         selected_row = self.listbox.get_selected_row()
         selected_id: int | None = None
-        if selected_row is not None and getattr(selected_row, "camera", None) is not None:
+        if selected_row is not None:
             selected_id = selected_row.camera.id  # type: ignore[attr-defined]
 
         self.cameras = cameras
@@ -172,7 +173,7 @@ class CameraSidebar(Gtk.Box):
             if cam.id == selected_id:
                 self.listbox.select_row(row)
 
-        # Pinned row at the end: clears the currently selected grid slot
+        # Action row at the end: clears the currently selected grid slot
         self.listbox.append(self._create_clear_slot_row())
 
     def _create_camera_row(self, cam: Camera) -> Gtk.ListBoxRow:
@@ -393,8 +394,14 @@ class CameraSidebar(Gtk.Box):
         self.window.restart_camera_stream(cam.id)
 
     def _create_clear_slot_row(self) -> Gtk.ListBoxRow:
-        """Pinned row that clears whichever grid slot is currently selected."""
+        """Action row that clears whichever grid slot is currently selected.
+
+        Not selectable: it is activated by a click or Enter, so moving the
+        keyboard cursor over it cannot clear a slot, and activating it leaves
+        the selected camera alone.
+        """
         row = Gtk.ListBoxRow()
+        row.set_selectable(False)
         row.camera = None  # type: ignore[attr-defined]
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -420,11 +427,11 @@ class CameraSidebar(Gtk.Box):
         if row is None:
             return
         cam = row.camera  # type: ignore[attr-defined]
-        if cam is None:
-            self.window.clear_selected_slot()
-            self.listbox.unselect_all()
-            return
         self.window.on_camera_selected(cam)
+
+    def _on_row_activated(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        if row.camera is None:  # type: ignore[attr-defined]
+            self.window.clear_selected_slot()
 
     def _on_nav_clicked(self, btn: Gtk.Button, page_name: str) -> None:
         self.window.show_page(page_name)

@@ -174,8 +174,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _schedule_login(self) -> None:
         """Show login dialog after window is shown."""
-        from gi.repository import GLib
-
         GLib.idle_add(self.show_login)
 
     def show_login(self) -> None:
@@ -233,8 +231,6 @@ class MainWindow(Gtk.ApplicationWindow):
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
         self._stop_polling()
-
-        from gi.repository import GLib
 
         from surveillance.util.async_bridge import run_async
 
@@ -297,8 +293,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _stop_polling(self) -> None:
         """Stop background polling for alerts and home mode."""
-        from gi.repository import GLib
-
         if self._homemode_poll_id:
             GLib.source_remove(self._homemode_poll_id)
             self._homemode_poll_id = 0

@@ -38,6 +38,7 @@ from gi.repository import Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.ui.headerbar import AppHeaderBar
+from surveillance.ui.layouts import valid_layout
 from surveillance.ui.sidebar import CameraSidebar
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._grid_layout_action = Gio.SimpleAction.new_stateful(
             "grid-layout",
             GLib.VariantType.new("s"),
-            GLib.Variant.new_string(self.app.config.grid_layout),
+            GLib.Variant.new_string(valid_layout(self.app.config.grid_layout)),
         )
         self._grid_layout_action.connect("change-state", self._on_grid_layout_action)
         self.add_action(self._grid_layout_action)

@@ -40,7 +40,7 @@ from surveillance.api.models import Camera
 from surveillance.config import save_config_now
 from surveillance.services.live import get_live_view_path
 from surveillance.services.ws_bridge import WebSocketBridge
-from surveillance.ui.layouts import DEFAULT_LAYOUT, LAYOUT_VISIBLE
+from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea
 from surveillance.ui.ptz_controls import PtzControls
 from surveillance.util.async_bridge import run_async
@@ -149,7 +149,7 @@ class LiveView(Gtk.Box):
         self.app = window.app
         self._selected_slot: int | None = None
         self._active: list[int] = []  # physical indices of visible slots
-        self._current_layout: str = self.app.config.grid_layout
+        self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
 
         self.set_hexpand(True)
@@ -196,7 +196,7 @@ class LiveView(Gtk.Box):
 
     def _apply_layout(self) -> None:
         """Show/hide slots to match the current layout."""
-        new_active = list(LAYOUT_VISIBLE.get(self._current_layout, LAYOUT_VISIBLE[DEFAULT_LAYOUT]))
+        new_active = list(LAYOUT_VISIBLE[self._current_layout])
         self._select_slot(None)
 
         # Stop streams on slots that are becoming hidden

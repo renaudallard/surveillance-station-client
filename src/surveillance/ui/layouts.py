@@ -41,3 +41,8 @@ LAYOUT_VISIBLE: dict[str, list[int]] = {
     "3x3": [0, 1, 2, 4, 5, 6, 8, 9, 10],
     "4x4": list(range(16)),
 }
+
+
+def valid_layout(name: str) -> str:
+    """Return *name* if it is a known layout, the default otherwise."""
+    return name if name in LAYOUT_VISIBLE else DEFAULT_LAYOUT

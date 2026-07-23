@@ -34,7 +34,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gtk  # type: ignore[import-untyped]
+from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.config import save_config_now
@@ -53,6 +53,11 @@ log = logging.getLogger(__name__)
 # Internal grid is always 4x4 (16 slots).  Positions: idx = row*4 + col.
 _GRID_COLS = 4
 _MAX_SLOTS = 16
+
+# Reconnect policy for WebSocket streams the NAS drops on its own.
+_WS_MAX_RETRIES = 5
+_WS_MAX_DELAY = 30  # seconds between attempts
+_WS_HEALTHY_SECS = 30  # a session lasting this long is not a repeat failure
 
 
 class CameraSlot(Gtk.Box):
@@ -91,6 +96,8 @@ class CameraSlot(Gtk.Box):
 
         self._ws_bridge: WebSocketBridge | None = None
         self._click_callback: object = None
+        self._status = ""  # stream state shown after the camera name
+        self.retries = 0  # consecutive dropped WebSocket streams
 
     def set_click_callback(self, callback: object) -> None:
         self._click_callback = callback
@@ -104,6 +111,11 @@ class CameraSlot(Gtk.Box):
         if not self.camera:
             self._header.set_label(f"Slot {display_idx + 1}")
 
+    def _camera_label(self) -> str:
+        """Header text for an assigned camera, with its stream state."""
+        name = self.camera.name if self.camera else ""
+        return f"{name} ({self._status})" if self._status else name
+
     def set_selected(self, selected: bool) -> None:
         if selected:
             self._header.remove_css_class("dim-label")
@@ -112,14 +124,22 @@ class CameraSlot(Gtk.Box):
         elif self.camera:
             self._header.remove_css_class("slot-selected-label")
             self._header.add_css_class("dim-label")
-            self._header.set_label(self.camera.name)
+            self._header.set_label(self._camera_label())
         else:
             self._header.remove_css_class("slot-selected-label")
             self._header.add_css_class("dim-label")
             self._header.set_label(f"Slot {self._display_index + 1}")
 
+    def set_status(self, status: str) -> None:
+        """Show the stream state next to the camera name, "" once playing."""
+        self._status = status
+        if self.camera:
+            self._header.set_label(self._camera_label())
+
     def assign(self, camera: Camera) -> None:
         self.camera = camera
+        self._status = ""
+        self.retries = 0
         self._header.set_label(camera.name)
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -142,6 +162,8 @@ class CameraSlot(Gtk.Box):
     def clear(self) -> None:
         self.stop_stream()
         self.camera = None
+        self._status = ""
+        self.retries = 0
         self._header.set_label(f"Slot {self._display_index + 1}")
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -433,6 +455,7 @@ class LiveView(Gtk.Box):
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:
+                slot.set_status("")
                 slot.player.play(url)
 
     def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
@@ -449,6 +472,7 @@ class LiveView(Gtk.Box):
             s = self._slots[slot_idx]
             if s.get_visible() and s.camera and s.camera.id == cam_id:
                 log.info("WebSocket bridge ready, playing pipe: %s", pipe_url)
+                s.set_status("")
                 s.player.play(pipe_url, low_latency=True)
 
         run_async(
@@ -456,6 +480,51 @@ class LiveView(Gtk.Box):
             callback=_on_ready,
             error_callback=lambda e: log.error("WebSocket bridge failed: %s", e),
         )
+        # The NAS drops streaming sessions on its own. Without this the pipe
+        # just reaches EOF and mpv sits on its last frame, looking live.
+        run_async(
+            bridge.wait_closed(),
+            callback=lambda reason: self._on_stream_dropped(slot_idx, cam_id, bridge, reason),
+        )
+
+    def _on_stream_dropped(
+        self, slot_idx: int, cam_id: int, bridge: WebSocketBridge, reason: str
+    ) -> None:
+        """Reconnect a slot whose WebSocket stream ended unexpectedly."""
+        slot = self._slots[slot_idx]
+        if not reason or slot._ws_bridge is not bridge:
+            return  # we stopped it ourselves, or the slot moved on
+        if not slot.get_visible() or not slot.camera or slot.camera.id != cam_id:
+            return
+
+        # A session that ran for a while and then dropped is a fresh failure,
+        # not part of a run of them.
+        if bridge.uptime >= _WS_HEALTHY_SECS:
+            slot.retries = 0
+        slot.retries += 1
+
+        if slot.retries > _WS_MAX_RETRIES:
+            log.error("Stream for %s kept dropping (%s); giving up", slot.camera.name, reason)
+            slot.set_status("stream lost")
+            return
+
+        delay = min(2 ** (slot.retries - 1), _WS_MAX_DELAY)
+        log.warning(
+            "Stream for %s dropped after %.0fs (%s); reconnecting in %ds",
+            slot.camera.name,
+            bridge.uptime,
+            reason,
+            delay,
+        )
+        slot.set_status("reconnecting")
+        GLib.timeout_add_seconds(delay, self._reconnect_slot, slot_idx, cam_id)
+
+    def _reconnect_slot(self, slot_idx: int, cam_id: int) -> bool:
+        """Restart a dropped stream. Returns False so the timeout fires once."""
+        slot = self._slots[slot_idx]
+        if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
+            self._start_stream(slot_idx, slot.camera)
+        return False
 
     # ------------------------------------------------------------------
     # Session persistence

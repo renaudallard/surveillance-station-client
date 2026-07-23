@@ -34,6 +34,7 @@ import os
 import ssl
 import struct
 import threading
+import time
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,9 @@ class WebSocketBridge:
         self._write_fd: int = -1
         self._fd_lock = threading.Lock()
         self._pump_task: asyncio.Task[None] | None = None
+        self._error: str = ""
+        self._stopping = False
+        self._connected_at: float | None = None
 
     async def start(self) -> str:
         """Create pipe, start pump task, return fd:// URL for mpv."""
@@ -144,6 +148,7 @@ class WebSocketBridge:
                 close_timeout=2,
             ) as ws:
                 log.debug("WebSocket connected")
+                self._connected_at = time.monotonic()
                 async for message in ws:
                     if isinstance(message, bytes):
                         payload = self._extract_payload(message)
@@ -152,10 +157,31 @@ class WebSocketBridge:
         except (asyncio.CancelledError, BrokenPipeError):
             log.debug("WebSocket bridge cancelled")
         except Exception as exc:
-            classified = _classify_error(exc)
-            log.exception("WebSocket bridge error: %s", classified)
+            self._error = _classify_error(exc)
+            log.exception("WebSocket bridge error: %s", self._error)
         finally:
             self._close_write_fd()
+
+    @property
+    def uptime(self) -> float:
+        """Seconds the WebSocket stayed connected, 0 if it never connected."""
+        if self._connected_at is None:
+            return 0.0
+        return time.monotonic() - self._connected_at
+
+    async def wait_closed(self) -> str:
+        """Wait for the stream to end and describe why.
+
+        Returns an empty string when the application shut the stream down
+        itself, so the caller can tell a deliberate stop from the NAS
+        dropping the session.
+        """
+        if self._pump_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._pump_task
+        if self._stopping:
+            return ""
+        return self._error or "stream ended"
 
     def _close_write_fd(self) -> None:
         """Atomically close the write fd. Thread-safe, idempotent."""
@@ -173,6 +199,7 @@ class WebSocketBridge:
         and signals EOF to mpv on the read end. Safe to call from
         any thread, idempotent.
         """
+        self._stopping = True
         self._close_write_fd()
 
     async def stop(self) -> None:

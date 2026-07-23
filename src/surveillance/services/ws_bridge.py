@@ -34,10 +34,21 @@ import os
 import ssl
 import struct
 import threading
-
-import websockets.asyncio.client as ws_client
+from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+def _ws_connect(url: str, **kwargs: Any) -> Any:
+    """Open a WebSocket connection.
+
+    websockets is imported here rather than at module scope so this module
+    stays importable without it, and so nothing drags it onto the startup
+    import path.
+    """
+    import websockets.asyncio.client as ws_client  # noqa: PLC0415
+
+    return ws_client.connect(url, **kwargs)
 
 
 def _classify_error(exc: BaseException) -> str:
@@ -124,7 +135,7 @@ class WebSocketBridge:
         try:
             log.debug("WebSocket connecting: %s", self._ws_url)
 
-            async with ws_client.connect(
+            async with _ws_connect(
                 self._ws_url,
                 ssl=ssl_ctx,
                 additional_headers=headers,

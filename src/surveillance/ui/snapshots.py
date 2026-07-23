@@ -126,13 +126,18 @@ class SnapshotsView(Gtk.Box):
 
         self._load_search_from_config()
 
-        # Toolbar
+        # Toolbar row: quick date presets on the left, camera filter and
+        # actions on the right, all in a single row.
+        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        filter_row.set_margin_top(8)
+        filter_row.set_margin_bottom(4)
+        filter_row.set_margin_start(8)
+        filter_row.set_margin_end(8)
+
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar.set_hexpand(True)
         toolbar.set_halign(Gtk.Align.END)
-        toolbar.set_margin_top(8)
-        toolbar.set_margin_bottom(4)
-        toolbar.set_margin_start(8)
-        toolbar.set_margin_end(8)
+        toolbar.set_valign(Gtk.Align.CENTER)
 
         filter_label = Gtk.Label(label="Camera:")
         toolbar.append(filter_label)
@@ -167,13 +172,9 @@ class SnapshotsView(Gtk.Box):
         self._reset_btn.connect("clicked", self._on_reset_clicked)
         toolbar.append(self._reset_btn)
 
-        self.append(toolbar)
-
         # Quick date presets
         preset_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        preset_bar.set_margin_start(8)
-        preset_bar.set_margin_end(8)
-        preset_bar.set_margin_bottom(6)
+        preset_bar.set_valign(Gtk.Align.CENTER)
 
         preset_label = Gtk.Label(label="Quick filter:")
         preset_label.add_css_class("dim-label")
@@ -194,7 +195,9 @@ class SnapshotsView(Gtk.Box):
             preset_bar.append(btn)
             self._preset_buttons[key] = btn
 
-        self.append(preset_bar)
+        filter_row.append(preset_bar)
+        filter_row.append(toolbar)
+        self.append(filter_row)
 
         # Filter summary
         self.filter_summary = Gtk.Label(label="")

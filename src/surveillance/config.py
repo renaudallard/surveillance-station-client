@@ -124,6 +124,10 @@ class AppConfig:
     events_search_to_time: str = ""
     events_search_time_preset: str = "today"
     events_search_event_types: list[int] = field(default_factory=list)
+    snapshots_search_camera_ids: list[int] = field(default_factory=list)
+    snapshots_search_from_time: str = ""
+    snapshots_search_to_time: str = ""
+    snapshots_search_time_preset: str = ""
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -192,6 +196,10 @@ def load_config() -> AppConfig:
         events_search_to_time=session.get("events_search_to_time", ""),
         events_search_time_preset=session.get("events_search_time_preset", "today"),
         events_search_event_types=session.get("events_search_event_types", []),
+        snapshots_search_camera_ids=session.get("snapshots_search_camera_ids", []),
+        snapshots_search_from_time=session.get("snapshots_search_from_time", ""),
+        snapshots_search_to_time=session.get("snapshots_search_to_time", ""),
+        snapshots_search_time_preset=session.get("snapshots_search_time_preset", ""),
     )
 
 
@@ -256,6 +264,10 @@ def _write_config(config: AppConfig) -> None:
             "events_search_to_time": config.events_search_to_time,
             "events_search_time_preset": config.events_search_time_preset,
             "events_search_event_types": config.events_search_event_types,
+            "snapshots_search_camera_ids": config.snapshots_search_camera_ids,
+            "snapshots_search_from_time": config.snapshots_search_from_time,
+            "snapshots_search_to_time": config.snapshots_search_to_time,
+            "snapshots_search_time_preset": config.snapshots_search_time_preset,
         },
         "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
         "camera_protocols": {

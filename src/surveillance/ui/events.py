@@ -141,24 +141,13 @@ class EventsView(Gtk.Box):
         # DS-2CD2387G2-LSU/SL"), so it can keep growing as more cameras are
         # added, eventually squeezing neighboring widgets in the same row.
         self.camera_combo.add_css_class("filter-combo")
-        # KNOWN COSMETIC QUIRK (also noted in recordings.py): on ONE of the
-        # two pages (Recordings or Events) this combo's internal dropdown
-        # arrow renders ~16px closer to its own right border than on the
-        # other page, even though both combos are the same 160px width with
-        # the same camera list. This makes the gap before the Refresh
-        # button look smaller on whichever page is affected. The box's own
-        # spacing=6 is confirmed byte-identical on both pages every time
-        # (checked via AT-SPI widget geometry, survives a forced window
-        # relayout) — this is NOT a margin/padding bug.
-        #
-        # Which page is affected is NOT stable — it has been observed to
-        # move between Recordings and Events across plain rebuild+relaunch
-        # cycles with no code changes at all, after editing unrelated label
-        # text on the other page, and between launching via `python -m
-        # surveillance` vs the installed desktop-shortcut binary. None of
-        # these correlate reliably enough to call any of them "the cause" —
-        # treat this as moving essentially at random based on factors we
-        # haven't identified, not as tied to any one of the things above.
+        # KNOWN COSMETIC QUIRK (canonical comment — recordings.py and
+        # snapshots.py points here due to identical issues): this combo's
+        # internal dropdown arrow can render with a near-zero gap to its own
+        # border instead of the usual ~14px, shrinking the visual gap before
+        # the next toolbar button. The box's own spacing=6 is confirmed
+        # byte-identical (checked via AT-SPI widget geometry, survives a
+        # forced window relayout) — this is NOT a margin/padding bug.
         #
         # Ruled out as the mechanism: (1) explicit set_size_request() on
         # this combo — no change; (2) forcing both of this page's combos to
@@ -334,6 +323,12 @@ class EventsView(Gtk.Box):
                 other_btn.handler_unblock_by_func(self._on_preset_toggled)
 
         self._save_search_to_config()
+        self._load_events()
+
+    def on_page_shown(self) -> None:
+        """Refresh whenever this page becomes visible (called from
+        MainWindow.show_page) — matches Snapshots' behavior, since events
+        can appear from elsewhere between visits."""
         self._load_events()
 
     def refresh_camera_filter(self) -> None:

@@ -117,12 +117,7 @@ class RecordingsView(Gtk.Box):
         # DS-2CD2387G2-LSU/SL"), so it can keep growing as more cameras are
         # added, eventually squeezing neighboring widgets in the same row.
         self.camera_combo.add_css_class("filter-combo")
-        # KNOWN COSMETIC QUIRK: see the matching comment on camera_combo in
-        # events.py — this combo's dropdown arrow can render with a
-        # near-zero gap to its own border instead of the usual ~14px. Which
-        # page (this one or Events) is affected moves essentially at random
-        # across rebuilds, launch methods, and unrelated edits — not a
-        # margin/padding bug, and no single cause has been pinned down.
+        # KNOWN COSMETIC QUIRK: see the canonical comment on camera_combo in events.py.
         toolbar.append(self.camera_combo)
 
         refresh_btn = Gtk.Button()
@@ -239,6 +234,12 @@ class RecordingsView(Gtk.Box):
         # Restore preset button state, populate cameras, load
         self._sync_preset_buttons()
         self.refresh_camera_filter()
+        self._load_recordings()
+
+    def on_page_shown(self) -> None:
+        """Refresh whenever this page becomes visible (called from
+        MainWindow.show_page) — matches Snapshots' behavior, since
+        recordings can appear from elsewhere between visits."""
         self._load_recordings()
 
     def refresh_camera_filter(self) -> None:

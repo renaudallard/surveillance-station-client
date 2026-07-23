@@ -28,17 +28,22 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 
-from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.config import save_config_now
 from surveillance.services.live import get_live_view_path
+from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea
@@ -94,13 +99,107 @@ class CameraSlot(Gtk.Box):
         player_click.connect("pressed", self._on_click)
         self.player.add_controller(player_click)
 
+        # Right-click context menu — same header/player dual-gesture reason
+        # as the left-click handlers above.
+        self._menu_popover = Gtk.Popover()
+        self._menu_popover.set_has_arrow(False)
+        self._menu_popover.set_parent(self)
+        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        self._snapshot_menu_btn = Gtk.Button(label="Take Snapshot")
+        self._snapshot_menu_btn.add_css_class("flat")
+        self._snapshot_menu_btn.connect("clicked", self._on_menu_take_snapshot)
+        menu_box.append(self._snapshot_menu_btn)
+
+        self._open_1x1_menu_btn = Gtk.Button(label="Open in 1x1 Layout")
+        self._open_1x1_menu_btn.add_css_class("flat")
+        self._open_1x1_menu_btn.connect("clicked", self._on_menu_open_1x1)
+        menu_box.append(self._open_1x1_menu_btn)
+
+        self._clear_menu_btn = Gtk.Button(label="Clear Slot")
+        self._clear_menu_btn.add_css_class("flat")
+        self._clear_menu_btn.connect("clicked", self._on_menu_clear_slot)
+        menu_box.append(self._clear_menu_btn)
+
+        self._menu_popover.set_child(menu_box)
+
+        header_right_click = Gtk.GestureClick(button=3)
+        header_right_click.connect("pressed", self._on_right_click)
+        self._header.add_controller(header_right_click)
+
+        player_right_click = Gtk.GestureClick(button=3)
+        player_right_click.connect("pressed", self._on_right_click)
+        self.player.add_controller(player_right_click)
+
         self._ws_bridge: WebSocketBridge | None = None
         self._click_callback: object = None
         self._status = ""  # stream state shown after the camera name
         self.retries = 0  # consecutive dropped WebSocket streams
+        self._snapshot_callback: object = None
+        self._open_1x1_callback: object = None
+        self._clear_slot_callback: object = None
+        self._open_1x1_available_callback: object = None
 
     def set_click_callback(self, callback: object) -> None:
         self._click_callback = callback
+
+    def set_snapshot_callback(self, callback: object) -> None:
+        self._snapshot_callback = callback
+
+    def set_open_1x1_callback(self, callback: object) -> None:
+        self._open_1x1_callback = callback
+
+    def set_clear_slot_callback(self, callback: object) -> None:
+        self._clear_slot_callback = callback
+
+    def set_open_1x1_available_callback(self, callback: object) -> None:
+        """Callback returning bool: whether "Open in 1x1 Layout" makes
+        sense right now (False when the grid is already showing just this
+        one slot in 1x1 — there'd be nothing to do)."""
+        self._open_1x1_available_callback = callback
+
+    def _on_right_click(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
+        if n_press != 1:
+            return
+        has_camera = self.camera is not None
+        self._snapshot_menu_btn.set_sensitive(has_camera)
+        self._clear_menu_btn.set_sensitive(has_camera)
+
+        show_open_1x1 = True
+        if self._open_1x1_available_callback and callable(self._open_1x1_available_callback):
+            show_open_1x1 = self._open_1x1_available_callback()
+        self._open_1x1_menu_btn.set_visible(show_open_1x1)
+        self._open_1x1_menu_btn.set_sensitive(has_camera)
+
+        widget = gesture.get_widget()
+        if widget is not None:
+            # Despite gi's stub claiming a (bool, x, y) triple, this
+            # actually returns a plain (x, y) tuple at runtime (confirmed
+            # directly) — unpacking a third "ok" value here raised
+            # ValueError on every right-click, silently aborting before
+            # the popover's popup() call below ever ran.
+            coords = widget.translate_coordinates(self, x, y)
+            if coords is not None:
+                px, py = coords
+                rect = Gdk.Rectangle()
+                rect.x, rect.y, rect.width, rect.height = int(px), int(py), 1, 1
+                self._menu_popover.set_pointing_to(rect)
+        self._menu_popover.popup()
+
+    def _on_menu_take_snapshot(self, btn: Gtk.Button) -> None:
+        self._menu_popover.popdown()
+        if self._snapshot_callback and callable(self._snapshot_callback):
+            self._snapshot_callback(self.index)
+
+    def _on_menu_open_1x1(self, btn: Gtk.Button) -> None:
+        self._menu_popover.popdown()
+        if self._open_1x1_callback and callable(self._open_1x1_callback):
+            self._open_1x1_callback(self.index)
+
+    def _on_menu_clear_slot(self, btn: Gtk.Button) -> None:
+        self._menu_popover.popdown()
+        if self._clear_slot_callback and callable(self._clear_slot_callback):
+            self._clear_slot_callback(self.index)
 
     def _on_click(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
         if n_press == 1 and self._click_callback and callable(self._click_callback):
@@ -204,6 +303,10 @@ class LiveView(Gtk.Box):
             r, c = divmod(i, _GRID_COLS)
             slot = CameraSlot(i, tls_verify=tls_verify)
             slot.set_click_callback(self._on_slot_clicked)
+            slot.set_snapshot_callback(self._on_slot_take_snapshot)
+            slot.set_open_1x1_callback(self._on_slot_open_1x1)
+            slot.set_clear_slot_callback(self._on_slot_clear)
+            slot.set_open_1x1_available_callback(lambda: self._current_layout != "1x1")
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)
 
@@ -403,6 +506,76 @@ class LiveView(Gtk.Box):
             return
         self._slots[self._selected_slot].clear()
         self._select_slot(None)
+        self._update_ptz_controls()
+        self._save_session()
+
+    def _on_slot_take_snapshot(self, slot_idx: int) -> None:
+        """Right-click menu action: take a snapshot of this slot's camera.
+
+        Matches DSM's own "Take Snapshot" behavior: the snapshot is saved
+        to the server's snapshot database immediately (so it shows up on
+        the Snapshots page) regardless of what happens next, and a Save
+        dialog is then offered so the user can optionally also keep a
+        local copy — cancelling that dialog does not undo the server-side
+        save.
+        """
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+
+        run_async(
+            take_and_save_snapshot(self.app.api, camera.id),
+            callback=lambda snapshot_id: self._on_snapshot_taken(camera, snapshot_id),
+            error_callback=lambda e: log.error("Snapshot failed: %s", e),
+        )
+
+    def _on_snapshot_taken(self, camera: Camera, snapshot_id: int) -> None:
+        log.info("Snapshot saved to server (id=%d) for %s", snapshot_id, camera.name)
+        if not self.app.api:
+            return
+
+        dialog = Gtk.FileDialog()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = re.sub(r'[/\\<>:"|?*]', "_", camera.name)
+        dialog.set_initial_name(f"{safe_name}_{timestamp}.jpg")
+
+        def _on_save(d: Gtk.FileDialog, result: object) -> None:
+            try:
+                gfile = d.save_finish(result)
+            except Exception:
+                return  # Cancelled — snapshot is already saved server-side
+            if gfile is None:
+                return
+            path = gfile.get_path()
+            if not path or self.app.api is None:
+                return
+            run_async(
+                download_snapshot(self.app.api, snapshot_id, Path(path)),
+                callback=lambda p: log.info("Snapshot also saved locally to %s", p),
+                error_callback=lambda e: log.error("Local snapshot save failed: %s", e),
+            )
+
+        dialog.save(self.window, None, _on_save)
+
+    def _on_slot_open_1x1(self, slot_idx: int) -> None:
+        """Right-click menu action: switch to 1x1 layout showing just this
+        slot's camera — the same "zoom in" behavior as clicking an
+        already-selected slot with a camera (see _on_slot_clicked)."""
+        camera = self._slots[slot_idx].camera
+        if not camera:
+            return
+        # Ensure on_camera_selected takes its "switch to 1x1" branch rather
+        # than "assign to the selected slot".
+        self._select_slot(None)
+        self.on_camera_selected(camera)
+
+    def _on_slot_clear(self, slot_idx: int) -> None:
+        """Right-click menu action: clear this specific slot's camera
+        assignment, regardless of which slot (if any) is currently
+        selected."""
+        self._slots[slot_idx].clear()
+        if self._selected_slot == slot_idx:
+            self._select_slot(None)
         self._update_ptz_controls()
         self._save_session()
 

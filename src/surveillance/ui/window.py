@@ -194,18 +194,18 @@ class MainWindow(Gtk.ApplicationWindow):
     def _restore_live_session(self, cameras: list[Camera]) -> None:
         """Restore live view camera assignments and refresh other pages' camera filters.
 
-        Runs once the sidebar's camera list has actually loaded. Recordings
-        and Events build their camera filter dropdown from that same list
-        at construction time, which happens before this — so without this,
-        their filter would only ever show whatever camera happened to
-        already be loaded (usually none) plus any camera the user later
-        clicked in the sidebar.
+        Runs once the sidebar's camera list has actually loaded. Recordings,
+        Snapshots, and Events build their camera filter dropdown from that
+        same list at construction time, which happens before this — so
+        without this, their filter would only ever show whatever camera
+        happened to already be loaded (usually none) plus any camera the
+        user later clicked in the sidebar.
         """
         live_view = self.stack.get_child_by_name("live")
         if live_view and hasattr(live_view, "restore_session"):
             live_view.restore_session(cameras)
 
-        for page_name in ("recordings", "events"):
+        for page_name in ("recordings", "snapshots", "events"):
             page = self.stack.get_child_by_name(page_name)
             if page and hasattr(page, "refresh_camera_filter"):
                 page.refresh_camera_filter()
@@ -369,6 +369,10 @@ class MainWindow(Gtk.ApplicationWindow):
         from surveillance.config import save_config
 
         save_config(self.app.config)
+
+        new_page = self.stack.get_child_by_name(page_name)
+        if new_page and hasattr(new_page, "on_page_shown"):
+            new_page.on_page_shown()
 
         live_view = self.stack.get_child_by_name("live")
         if not live_view or not hasattr(live_view, "pause_streams"):

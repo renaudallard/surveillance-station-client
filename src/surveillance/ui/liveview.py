@@ -124,7 +124,15 @@ class CameraSlot(Gtk.Box):
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
 
-    def _stop_bridge(self) -> None:
+    def stop_stream(self) -> None:
+        """Stop playback, then tear down the WebSocket bridge.
+
+        mpv has to let go of the pipe before the bridge closes it. The next
+        bridge calls os.pipe() and gets the very same descriptor numbers
+        back, so a demuxer still holding the old ones would read the new
+        stream out from under it and never decode a frame.
+        """
+        self.player.stop()
         if self._ws_bridge is not None:
             bridge = self._ws_bridge
             self._ws_bridge = None
@@ -132,9 +140,8 @@ class CameraSlot(Gtk.Box):
             run_async(bridge.stop())
 
     def clear(self) -> None:
-        self._stop_bridge()
+        self.stop_stream()
         self.camera = None
-        self.player.stop()
         self._header.set_label(f"Slot {self._display_index + 1}")
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -208,8 +215,7 @@ class LiveView(Gtk.Box):
             else:
                 slot.set_visible(False)
                 if slot.camera:
-                    slot._stop_bridge()
-                    slot.player.stop()
+                    slot.stop_stream()
 
         self._active = new_active
         self._update_ptz_controls()
@@ -423,7 +429,7 @@ class LiveView(Gtk.Box):
         slot = self._slots[slot_idx]
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
-            slot._stop_bridge()
+            slot.stop_stream()
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:
@@ -431,7 +437,7 @@ class LiveView(Gtk.Box):
 
     def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
         """Start a WebSocket bridge and play the resulting pipe in mpv."""
-        slot._stop_bridge()
+        slot.stop_stream()
         verify_ssl = self.app.api.profile.verify_ssl if self.app.api else True
         sid = self.app.api.sid if self.app.api else ""
         bridge = WebSocketBridge(url, verify_ssl, sid)
@@ -475,16 +481,14 @@ class LiveView(Gtk.Box):
         """Restart the stream for a camera if it is currently displayed."""
         for slot in self._slots:
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
-                slot._stop_bridge()
-                slot.player.stop()
+                slot.stop_stream()
                 self._start_stream(slot.index, slot.camera)
 
     def pause_streams(self) -> None:
         """Stop all mpv playback but keep camera assignments."""
         for slot in self._slots:
             if slot.camera:
-                slot._stop_bridge()
-                slot.player.stop()
+                slot.stop_stream()
 
     def resume_streams(self) -> None:
         """Restart streams for all visible slots that have a camera assigned."""

@@ -336,10 +336,10 @@ class MainWindow(Gtk.ApplicationWindow):
             live_view.restart_camera(camera_id)
 
     def clear_selected_slot(self) -> None:
-        """Clear the camera in the currently selected live-view grid slot, if any."""
-        live_view = self.stack.get_child_by_name("live")
-        if live_view and hasattr(live_view, "clear_selected_slot"):
-            live_view.clear_selected_slot()
+        """Clear the selected grid slot on the visible page, if it has one."""
+        current_page = self.stack.get_visible_child()
+        if current_page and hasattr(current_page, "clear_selected_slot"):
+            current_page.clear_selected_slot()
 
     def toggle_sidebar(self, visible: bool) -> None:
         """Show or hide the camera sidebar panel."""

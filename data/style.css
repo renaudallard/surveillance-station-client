@@ -1,5 +1,13 @@
 /* Surveillance Station GTK4 theme */
 
+/* Floor for toolbar filter combos. GTK CSS has no max-width — the actual
+   cap on how wide these can grow is done by truncating entry text before
+   it's appended (see _truncate_label in events.py/recordings.py), since
+   GTK sizes a closed ComboBoxText from the longest entry ever appended. */
+.filter-combo {
+    min-width: 160px;
+}
+
 .sidebar {
     background-color: @theme_bg_color;
     border-right: 1px solid @borders;

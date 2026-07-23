@@ -101,6 +101,7 @@ class MpvGLArea(Gtk.GLArea):
         self._render_pending = False
         self._tls_verify = tls_verify
         self._low_latency = False
+        self._start_offset: float = 0
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -152,6 +153,7 @@ class MpvGLArea(Gtk.GLArea):
             # If URL was set before realization, apply options and start playing
             if self._url:
                 self._apply_playback_options()
+                self._mpv["start"] = str(self._start_offset) if self._start_offset else "0"
                 self._mpv.play(self._url)
 
         except Exception:
@@ -261,17 +263,22 @@ class MpvGLArea(Gtk.GLArea):
             self._mpv["untimed"] = False
             self._mpv["container-fps-override"] = 0
 
-    def play(self, url: str, *, low_latency: bool = False) -> None:
+    def play(self, url: str, *, low_latency: bool = False, start_offset: float = 0) -> None:
         """Start playing a stream URL.
 
         When *low_latency* is True, disable caching and read-ahead so the
         stream plays in near real-time (used for WebSocket pipe bridges).
+
+        *start_offset* seeks to that position (seconds) as the file loads,
+        for playing a moment within a much longer recording file.
         """
         self._url = url
         self._low_latency = low_latency
+        self._start_offset = start_offset
         if self._initialized and self._mpv:
             try:
                 self._apply_playback_options()
+                self._mpv["start"] = str(start_offset) if start_offset else "0"
                 self._mpv.play(url)
             except Exception:
                 log.exception("Failed to play %s", url)

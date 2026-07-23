@@ -22,7 +22,7 @@
 
 ## Features
 
-- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. A stream the NAS drops is reconnected automatically, with the slot header showing its state instead of holding the last frame.
+- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A slot only shows a header status ("stream lost") if a camera genuinely can't be reached at all.
 - **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
 - **PTZ Control** &mdash; Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active.
 - **Snapshots** &mdash; Take live snapshots from any camera, browse saved snapshots, download or delete.
@@ -357,7 +357,7 @@ surveillance-station-client/
 │   │   ├── liveview.py                 live stream grid
 │   │   ├── mpv_widget.py               GLArea + mpv render
 │   │   ├── recordings.py               recording browser
-│   │   ├── recording_search.py         recording search dialog
+│   │   ├── advanced_search.py          advanced search dialog (shared by Recordings/Snapshots/Events)
 │   │   ├── player.py                   playback controls
 │   │   ├── ptz_controls.py             PTZ direction pad
 │   │   ├── snapshots.py                snapshot browser

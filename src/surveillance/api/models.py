@@ -130,15 +130,20 @@ class Snapshot:
     camera_name: str
     create_time: int
     file_size: int = 0
+    # Base64-encoded JPEG, already sized for a list thumbnail — included
+    # inline in SnapShot::List's response, so browsing the list doesn't
+    # need a separate per-row download the way Recording thumbnails do.
+    image_data: str = ""
 
     @classmethod
     def from_api(cls, data: dict) -> Snapshot:  # type: ignore[type-arg]
         return cls(
             id=data.get("id", 0),
-            camera_id=data.get("cameraId", 0),
-            camera_name=data.get("cameraName", ""),
-            create_time=data.get("createTime", 0),
-            file_size=data.get("fileSize", 0),
+            camera_id=data.get("camId", 0),
+            camera_name=data.get("camName", ""),
+            create_time=data.get("createdTm", data.get("displayTm", 0)),
+            file_size=data.get("byteSize", 0),
+            image_data=data.get("imageData", ""),
         )
 
 
@@ -155,6 +160,12 @@ class Event:
     mount_id: int = 0
     arch_id: int = 0
     detection_label: int = 0
+    # Seconds into the parent recording file where this event actually starts.
+    # Set when the event was decoded from RecordingPicker::EnumInterval's
+    # event_map (see services.event.list_granular_events) rather than from
+    # Event::List, since id/mount_id/arch_id there refer to the whole
+    # (much longer) recording file, not this specific moment within it.
+    seek_offset: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]

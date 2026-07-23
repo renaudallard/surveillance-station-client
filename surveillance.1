@@ -18,9 +18,11 @@ Each layout remembers its own camera arrangement independently.
 A single slot is emptied from the camera sidebar, the whole layout from the
 grid menu after a confirmation prompt.
 Video is rendered via mpv with hardware acceleration.
-When the NAS drops a WebSocket streaming session the slot reconnects on its
-own, backing off between attempts and reporting its state in the slot header
-rather than leaving the last frame on screen.
+The NAS ends each WebSocket streaming session every ~15-25 seconds as
+routine behavior; the slot reconnects on the same pipe transparently, with
+no visible interruption. The slot header only reports a state
+.RI ( "stream lost" )
+if a camera cannot be reached at all after repeated attempts.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

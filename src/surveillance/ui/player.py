@@ -52,10 +52,17 @@ _PLAYBACK_START_TIMEOUT_MS = 7000
 class PlayerDialog(Gtk.Window):
     """Recording playback window with transport controls."""
 
-    def __init__(self, parent: Gtk.Window, app: SurveillanceApp, recording: Recording) -> None:
+    def __init__(
+        self,
+        parent: Gtk.Window,
+        app: SurveillanceApp,
+        recording: Recording,
+        start_offset: float = 0,
+    ) -> None:
         super().__init__()
         self.app = app
         self.recording = recording
+        self._start_offset = start_offset
         self._tick_id: int = 0
         self._playback_check_id: int = 0
         self._loading = True
@@ -150,7 +157,7 @@ class PlayerDialog(Gtk.Window):
         self._on_stream_url(url)
 
     def _on_stream_url(self, url: str) -> None:
-        self.player.play(url)
+        self.player.play(url, start_offset=self._start_offset)
         self.player.set_volume(50)
         self._tick_id = GLib.timeout_add(500, self._update_position)
         self._playback_check_id = GLib.timeout_add(

@@ -143,6 +143,13 @@ class TimeLapseView(Gtk.Box):
         self._load_tasks()
         self._load_recordings()
 
+    def on_page_shown(self) -> None:
+        """Refresh whenever this page becomes visible (called from
+        MainWindow.show_page) — matches Recordings/Events/Snapshots'
+        behavior, since time lapse tasks can produce new recordings
+        between visits."""
+        self._refresh()
+
     def _refresh(self) -> None:
         """Reload tasks and recordings."""
         self._load_tasks()

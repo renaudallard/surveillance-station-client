@@ -28,7 +28,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import contextlib
 import logging
 import re
 from datetime import datetime
@@ -42,7 +41,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Recording, decode_detection_labels
-from surveillance.config import save_config
+from surveillance.config import load_search_filters, save_search_filters
 from surveillance.services.recording import (
     PRESET_LAST7D,
     PRESET_LAST24H,
@@ -53,7 +52,7 @@ from surveillance.services.recording import (
     list_recordings,
     preset_range,
 )
-from surveillance.ui.recording_search import RecordingSearchDialog
+from surveillance.ui.advanced_search import AdvancedSearchDialog
 from surveillance.util.async_bridge import run_async
 
 _THUMB_WIDTH = 120
@@ -63,6 +62,17 @@ if TYPE_CHECKING:
     from surveillance.ui.window import MainWindow
 
 log = logging.getLogger(__name__)
+
+_COMBO_LABEL_MAX_LEN = 22
+
+
+def _truncate_label(text: str, max_len: int = _COMBO_LABEL_MAX_LEN) -> str:
+    """Cap a combo entry's display text so a long camera name can't keep
+    growing the dropdown's width — GTK sizes a closed ComboBoxText from the
+    longest entry ever appended, and GTK CSS has no max-width to cap that."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
 
 
 class RecordingsView(Gtk.Box):
@@ -86,13 +96,18 @@ class RecordingsView(Gtk.Box):
 
         self._load_search_from_config()
 
-        # Toolbar
+        # Toolbar row: quick date presets on the left, camera filter and
+        # actions on the right, all in a single row.
+        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        filter_row.set_margin_top(8)
+        filter_row.set_margin_bottom(4)
+        filter_row.set_margin_start(8)
+        filter_row.set_margin_end(8)
+
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar.set_hexpand(True)
         toolbar.set_halign(Gtk.Align.END)
-        toolbar.set_margin_top(8)
-        toolbar.set_margin_bottom(4)
-        toolbar.set_margin_start(8)
-        toolbar.set_margin_end(8)
+        toolbar.set_valign(Gtk.Align.CENTER)
 
         filter_label = Gtk.Label(label="Camera:")
         toolbar.append(filter_label)
@@ -101,6 +116,13 @@ class RecordingsView(Gtk.Box):
         self.camera_combo.append("all", "All cameras")
         self.camera_combo.set_active_id("all")
         self.camera_combo.connect("changed", self._on_filter_changed)
+        # Caps width via CSS (see .filter-combo in style.css) — set_size_request
+        # alone only sets a floor, not a ceiling: GTK still requests width for
+        # the longest camera name ever appended (e.g. "HIKVISION
+        # DS-2CD2387G2-LSU/SL"), so it can keep growing as more cameras are
+        # added, eventually squeezing neighboring widgets in the same row.
+        self.camera_combo.add_css_class("filter-combo")
+        # KNOWN COSMETIC QUIRK: see the canonical comment on camera_combo in events.py.
         toolbar.append(self.camera_combo)
 
         refresh_btn = Gtk.Button()
@@ -121,13 +143,9 @@ class RecordingsView(Gtk.Box):
         self._reset_btn.connect("clicked", self._on_reset_clicked)
         toolbar.append(self._reset_btn)
 
-        self.append(toolbar)
-
         # Quick date presets
         preset_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        preset_bar.set_margin_start(8)
-        preset_bar.set_margin_end(8)
-        preset_bar.set_margin_bottom(6)
+        preset_bar.set_valign(Gtk.Align.CENTER)
 
         preset_label = Gtk.Label(label="Quick filter:")
         preset_label.add_css_class("dim-label")
@@ -148,7 +166,9 @@ class RecordingsView(Gtk.Box):
             preset_bar.append(btn)
             self._preset_buttons[key] = btn
 
-        self.append(preset_bar)
+        filter_row.append(preset_bar)
+        filter_row.append(toolbar)
+        self.append(filter_row)
 
         # Filter summary
         self.filter_summary = Gtk.Label(label="")
@@ -216,15 +236,21 @@ class RecordingsView(Gtk.Box):
 
         # Restore preset button state, populate cameras, load
         self._sync_preset_buttons()
-        self._update_camera_filter()
+        self.refresh_camera_filter()
         self._load_recordings()
 
-    def _update_camera_filter(self) -> None:
+    def on_page_shown(self) -> None:
+        """Refresh whenever this page becomes visible (called from
+        MainWindow.show_page) — matches Snapshots' behavior, since
+        recordings can appear from elsewhere between visits."""
+        self._load_recordings()
+
+    def refresh_camera_filter(self) -> None:
         """Populate camera filter from sidebar camera list."""
         self._known_camera_ids: set[int] = set()
         for cam in self.window.sidebar.cameras:
             if cam.id not in self._known_camera_ids:
-                self.camera_combo.append(str(cam.id), cam.name)
+                self.camera_combo.append(str(cam.id), _truncate_label(cam.name))
                 self._known_camera_ids.add(cam.id)
 
     def _ensure_camera_in_combo(self, camera_id: int, name: str) -> None:
@@ -232,7 +258,7 @@ class RecordingsView(Gtk.Box):
         if not hasattr(self, "_known_camera_ids"):
             self._known_camera_ids = set()
         if camera_id not in self._known_camera_ids:
-            self.camera_combo.append(str(camera_id), name)
+            self.camera_combo.append(str(camera_id), _truncate_label(name))
             self._known_camera_ids.add(camera_id)
 
     def _on_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
@@ -319,7 +345,10 @@ class RecordingsView(Gtk.Box):
             camera_ids: list[int] | None,
             from_dt: datetime | None,
             to_dt: datetime | None,
+            _event_type_ids: list[int] | None,
         ) -> None:
+            # Recordings has no event-type filter (Events-only feature) —
+            # the dialog always passes this 4th argument regardless of page.
             self._search_camera_ids = camera_ids
             self._search_from_time = int(from_dt.timestamp()) if from_dt else None
             self._search_to_time = int(to_dt.timestamp()) if to_dt else None
@@ -333,7 +362,7 @@ class RecordingsView(Gtk.Box):
         def _on_reset() -> None:
             self._on_reset_clicked(btn)
 
-        dialog = RecordingSearchDialog(
+        dialog = AdvancedSearchDialog(
             self.window,
             self.window.sidebar.cameras,
             on_search=_on_search,
@@ -341,6 +370,7 @@ class RecordingsView(Gtk.Box):
             selected_ids=self._search_camera_ids,
             from_time=from_time,
             to_time=to_time,
+            title="Search Recordings",
         )
         dialog.present()
 
@@ -671,28 +701,22 @@ class RecordingsView(Gtk.Box):
 
     def _load_search_from_config(self) -> None:
         """Load search filters from config."""
-        cfg = self.app.config
-        if cfg.search_camera_ids:
-            self._search_camera_ids = cfg.search_camera_ids
-        if cfg.search_from_time:
-            with contextlib.suppress(ValueError):
-                self._search_from_time = int(
-                    datetime.fromisoformat(cfg.search_from_time).timestamp()
-                )
-        if cfg.search_to_time:
-            with contextlib.suppress(ValueError):
-                self._search_to_time = int(datetime.fromisoformat(cfg.search_to_time).timestamp())
-        self._search_time_preset = cfg.search_time_preset
+        camera_ids, from_time, to_time, time_preset = load_search_filters(self.app.config, "search")
+        if camera_ids:
+            self._search_camera_ids = camera_ids
+        if from_time:
+            self._search_from_time = from_time
+        if to_time:
+            self._search_to_time = to_time
+        self._search_time_preset = time_preset
 
     def _save_search_to_config(self) -> None:
         """Save search filters to config."""
-        cfg = self.app.config
-        cfg.search_camera_ids = self._search_camera_ids or []
-        cfg.search_from_time = ""
-        if self._search_from_time:
-            cfg.search_from_time = datetime.fromtimestamp(self._search_from_time).isoformat()
-        cfg.search_to_time = ""
-        if self._search_to_time:
-            cfg.search_to_time = datetime.fromtimestamp(self._search_to_time).isoformat()
-        cfg.search_time_preset = self._search_time_preset
-        save_config(cfg)
+        save_search_filters(
+            self.app.config,
+            "search",
+            self._search_camera_ids,
+            self._search_from_time,
+            self._search_to_time,
+            self._search_time_preset,
+        )

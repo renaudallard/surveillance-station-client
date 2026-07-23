@@ -192,10 +192,23 @@ class MainWindow(Gtk.ApplicationWindow):
         self._start_polling()
 
     def _restore_live_session(self, cameras: list[Camera]) -> None:
-        """Restore live view camera assignments from last session."""
+        """Restore live view camera assignments and refresh other pages' camera filters.
+
+        Runs once the sidebar's camera list has actually loaded. Recordings,
+        Snapshots, and Events build their camera filter dropdown from that
+        same list at construction time, which happens before this — so
+        without this, their filter would only ever show whatever camera
+        happened to already be loaded (usually none) plus any camera the
+        user later clicked in the sidebar.
+        """
         live_view = self.stack.get_child_by_name("live")
         if live_view and hasattr(live_view, "restore_session"):
             live_view.restore_session(cameras)
+
+        for page_name in ("recordings", "snapshots", "events"):
+            page = self.stack.get_child_by_name(page_name)
+            if page and hasattr(page, "refresh_camera_filter"):
+                page.refresh_camera_filter()
 
     def _setup_content_pages(self) -> None:
         """Replace placeholders with real content widgets."""
@@ -227,6 +240,7 @@ class MainWindow(Gtk.ApplicationWindow):
             last_page = "live"
         self.stack.set_visible_child_name(last_page)
         self.headerbar.set_page(last_page)
+        self.sidebar.set_active_page(last_page)
 
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
@@ -350,10 +364,15 @@ class MainWindow(Gtk.ApplicationWindow):
         previous = self.stack.get_visible_child_name()
         self.stack.set_visible_child_name(page_name)
         self.headerbar.set_page(page_name)
+        self.sidebar.set_active_page(page_name)
         self.app.config.last_page = page_name
         from surveillance.config import save_config
 
         save_config(self.app.config)
+
+        new_page = self.stack.get_child_by_name(page_name)
+        if new_page and hasattr(new_page, "on_page_shown"):
+            new_page.on_page_shown()
 
         live_view = self.stack.get_child_by_name("live")
         if not live_view or not hasattr(live_view, "pause_streams"):

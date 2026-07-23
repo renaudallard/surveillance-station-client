@@ -102,6 +102,8 @@ class CameraSidebar(Gtk.Box):
         nav_box.set_margin_start(8)
         nav_box.set_margin_end(8)
 
+        self._nav_buttons: dict[str, Gtk.ToggleButton] = {}
+        first_btn: Gtk.ToggleButton | None = None
         for icon, label_text, page_name in [
             ("camera-video-symbolic", "Live View", "live"),
             ("media-playback-start-symbolic", "Recordings", "recordings"),
@@ -110,7 +112,15 @@ class CameraSidebar(Gtk.Box):
             ("camera-video-symbolic", "Time Lapse", "timelapse"),
             ("emblem-system-symbolic", "Licenses", "licenses"),
         ]:
-            btn = Gtk.Button()
+            # A shared toggle group makes these behave like radio buttons —
+            # exactly one active at a time — using the system theme's own
+            # toggle-button highlight, rather than a custom CSS "selected"
+            # style.
+            btn = Gtk.ToggleButton()
+            if first_btn is None:
+                first_btn = btn
+            else:
+                btn.set_group(first_btn)
             btn_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             btn_icon = Gtk.Image.new_from_icon_name(icon)
             btn_label = Gtk.Label(label=label_text)
@@ -119,8 +129,9 @@ class CameraSidebar(Gtk.Box):
             btn_content.append(btn_icon)
             btn_content.append(btn_label)
             btn.set_child(btn_content)
-            btn.connect("clicked", self._on_nav_clicked, page_name)
+            btn.connect("toggled", self._on_nav_toggled, page_name)
             nav_box.append(btn)
+            self._nav_buttons[page_name] = btn
 
         self.append(Gtk.Separator())
         self.append(nav_box)
@@ -433,8 +444,24 @@ class CameraSidebar(Gtk.Box):
         if row.camera is None:  # type: ignore[attr-defined]
             self.window.clear_selected_slot()
 
-    def _on_nav_clicked(self, btn: Gtk.Button, page_name: str) -> None:
+    def _on_nav_toggled(self, btn: Gtk.ToggleButton, page_name: str) -> None:
+        if not btn.get_active():
+            return
         self.window.show_page(page_name)
+
+    def set_active_page(self, page_name: str) -> None:
+        """Highlight *page_name*'s nav button without re-triggering show_page().
+
+        Used both at startup (restoring the persisted last-active page) and
+        from show_page() itself, so the highlight always matches the stack's
+        actual visible child regardless of how it got there.
+        """
+        btn = self._nav_buttons.get(page_name)
+        if btn is None or btn.get_active():
+            return
+        btn.handler_block_by_func(self._on_nav_toggled)
+        btn.set_active(True)
+        btn.handler_unblock_by_func(self._on_nav_toggled)
 
     def start_polling(self) -> None:
         """Start periodic camera status polling."""

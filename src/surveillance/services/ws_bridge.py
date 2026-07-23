@@ -39,6 +39,16 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Internal reconnect policy for the routine ~15-25s session drops the NAS's
+# WebSocket streaming backend does by design (confirmed against a real NAS
+# and against DSM's own web client, which reconnects the same way). A
+# connection that stays up at least this long counts as healthy, resetting
+# the failure streak — only a run of failures that never reach a real
+# connection at all triggers giving up.
+_FAST_FAILURE_THRESHOLD = 3.0  # seconds
+_MAX_CONSECUTIVE_FAST_FAILURES = 5
+_MAX_RECONNECT_DELAY = 2.0  # seconds
+
 
 def _ws_connect(url: str, **kwargs: Any) -> Any:
     """Open a WebSocket connection.
@@ -80,6 +90,43 @@ class WebSocketBridge:
         self._error: str = ""
         self._stopping = False
         self._connected_at: float | None = None
+        self._fast_failures = 0
+
+    def _note_attempt_outcome(self, connected: bool, attempt_start: float) -> bool:
+        """Track consecutive failed-to-connect attempts; return True to give up.
+
+        A connection that stayed up a little while is a fresh, healthy
+        attempt — only a run of failures that never even establish a real
+        connection should give up, so a camera that is genuinely
+        unreachable doesn't retry forever.
+        """
+        attempt_uptime = time.monotonic() - attempt_start if connected else 0.0
+        if attempt_uptime >= _FAST_FAILURE_THRESHOLD:
+            self._fast_failures = 0
+            return False
+        self._fast_failures += 1
+        if self._fast_failures < _MAX_CONSECUTIVE_FAST_FAILURES:
+            return False
+        if not self._error:
+            self._error = "repeated connection failures"
+        log.error(
+            "WebSocket failed to establish %d times in a row — giving up: %s",
+            self._fast_failures,
+            self._error,
+        )
+        return True
+
+    def _log_reconnect(self, clean_close: bool) -> None:
+        if clean_close:
+            log.debug(
+                "WebSocket closed cleanly after %.0fs — reconnecting on the same pipe", self.uptime
+            )
+        else:
+            log.warning(
+                "WebSocket dropped after %.0fs (%s) — reconnecting on the same pipe",
+                self.uptime,
+                self._error,
+            )
 
     async def start(self) -> str:
         """Create pipe, start pump task, return fd:// URL for mpv."""
@@ -121,6 +168,13 @@ class WebSocketBridge:
     async def _pump(self) -> None:
         """Connect to the WebSocket and write video frames to the pipe.
 
+        Reconnects internally on the same pipe whenever the NAS drops the
+        session (its normal behavior, every ~15-25s) instead of closing the
+        pipe — see the comment at the reconnect site for why. Only exits
+        (letting the pipe close and `wait_closed()` return a reason) on a
+        deliberate stop or after repeated attempts that never establish a
+        real connection at all.
+
         Strips the Synology proprietary framing (4-byte length + ASCII
         header) from each WebSocket message and writes only the raw
         video payload (Annex B H.264/H.265 NAL units) to the pipe.
@@ -135,30 +189,66 @@ class WebSocketBridge:
                 ssl_ctx.verify_mode = ssl.CERT_NONE
 
         headers = {"Cookie": f"id={self._sid}"}
+        delay = 0.0
 
         try:
-            log.debug("WebSocket connecting: %s", self._ws_url)
+            while not self._stopping:
+                clean_close = False
+                connected = False
+                attempt_start = time.monotonic()
+                try:
+                    log.debug("WebSocket connecting: %s", self._ws_url)
 
-            async with _ws_connect(
-                self._ws_url,
-                ssl=ssl_ctx,
-                additional_headers=headers,
-                max_size=2**22,
-                open_timeout=15,
-                close_timeout=2,
-            ) as ws:
-                log.debug("WebSocket connected")
-                self._connected_at = time.monotonic()
-                async for message in ws:
-                    if isinstance(message, bytes):
-                        payload = self._extract_payload(message)
-                        if payload:
-                            await asyncio.to_thread(os.write, self._write_fd, payload)
+                    async with _ws_connect(
+                        self._ws_url,
+                        ssl=ssl_ctx,
+                        additional_headers=headers,
+                        max_size=2**22,
+                        open_timeout=15,
+                        close_timeout=2,
+                        ping_interval=None,
+                    ) as ws:
+                        log.debug("WebSocket connected")
+                        connected = True
+                        self._connected_at = time.monotonic()
+                        delay = 0.0
+                        async for message in ws:
+                            if isinstance(message, bytes):
+                                payload = self._extract_payload(message)
+                                if payload:
+                                    await asyncio.to_thread(os.write, self._write_fd, payload)
+                    # Reached with no exception: the server closed the
+                    # WebSocket cleanly (confirmed via a real NAS capture —
+                    # this is the COMMON case, e.g. code 1005/"no status
+                    # received", not an error path).
+                    clean_close = True
+                except Exception as exc:
+                    self._error = _classify_error(exc)
+
+                if self._stopping:
+                    break
+
+                if self._note_attempt_outcome(connected, attempt_start):
+                    break
+
+                # Reconnect on the SAME pipe rather than closing it, whether
+                # the session ended cleanly or with an error: the NAS drops
+                # this WebSocket session routinely, every ~15-25s, as normal
+                # behavior (confirmed against a real NAS — not a rare
+                # failure). Closing the write end here would deliver a real
+                # EOF to mpv, which — with keep_open=yes on a raw fd://
+                # stream — never resumes decoding again even after a fresh
+                # play() call on a new pipe (confirmed via a standalone
+                # repro). Keeping the pipe open and just resuming writes
+                # after a short reconnect makes this look like an ordinary
+                # buffering stall to mpv instead of a terminal end-of-file,
+                # so it recovers on its own with no player/render-context
+                # teardown needed at all.
+                self._log_reconnect(clean_close)
+                delay = min(delay * 2, _MAX_RECONNECT_DELAY) if delay else 0.25
+                await asyncio.sleep(delay)
         except (asyncio.CancelledError, BrokenPipeError):
             log.debug("WebSocket bridge cancelled")
-        except Exception as exc:
-            self._error = _classify_error(exc)
-            log.exception("WebSocket bridge error: %s", self._error)
         finally:
             self._close_write_fd()
 
@@ -170,11 +260,12 @@ class WebSocketBridge:
         return time.monotonic() - self._connected_at
 
     async def wait_closed(self) -> str:
-        """Wait for the stream to end and describe why.
+        """Wait for the bridge to give up for good, and describe why.
 
-        Returns an empty string when the application shut the stream down
-        itself, so the caller can tell a deliberate stop from the NAS
-        dropping the session.
+        Routine NAS-side session drops are reconnected internally by
+        `_pump()` and never reach here — this only resolves on a deliberate
+        stop (empty string) or once repeated attempts have failed to
+        establish a real connection at all (see `_note_attempt_outcome`).
         """
         if self._pump_task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):

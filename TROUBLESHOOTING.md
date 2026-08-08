@@ -22,19 +22,18 @@ What to try:
 2. Right-click the camera in the sidebar and switch to MJPEG or RTSP over HTTP.
 3. Check *Control Panel > Log Center* on DSM for NAS-side errors.
 
-## A live view slot's log fills with "reconnecting on the same pipe"
+## A live view slot's log shows "reconnecting on the same pipe"
 
 ```
 WARNING surveillance.services.ws_bridge: WebSocket dropped after 18s
   (ConnectionClosedError: no close frame received or sent); reconnecting on the same pipe
 ```
 
-This is expected, not an error: Surveillance Station's WebSocket streaming
-backend ends every session on its own after roughly 15-25 seconds as routine
-behavior (confirmed against a real NAS and against DSM's own web client,
-which reconnects the same way). The client reconnects on the same pipe
-without ever stopping playback, so there is no visible interruption — this
-log line alone is not something to act on.
+The client sends a periodic keepalive to hold each WebSocket session open,
+so this should be rare — typically a real network interruption or a NAS
+restart. The client reconnects on the same pipe without ever stopping
+playback, so there is no visible interruption. If it repeats constantly for
+one camera, check that camera's network path to the NAS.
 
 ## A live view slot shows "(offline)"
 

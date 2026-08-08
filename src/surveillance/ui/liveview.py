@@ -996,13 +996,11 @@ class LiveView(Gtk.Box):
             callback=_on_ready,
             error_callback=lambda e: log.error("WebSocket bridge failed: %s", e),
         )
-        # The NAS drops this WebSocket session routinely, every ~15-25s, as
-        # normal behavior — WebSocketBridge reconnects on the same pipe
-        # internally and never surfaces those as a "closed" event, so mpv
-        # never sees a real EOF and just keeps playing through them. This
-        # only fires once the bridge has genuinely given up (a run of
-        # attempts that never even connect) or on a deliberate stop (empty
-        # reason, ignored below).
+        # WebSocketBridge reconnects on the same pipe internally and never
+        # surfaces a routine drop as a "closed" event, so mpv never sees a
+        # real EOF from one. This only fires once the bridge has genuinely
+        # given up (a run of attempts that never even connect) or on a
+        # deliberate stop (empty reason, ignored below).
         run_async(
             bridge.wait_closed(),
             callback=lambda reason: self._on_stream_gave_up(slot_idx, cam_id, bridge, reason),

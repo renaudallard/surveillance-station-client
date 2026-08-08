@@ -36,9 +36,10 @@ in the sidebar. A camera with no audio track gets no mute button at all.
 Cameras with a speaker also show a push-to-talk microphone button — tap to
 start talking, tap again to stop.
 Video is rendered via mpv with hardware acceleration.
-The NAS ends each WebSocket streaming session every ~15-25 seconds as
-routine behavior; the slot reconnects on the same pipe transparently, with
-no visible interruption. A camera reported disabled or disconnected shows
+The client sends a periodic keepalive to hold each WebSocket session open;
+if a session is ever interrupted anyway, the slot reconnects on the same
+pipe transparently, with no visible interruption. A camera reported
+disabled or disconnected shows
 an
 .RI ( offline )
 placeholder instead of freezing, and a stream that stops responding

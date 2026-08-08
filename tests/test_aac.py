@@ -29,7 +29,12 @@ from __future__ import annotations
 
 import pytest
 
-from surveillance.services.aac import adts_header, nearest_sample_rate, strip_au_header
+from surveillance.services.aac import (
+    adts_header,
+    detect_au_header_len,
+    nearest_sample_rate,
+    strip_au_header,
+)
 
 
 def _parse_adts(header: bytes) -> tuple[int, int, int]:
@@ -84,9 +89,97 @@ class TestNearestSampleRate:
 
 
 class TestStripAuHeader:
-    def test_removes_leading_two_bytes(self) -> None:
+    def test_removes_leading_n_bytes(self) -> None:
         frame = b"\x00\x01\x02\x03\x04"
-        assert strip_au_header(frame) == b"\x02\x03\x04"
+        assert strip_au_header(frame, 3) == b"\x03\x04"
+        assert strip_au_header(frame, 2) == b"\x02\x03\x04"
+
+
+def _element(id_syn_ele: int, filler: int = 0x00) -> int:
+    """A byte whose top 3 bits are the given AAC id_syn_ele value."""
+    return ((id_syn_ele & 0x7) << 5) | (filler & 0x1F)
+
+
+_CPE = 1  # channel_pair_element -- what a real stereo frame starts with
+_END = 0b111  # id_syn_ele meaning "no elements follow"
+
+
+def _frame_with_header(header: bytes, payload_first_byte: int, length: int = 20) -> bytes:
+    """A synthetic AU-header-prefixed AAC frame: `header` bytes, then a
+    raw_data_block starting with `payload_first_byte`, padded out with
+    arbitrary content."""
+    payload = bytes([payload_first_byte]) + b"\xaa" * (length - 1)
+    return header + payload
+
+
+class TestDetectAuHeaderLen:
+    def test_detects_the_documented_2_byte_default(self) -> None:
+        # A 2-byte AU-header (arbitrary size+index bits), then a CPE start.
+        frames = [_frame_with_header(bytes([0x34, i]), _element(_CPE)) for i in range(6)]
+        assert detect_au_header_len(frames) == 2
+
+    def test_detects_a_3_byte_header_like_the_real_camera_that_needed_this(self) -> None:
+        # Mirrors the real capture that motivated this: a 2-byte AU-header
+        # followed by one extra byte whose top 3 bits happen to read as
+        # AAC's END marker, then the real CPE-starting payload one byte
+        # later. A naive "stop at the first non-END offset" check must
+        # not stop at length 2 here.
+        header = bytes([0x34, 0x1F, _element(_END)])
+        frames = [_frame_with_header(header, _element(_CPE)) for _ in range(6)]
+        assert detect_au_header_len(frames) == 3
+
+    def test_real_capture_bytes_regression(self) -> None:
+        """The actual byte prefixes captured from the camera that exposed
+        this bug (see aac.py's module docstring) -- a concrete guard
+        against ever regressing back to 2."""
+        real_frame_prefixes = [
+            bytes.fromhex("341ffc211a1483320ccf8320"),
+            bytes.fromhex("34fffc211a14830e06c681b0"),
+            bytes.fromhex("339ffc211a148b5606c684b0"),
+            bytes.fromhex("31bffc211a148b7c50660b59"),
+            bytes.fromhex("345ffc211a14832606d284b0"),
+        ]
+        assert detect_au_header_len(real_frame_prefixes) == 3
+
+    def test_prefers_the_shortest_passing_candidate(self) -> None:
+        # Lengths 2 and 3 both hit END, so they're ruled out. From length
+        # 4 onward every byte is 0xAA (non-END either way), so 4, 5, 6...
+        # all technically "pass" -- the shortest of those must win, since
+        # it's the one that hasn't read into real payload bytes yet.
+        header = bytes([0x00, 0x00, _element(_END), _element(_END)])
+        frames = [_frame_with_header(header, _element(_CPE)) for _ in range(6)]
+        assert detect_au_header_len(frames) == 4
+
+    def test_a_wrong_shorter_candidate_is_ruled_out_by_a_single_bad_frame(self) -> None:
+        # Length 2 looks fine (non-END) on five frames but hits END on the
+        # sixth -- one counterexample is enough to rule it out, even
+        # though length 3 (the real answer here) passes on all six.
+        header_ok = bytes([0x34, 0x1F, 0x00])
+        header_bad = bytes([0x34, 0x1F, _element(_END)])
+        frames = [_frame_with_header(header_ok, _element(_CPE)) for _ in range(5)]
+        frames.append(_frame_with_header(header_bad, _element(_CPE)))
+        assert detect_au_header_len(frames) == 3
+
+    def test_never_returns_below_the_documented_minimum(self) -> None:
+        # Every byte from offset 0 onward looks like a plausible non-END
+        # element -- without a floor, a naive scan would stop at 0. The
+        # expected floor (2) is hardcoded rather than imported: this
+        # guards against the floor itself silently regressing, not just
+        # against the algorithm failing to respect whatever it's set to.
+        frames = [bytes([_element(_CPE)] * 10) for _ in range(6)]
+        assert detect_au_header_len(frames) == 2
+
+    def test_returns_none_for_unrecognized_framing(self) -> None:
+        # Every candidate in range hits END somewhere -- no length works,
+        # matching the real "second camera model" case in the docstring.
+        frames = [bytes([_element(_END)] * 10) for _ in range(6)]
+        assert detect_au_header_len(frames) is None
+
+    def test_returns_none_for_frames_too_short_to_test_any_candidate(self) -> None:
+        assert detect_au_header_len([b"\x00", b"\x01"]) is None
+
+    def test_returns_none_for_no_frames(self) -> None:
+        assert detect_au_header_len([]) is None
 
 
 class TestSampleRateDetectionRobustness:

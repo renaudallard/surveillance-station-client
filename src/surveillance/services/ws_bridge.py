@@ -41,6 +41,7 @@ import contextlib
 import fcntl
 import logging
 import os
+import select
 import ssl
 import struct
 import subprocess
@@ -49,16 +50,18 @@ import time
 from statistics import median
 from typing import Any
 
-from surveillance.services.aac import adts_header, nearest_sample_rate, strip_au_header
+from surveillance.services.aac import (
+    adts_header,
+    detect_au_header_len,
+    nearest_sample_rate,
+    strip_au_header,
+)
 
 log = logging.getLogger(__name__)
 
-# Internal reconnect policy for the routine ~15-25s session drops the NAS's
-# WebSocket streaming backend does by design (confirmed against a real NAS
-# and against DSM's own web client, which reconnects the same way). A
-# connection that stays up at least this long counts as healthy, resetting
-# the failure streak — only a run of failures that never reach a real
-# connection at all triggers giving up.
+# A connection counts as healthy once it has stayed up this long and
+# delivered data, resetting the failure streak. Only a run of failures
+# that never reach a working connection at all triggers giving up.
 _FAST_FAILURE_THRESHOLD = 3.0  # seconds
 _MAX_CONSECUTIVE_FAST_FAILURES = 5
 _MAX_RECONNECT_DELAY = 2.0  # seconds
@@ -73,6 +76,23 @@ _MAX_RECONNECT_DELAY = 2.0  # seconds
 # recv(), not a protocol ping, so it doesn't reintroduce the premature-
 # disconnect problem.
 _IDLE_TIMEOUT = 10.0  # seconds
+
+# ss_webstream_task drops a connection after roughly nine missed
+# intervals of client silence, even while it keeps sending video --
+# a client-to-server message resets that timer, so one gets sent on
+# this cadence for as long as the connection lives.
+#
+# Equal to _IDLE_TIMEOUT above by coincidence, not design: that one
+# watches inbound recv() silence, this one paces outbound send() --
+# independent timers on opposite directions of the same socket.
+_KEEPALIVE_INTERVAL = 10.0  # seconds
+
+# How long a pipe write may block before treating the downstream reader
+# (ffmpeg, or mpv on the raw-video-only pipe) as stalled rather than
+# waiting on it forever. Generous: a healthy pipe write completes
+# immediately, so this only ever matters when something downstream has
+# genuinely stopped draining.
+_WRITE_TIMEOUT = 5.0  # seconds
 
 # Safety cap on how long AAC sample-rate detection buffers video before
 # giving up on getting 5 real audio intervals and starting anyway with
@@ -140,6 +160,12 @@ class _StreamStalled(Exception):
     """
 
 
+class _PipeWriteStalled(Exception):
+    """Raised when a pipe write can't complete because the downstream
+    reader (ffmpeg, or mpv on the raw-video-only pipe) has stopped
+    draining it."""
+
+
 def _ws_connect(url: str, **kwargs: Any) -> Any:
     """Open a WebSocket connection.
 
@@ -204,6 +230,9 @@ class WebSocketBridge:
         # (see _aac_detecting) until real inter-frame timing reveals the
         # rate, and only then does ffmpeg start.
         self._aac_sample_rate = 16000
+        # RFC 3640 AAC-hbr default; overwritten by detect_au_header_len()
+        # in _finish_aac_detection before any real frame is ever stripped.
+        self._au_header_len = 2
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
         self._pending_video_codec: str = ""
@@ -463,11 +492,11 @@ class WebSocketBridge:
         ADTS header (see aac.py) — ffmpeg's plain "aac" demuxer needs
         ADTS framing, not the bare AU-header-prefixed frames DSM sends.
 
-        The sample rate is already known by the time this ever runs
-        (detection happens before ffmpeg starts at all — see
-        _accumulate_aac_detection_frame).
+        The sample rate and AU-header length are already known by the
+        time this ever runs (detection happens before ffmpeg starts at
+        all — see _accumulate_aac_detection_frame).
         """
-        frame = strip_au_header(payload)
+        frame = strip_au_header(payload, self._au_header_len)
         header = adts_header(len(frame), self._aac_sample_rate)
         await asyncio.to_thread(self._write_pipe, True, header + frame)
 
@@ -490,18 +519,19 @@ class WebSocketBridge:
         """Quick sanity check: does our AU-header-strip + ADTS-header
         transform actually produce decodable AAC for this camera?
 
-        Some cameras report the same adoCodec but use different AU-header
-        framing entirely -- feeding ffmpeg the wrongly-transformed result
-        doesn't just produce bad audio, it stalls the whole muxed
-        pipeline outright. This catches that with a throwaway decode
-        attempt before ever committing to a real session, so an
-        unsupported camera falls back to video-only instead of a broken
-        one.
+        detect_au_header_len (see _finish_aac_detection) already rules
+        out a wrong AU-header length; this is the secondary check for
+        cameras using different framing entirely -- feeding ffmpeg the
+        wrongly-transformed result doesn't just produce bad audio, it
+        stalls the whole muxed pipeline outright. This catches that with
+        a throwaway decode attempt before ever committing to a real
+        session, so an unsupported camera falls back to video-only
+        instead of a broken one.
         """
         buf = bytearray()
         try:
             for raw in self._aac_audio_buffer:
-                frame = strip_au_header(raw)
+                frame = strip_au_header(raw, self._au_header_len)
                 buf += adts_header(len(frame), self._aac_sample_rate) + frame
         except ValueError:
             # A frame too long for an ADTS header to describe means this
@@ -574,10 +604,11 @@ class WebSocketBridge:
 
     async def _finish_aac_detection(self) -> None:
         """Lock in the detected (or, failing that, default) AAC sample
-        rate, verify the AU-header/ADTS transform actually produces
-        valid AAC for this camera, then either start the muxed ffmpeg
-        pipeline or fall back to video-only — flushing everything
-        buffered during detection either way."""
+        rate and AU-header length, verify the resulting AU-header-strip
+        + ADTS-header transform actually produces valid AAC for this
+        camera, then either start the muxed ffmpeg pipeline or fall back
+        to video-only — flushing everything buffered during detection
+        either way."""
         if self._aac_intervals:
             self._aac_sample_rate = nearest_sample_rate(median(self._aac_intervals))
         self._aac_detecting = False
@@ -586,6 +617,22 @@ class WebSocketBridge:
         # previous session's measurements.
         self._aac_intervals.clear()
         self._last_audio_write_time = None
+
+        header_len = detect_au_header_len(self._aac_audio_buffer)
+        if header_len is None:
+            log.info(
+                "WebSocket bridge for %s: AAC frames are not in a recognized AU-header framing",
+                self._label,
+            )
+            await self._fall_back_to_video_only()
+            return
+        if header_len != self._au_header_len:
+            log.debug(
+                "WebSocket bridge for %s: detected a %d-byte AU-header (default is 2)",
+                self._label,
+                header_len,
+            )
+        self._au_header_len = header_len
 
         if not await self._aac_frames_look_valid():
             await self._fall_back_to_video_only()
@@ -712,6 +759,33 @@ class WebSocketBridge:
             elif media_type == "2" and (self._audio_active or self._aac_detecting):
                 await self._dispatch_audio_frame(payload)
 
+    async def _send_keepalive_loop(self, ws: Any) -> None:
+        """Send a keepalive every _KEEPALIVE_INTERVAL for as long as the
+        connection lives."""
+        while True:
+            await asyncio.sleep(_KEEPALIVE_INTERVAL)
+            await ws.send("keepAlive")
+
+    async def _read_messages_with_keepalive(self, ws: Any) -> None:
+        """Run the read loop and the keepalive loop concurrently;
+        whichever raises first ends the connection, and the other is
+        cancelled and reaped so a cancellation here can't leak either
+        task."""
+        read_task = asyncio.create_task(self._read_messages(ws))
+        keepalive_task = asyncio.create_task(self._send_keepalive_loop(ws))
+        tasks = {read_task, keepalive_task}
+        try:
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            for t in tasks:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+        for t in done:
+            t.result()
+
     def _log_reconnect(self, clean_close: bool) -> None:
         if clean_close:
             log.debug(
@@ -749,12 +823,11 @@ class WebSocketBridge:
         """Connect to the WebSocket and write video (+ audio) frames to
         the pipe(s).
 
-        Reconnects internally on the same pipe(s) whenever the NAS drops
-        the session (its normal behavior, every ~15-25s) instead of
-        closing them — see the comment at the reconnect site for why.
-        Only exits (letting the pipe close and `wait_closed()` return a
-        reason) on a deliberate stop or after repeated attempts that
-        never establish a real connection at all.
+        Reconnects internally on the same pipe(s) whenever the session
+        drops instead of closing them — see the comment at the reconnect
+        site for why. Only exits (letting the pipe close and
+        `wait_closed()` return a reason) on a deliberate stop or after
+        repeated attempts that never establish a real connection at all.
         """
         ssl_ctx: ssl.SSLContext | bool | None = None
         if self._ws_url.startswith("wss://"):
@@ -772,6 +845,7 @@ class WebSocketBridge:
             while not self._stopping:
                 clean_close = False
                 connected = False
+                give_up_now = False
                 self._attempt_got_data = False
                 attempt_start = time.monotonic()
                 try:
@@ -790,10 +864,20 @@ class WebSocketBridge:
                         connected = True
                         self._connected_at = time.monotonic()
                         delay = 0.0
-                        await self._read_messages(ws)
+                        await self._read_messages_with_keepalive(ws)
+                except _PipeWriteStalled as exc:
+                    # Unlike a WS-level drop, reconnecting on the same pipe
+                    # can't help here -- the downstream reader (ffmpeg, or
+                    # mpv on the raw-video pipe) is what's stuck, not the
+                    # socket. Give up on this bridge immediately so the
+                    # caller tears down and rebuilds the whole pipeline
+                    # (fresh ffmpeg, fresh pipes, fresh mpv play()) instead
+                    # of endlessly refeeding a pipe that will only stall
+                    # again.
+                    self._error = str(exc)
+                    give_up_now = True
                 except ConnectionClosedOK:
-                    # Server closed cleanly (the common case, e.g. code 1005
-                    # "no status received") — the NAS's routine rotation.
+                    # Server closed cleanly (e.g. code 1005 "no status received").
                     clean_close = True
                 except _StreamStalled:
                     pass  # self._error already holds the stall reason
@@ -803,23 +887,19 @@ class WebSocketBridge:
                 if self._stopping:
                     break
 
-                if self._note_attempt_outcome(connected, attempt_start):
+                if give_up_now or self._note_attempt_outcome(connected, attempt_start):
                     break
 
                 # Reconnect on the SAME pipe(s) rather than closing them,
-                # whether the session ended cleanly or with an error: the
-                # NAS drops this WebSocket session routinely, every
-                # ~15-25s, as normal behavior (confirmed against a real
-                # NAS — not a rare failure). Closing the write end here
-                # would deliver a real EOF to mpv, which — with
-                # keep_open=yes on a raw fd:// stream — never resumes
-                # decoding again even after a fresh play() call on a new
-                # pipe (confirmed via a standalone repro). Keeping the
-                # pipe(s) open and just resuming writes after a short
-                # reconnect makes this look like an ordinary buffering
-                # stall to mpv instead of a terminal end-of-file, so it
-                # recovers on its own with no player/render-context
-                # teardown needed at all.
+                # whether the session ended cleanly or with an error.
+                # Closing the write end here would deliver a real EOF to
+                # mpv, which — with keep_open=yes on a raw fd:// stream —
+                # never resumes decoding again even after a fresh play()
+                # call on a new pipe. Keeping the pipe(s) open and just
+                # resuming writes after a short reconnect makes this
+                # look like an ordinary buffering stall to mpv instead
+                # of a terminal end-of-file, so it recovers on its own
+                # with no player/render-context teardown needed at all.
                 self._log_reconnect(clean_close)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY) if delay else 0.25
                 await asyncio.sleep(delay)
@@ -863,6 +943,13 @@ class WebSocketBridge:
         A duplicate rather than holding the lock across the write: a write
         to a pipe mpv has not drained blocks until it does, and
         close_write_end() is called from the GTK main thread.
+
+        Non-blocking with its own timeout (_WRITE_TIMEOUT) rather than a
+        plain blocking os.write(): a pipe whose reader has stopped
+        draining it (ffmpeg or mpv wedged downstream) would otherwise
+        block here forever, with no way back to ws.recv() and so no way
+        to ever raise, reconnect, or hand off to the stream-lost recovery
+        path that's built for exactly this.
         """
         with self._fd_lock:
             fd = self._audio_write_fd if audio else self._video_write_fd
@@ -870,7 +957,22 @@ class WebSocketBridge:
                 return
             dup = os.dup(fd)
         try:
-            os.write(dup, data)
+            os.set_blocking(dup, False)
+            view = memoryview(data)
+            deadline = time.monotonic() + _WRITE_TIMEOUT
+            while view:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _PipeWriteStalled(
+                        f"pipe write stalled for {_WRITE_TIMEOUT:.0f}s "
+                        "-- downstream reader stopped draining"
+                    )
+                select.select([], [dup], [], remaining)
+                try:
+                    n = os.write(dup, view)
+                except BlockingIOError:
+                    continue
+                view = view[n:]
         finally:
             os.close(dup)
 

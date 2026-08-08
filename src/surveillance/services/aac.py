@@ -26,25 +26,37 @@
 """AAC (MPEG4-GENERIC over RTP, RFC 3640 "AAC-hbr" mode) helpers for
 WebSocket audio muxing (see ws_bridge.py).
 
-DSM delivers each AAC access unit prefixed with a 2-byte RFC 3640
-AU-header (13-bit size + 3-bit index) rather than a self-contained
-ADTS frame -- confirmed against a real camera, and matching the
-widely-documented "AAC-hbr" default (sizeLength=13, indexLength=3,
-indexDeltaLength=3) most IP cameras use for RTP audio. ffmpeg can't
-read the bare AU-header framing directly, so each frame needs that
-header stripped and a synthesized ADTS header prepended instead, which
-ffmpeg's plain "aac" demuxer auto-detects via the ADTS sync word.
+DSM delivers each AAC access unit prefixed with an RFC 3640 AU-header
+rather than a self-contained ADTS frame. ffmpeg can't read the bare
+AU-header framing directly, so each frame needs that header stripped
+and a synthesized ADTS header prepended instead, which ffmpeg's plain
+"aac" demuxer auto-detects via the ADTS sync word.
 
-This is the common-case transport only. A second camera model tested
-alongside this one reported the same adoCodec but used different
-framing entirely (no AU-header length in the 0-8 byte range decoded
-cleanly) -- not something a small tweak covers, so audio for a camera
-like that just won't decode correctly through this path yet.
+The AU-header's length isn't a fixed protocol constant -- RFC 3640
+negotiates it per stream (sizeLength/indexLength/etc.), so different
+camera models can legitimately use different lengths ("2 bytes", 13-bit
+size + 3-bit index, is the widely-documented "AAC-hbr" default, but not
+the only one seen in practice). Hardcoding a single length risks
+silently breaking whichever cameras don't use it, so the length is
+detected per camera instead (see detect_au_header_len) from a handful
+of real frames buffered during startup.
+
+That detection can't rely on ffmpeg reporting a decode error: its
+decoder silently recovers from a wrong AU-header length via an
+internal retry, discarding that packet's own timestamp in the process
+without ever surfacing an error -- so ``_aac_frames_look_valid`` (in
+ws_bridge.py, which only checks that ffmpeg doesn't error) can't catch
+a wrong length on its own.
+
+A second camera model tested alongside this one reported the same
+adoCodec but used different framing entirely -- no length in
+detect_au_header_len's search range decoded cleanly for it, so audio
+for a camera like that still falls back to video-only.
 """
 
 from __future__ import annotations
 
-_AU_HEADER_LEN = 2  # 13-bit size + 3-bit index, the AAC-hbr default
+from collections.abc import Sequence
 
 # DSM doesn't expose the negotiated sample rate directly (adoExtra's
 # encoding isn't known), but AAC-hbr's "constantDuration" default means
@@ -74,9 +86,53 @@ _ADTS_FREQ_INDEX = {
 }
 
 
-def strip_au_header(frame: bytes) -> bytes:
+def strip_au_header(frame: bytes, header_len: int) -> bytes:
     """Remove the leading RFC 3640 AU-header, leaving the raw AAC frame."""
-    return frame[_AU_HEADER_LEN:]
+    return frame[header_len:]
+
+
+# RFC 3640 AAC-hbr's documented default (13-bit size + 3-bit index) is the
+# shortest AU-header actually seen in practice -- shorter candidates would
+# only ever be tested against real payload bytes, not header bytes, which
+# defeats the point (see detect_au_header_len). The upper bound is a
+# generous ceiling, matching the range already ruled out for the second,
+# unsupported camera model mentioned in the module docstring.
+_AU_HEADER_MIN_LEN = 2
+_AU_HEADER_MAX_LEN = 8
+
+# AAC's raw_data_block starts with a 3-bit id_syn_ele naming the first
+# syntax element; 0b111 is ID_END, meaning "no elements follow". A real,
+# non-empty frame can never legitimately start with that.
+_AAC_ELEMENT_ID_END = 0b111
+
+
+def detect_au_header_len(frames: Sequence[bytes]) -> int | None:
+    """Determine how many leading bytes of RFC 3640 AU-header framing to
+    strip, from a handful of real (still AU-header-prefixed) frames.
+
+    Tries each candidate length in ascending order and returns the first
+    (shortest) one whose first post-strip byte never reads as AAC's
+    "immediate end, zero elements" marker across every sample frame --
+    a real frame's raw_data_block can never legitimately start with
+    that, so any candidate that does is provably wrong. Preferring the
+    shortest passing candidate matters: a too-long strip reads into real
+    (effectively random) payload bytes, which will eventually also
+    produce that same marker by chance given enough frames, just less
+    reliably than a header byte that hasn't even reached real content
+    yet.
+
+    Returns None if no candidate holds across every frame, e.g. a
+    camera using an entirely different framing scheme, so callers can
+    fall back accordingly instead of guessing.
+    """
+    if not frames:
+        return None
+    for length in range(_AU_HEADER_MIN_LEN, _AU_HEADER_MAX_LEN + 1):
+        if all(
+            len(frame) > length and (frame[length] >> 5) != _AAC_ELEMENT_ID_END for frame in frames
+        ):
+            return length
+    return None
 
 
 def nearest_sample_rate(interval_seconds: float) -> int:

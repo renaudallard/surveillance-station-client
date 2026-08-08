@@ -85,12 +85,16 @@ class _FakeWS:
     def __init__(self, messages: list[bytes], hang: bool = False) -> None:
         self._messages = list(messages)
         self._hang = hang
+        self.sent: list[Any] = []
 
     async def __aenter__(self) -> _FakeWS:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:
         return False
+
+    async def send(self, message: Any) -> None:
+        self.sent.append(message)
 
     async def recv(self) -> bytes:
         if self._messages:
@@ -237,6 +241,47 @@ class TestWaitClosed:
         await bridge.stop()
 
 
+class TestKeepalive:
+    async def test_sends_keepalive_on_the_configured_cadence(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bridge must send a keepalive on _KEEPALIVE_INTERVAL to
+        keep the connection from being dropped for client silence."""
+        monkeypatch.setattr(ws_bridge, "_KEEPALIVE_INTERVAL", 0.05)
+        ws = _FakeWS([_codec_frame()], hang=True)
+        connect(ws)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        await asyncio.sleep(0.23)
+        await bridge.stop()
+        assert ws.sent.count("keepAlive") >= 3
+
+    async def test_keepalive_failure_triggers_a_reconnect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed keepalive send must surface as a normal
+        drop/reconnect rather than silently killing the pump task, even
+        though the read side has no way to notice on its own."""
+        monkeypatch.setattr(ws_bridge, "_KEEPALIVE_INTERVAL", 0.05)
+
+        class _DeadSendWS(_FakeWS):
+            async def send(self, message: Any) -> None:
+                raise ConnectionResetError("connection reset")
+
+        connect(
+            [
+                _DeadSendWS([_codec_frame()], hang=True),
+                _FakeWS([], hang=True),
+            ]
+        )
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        await asyncio.sleep(0.3)
+        assert bridge._pump_task is not None
+        assert not bridge._pump_task.done()
+        await bridge.stop()
+
+
 class TestUptime:
     async def test_zero_when_never_connected(self, connect: Any) -> None:
         connect(ConnectionRefusedError("nope"))
@@ -255,6 +300,26 @@ class TestUptime:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         assert bridge.uptime > 0.0
+        await bridge.stop()
+
+
+class TestWriteStall:
+    async def test_stalled_pipe_write_gives_up_instead_of_reconnecting(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A downstream reader that stops draining the pipe must make the
+        bridge give up outright, not endlessly reconnect the WebSocket and
+        refeed data into the same stuck pipe."""
+        monkeypatch.setattr(ws_bridge, "_WRITE_TIMEOUT", 0.05)
+        # Bigger than the pipe's default kernel buffer (64KiB) and nothing
+        # ever reads the other end in this test, so the write actually
+        # blocks instead of completing immediately.
+        big_frame = _frame(b"mediaType=1", b"\xaa" * (200 * 1024))
+        connect(_FakeWS([_codec_frame(), big_frame], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        reason = await bridge.wait_closed()
+        assert "stalled" in reason
         await bridge.stop()
 
 
@@ -313,10 +378,18 @@ class _FakeValidationProc:
 
 
 def _aac_audio_frame(payload_len: int = 50) -> bytes:
-    """A mediaType=2 frame with a 2-byte AU-header prefix (real content
+    """A mediaType=2 frame with a 3-byte AU-header prefix (real content
     doesn't matter for these tests -- they only exercise the mux/
     fallback decision, not real AAC decoding)."""
-    return _frame(b"mediaType=2", b"\x00\x00" + b"\xaa" * payload_len)
+    return _frame(b"mediaType=2", b"\x00\x00\x00" + b"\xaa" * payload_len)
+
+
+def _undetectable_au_header_frame(payload_len: int = 50) -> bytes:
+    """A mediaType=2 frame where every byte reads as AAC's "immediate
+    end, zero elements" marker -- no AU-header length in
+    detect_au_header_len's search range can ever pass, mirroring a
+    camera using an entirely different framing scheme."""
+    return _frame(b"mediaType=2", b"\xe0" * payload_len)
 
 
 def _video_frame() -> bytes:
@@ -429,6 +502,33 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is False
         assert bridge._ffmpeg_proc is None
+        await bridge.stop()
+
+    async def test_falls_back_to_video_only_when_au_header_length_is_undetectable(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """detect_au_header_len failing outright must short-circuit
+        straight to the video-only fallback, without ever spawning
+        ffmpeg's throwaway validation subprocess -- there's no AU-header
+        length left to build a transform from."""
+        subprocess_calls = 0
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            nonlocal subprocess_calls
+            subprocess_calls += 1
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_undetectable_au_header_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        assert subprocess_calls == 0
         await bridge.stop()
 
 

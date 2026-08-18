@@ -25,8 +25,7 @@
 
 """Push-to-talk (two-way audio) upload session.
 
-Wire protocol reverse-engineered from a genuine mobile-app traffic capture
-(2026-07-27, see ToDo.md item 14 for the full writeup):
+Wire protocol reverse-engineered from a genuine mobile-app traffic capture:
 
   - wss://<nas>/ss_webstream_task/?method=AudioOut&dsId=0&id=<cam>&type=1
   - preceded by SYNO.SurveillanceStation.AudioOut::CheckOccupied (v2)
@@ -40,7 +39,7 @@ camera necessarily accepts the same codec on its speaker (Cam 59, for
 example, reports a different codec -- MPEG4-GENERIC/AAC -- for its own
 *download* audio), so a camera whose speaker expects something other than
 PCMU won't produce intelligible sound yet. No per-camera codec check exists
-yet -- see ToDo.md item 14.
+yet.
 """
 
 from __future__ import annotations

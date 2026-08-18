@@ -25,11 +25,12 @@
 
 """Shared Live View timeline.
 
-Visual scaffold only, in progress: the ruler is the one functional
-piece (a live-updating time scale). The recording-presence bar is a
-static placeholder with no real data behind it yet, and every button
-is a no-op. See ~/Projects/surveillance-timeline-design.md for the
-full design and what's still open.
+Visual scaffold, in progress: the ruler is live (a live-updating time
+scale, pan and zoom both work), and so are the zoom buttons. The
+recording-presence bar is a static placeholder with no real data
+behind it yet, and every other button is a no-op. See
+~/Projects/surveillance-timeline-design.md for the full design and
+what's still open.
 """
 
 from __future__ import annotations
@@ -55,6 +56,14 @@ _RULER_HEIGHT = 28
 _PRESENCE_HEIGHT = 22
 _EVENT_MARKER_HEIGHT = 8
 _CANVAS_HEIGHT = _RULER_HEIGHT + _PRESENCE_HEIGHT + _EVENT_MARKER_HEIGHT
+_NOW_MARKER_WIDTH = 3
+
+# Fraction of the visible window shrunk/grown per scroll tick or zoom
+# button click — same value as mpv_widget's own _ZOOM_STEP, for a
+# consistent scroll-to-zoom "feel" across the app.
+_ZOOM_STEP = 0.15
+_MIN_WINDOW_SECONDS = 180  # 3 min — below this, tick labels have no room
+_MAX_WINDOW_SECONDS = 30 * 86400  # 30 days — matches this app's other "how far back is sane" bound
 
 _TOOLBAR_ICON_SIZE = 16
 # Approximate width of one icon button (icon + padding), used as the
@@ -63,23 +72,139 @@ _TOOLBAR_ICON_SIZE = 16
 _MIN_BUTTON_GAP_PX = 36
 
 
+def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
+    """New window-right-edge timestamp for a drag of *dx* pixels.
+
+    Content follows the cursor (grab-and-drag feel): dragging right
+    (positive dx) reveals earlier time, same convention as video pan.
+    """
+    return view_end - dx * window_seconds / width
+
+
+def compute_zoom(
+    window_seconds: float, view_end: float, delta: float, cursor_x: float, width: float
+) -> tuple[float, float]:
+    """New (window_seconds, view_end) for a zoom of *delta* (positive
+    zooms in) centered on cursor_x — the timestamp under the cursor
+    stays under it, the same "zoom to point" behavior as scroll-to-zoom
+    on a video slot. window_seconds is clamped to
+    [_MIN_WINDOW_SECONDS, _MAX_WINDOW_SECONDS].
+    """
+    new_window = max(_MIN_WINDOW_SECONDS, min(_MAX_WINDOW_SECONDS, window_seconds * (1 - delta)))
+    start = view_end - window_seconds
+    fraction = cursor_x / width
+    t_cursor = start + fraction * window_seconds
+    new_view_end = t_cursor + (1 - fraction) * new_window
+    return new_window, new_view_end
+
+
+def clamp_to_live(view_end: float, now: float) -> tuple[float, bool]:
+    """Pin *view_end* to *now* and report "following" once a pan/zoom
+    would otherwise push it past the live edge — the same
+    catch-up-and-resume-autoscroll behavior for both gestures.
+    """
+    if view_end >= now:
+        return now, True
+    return view_end, False
+
+
 class TimelineCanvas(Gtk.DrawingArea):
     """Draws the time ruler plus placeholder presence/event rows.
 
-    Shows a trailing window ending at "now", matching Monitor Center's
-    live behavior. Redraws once a second so the ruler visibly ticks
-    forward; pan/zoom are not wired up yet.
+    Shows a trailing window that follows "now" by default, matching
+    Monitor Center's live behavior. Dragging pans and scrolling (or the
+    toolbar's zoom buttons) zooms the view — purely local display
+    changes, same as DSM's own web app: neither touches video playback
+    or switches any slot into History mode. Either one stops the window
+    following "now"; panning/zooming back past the live edge clamps to
+    "now" and resumes following, same as autoscroll in a chat view.
     """
 
-    def __init__(self, window_seconds: int = 2 * 3600) -> None:
+    def __init__(self, window_seconds: float = 2 * 3600) -> None:
         super().__init__()
         self.set_hexpand(True)
         self.set_content_height(_CANVAS_HEIGHT)
         self.add_css_class("timeline-canvas")
         self._window_seconds = window_seconds
+        self._view_end = time.time()
+        self._following = True
         self.set_draw_func(self._draw)
         self._tick_id = GLib.timeout_add(1000, self._on_tick)
         self.connect("unrealize", self._on_unrealize)
+        self._attach_pan_controls()
+        self._attach_zoom_controls()
+
+    def _attach_pan_controls(self) -> None:
+        # drag-update reports the offset cumulative from drag-begin, not
+        # incrementally, so track how much has already been applied —
+        # same technique as mpv_widget.attach_zoom_pan_controls.
+        drag_last = {"x": 0.0}
+
+        def on_drag_begin(_gesture: Gtk.GestureDrag, _x: float, _y: float) -> None:
+            drag_last["x"] = 0.0
+
+        def on_drag_update(gesture: Gtk.GestureDrag, offset_x: float, _offset_y: float) -> None:
+            width = self.get_width()
+            if width <= 0:
+                return
+            dx = offset_x - drag_last["x"]
+            drag_last["x"] = offset_x
+            self._view_end = pan_view_end(self._view_end, dx, self._window_seconds, width)
+            self._clamp_to_live()
+            self.queue_draw()
+
+        drag = Gtk.GestureDrag(button=1)
+        drag.connect("drag-begin", on_drag_begin)
+        drag.connect("drag-update", on_drag_update)
+        self.add_controller(drag)
+
+    def _attach_zoom_controls(self) -> None:
+        # EventControllerScroll's "scroll" signal has no position, so a
+        # motion controller tracks the last-known pointer position for
+        # it to use — same technique as mpv_widget.attach_zoom_pan_controls.
+        pointer = {"x": 0.0}
+
+        def on_motion(_controller: Gtk.EventControllerMotion, x: float, _y: float) -> None:
+            pointer["x"] = x
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", on_motion)
+        self.add_controller(motion)
+
+        def on_scroll(_controller: Gtk.EventControllerScroll, _dx: float, dy: float) -> bool:
+            # Scroll up (dy negative — "away from the user") zooms in,
+            # matching mpv_widget's convention for video zoom.
+            self.zoom_at(-dy * _ZOOM_STEP, pointer["x"])
+            return True  # handled — don't let it bubble past the widget
+
+        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect("scroll", on_scroll)
+        self.add_controller(scroll)
+
+    def zoom_at(self, delta: float, cursor_x: float) -> None:
+        """Zoom in/out by *delta* (positive zooms in), keeping the
+        timestamp under cursor_x fixed on screen — the same "zoom to
+        point" behavior as scroll-to-zoom on a video slot.
+        """
+        width = self.get_width()
+        if width <= 0:
+            return
+        new_window, new_view_end = compute_zoom(
+            self._window_seconds, self._view_end, delta, cursor_x, width
+        )
+        if new_window == self._window_seconds:
+            return
+        self._window_seconds = new_window
+        self._view_end = new_view_end
+        self._clamp_to_live()
+        self.queue_draw()
+
+    def _clamp_to_live(self) -> None:
+        """Pin the view to "now" and resume following once a pan/zoom
+        would otherwise push it past the live edge — the same
+        catch-up-and-resume-autoscroll behavior for both gestures.
+        """
+        self._view_end, self._following = clamp_to_live(self._view_end, time.time())
 
     def _on_unrealize(self, _widget: Gtk.Widget) -> None:
         if self._tick_id:
@@ -87,6 +212,8 @@ class TimelineCanvas(Gtk.DrawingArea):
             self._tick_id = 0
 
     def _on_tick(self) -> bool:
+        if self._following:
+            self._view_end = time.time()
         self.queue_draw()
         return True  # continue ticking
 
@@ -109,7 +236,8 @@ class TimelineCanvas(Gtk.DrawingArea):
         self, _area: Gtk.DrawingArea, cr: cairo.Context, width: int, height: int
     ) -> None:
         now = time.time()
-        start = now - self._window_seconds
+        end = self._view_end
+        start = end - self._window_seconds
 
         bg = self._theme_color("theme_bg_color", (0.15, 0.15, 0.15))
         fg = self._theme_color("theme_fg_color", (0.8, 0.8, 0.8))
@@ -128,7 +256,7 @@ class TimelineCanvas(Gtk.DrawingArea):
         bucket = 300  # 5 min
         first_bucket = int(start // bucket) * bucket
         b = first_bucket
-        while b <= now:
+        while b <= end:
             if (b // bucket) % 7 == 0:
                 bx = x_for(b)
                 cr.rectangle(bx, 0, 2, _EVENT_MARKER_HEIGHT)
@@ -141,7 +269,7 @@ class TimelineCanvas(Gtk.DrawingArea):
         seg = 120  # 2 min segments
         first_seg = int(start // seg) * seg
         s = first_seg
-        while s <= now:
+        while s <= end:
             if (s * 2654435761) % 100 < 85:  # ~85% filled, stable pattern
                 sx0 = x_for(s)
                 sx1 = x_for(s + seg)
@@ -156,7 +284,7 @@ class TimelineCanvas(Gtk.DrawingArea):
         step = self._pick_tick_step(width)
         first_tick = int(start // step) * step
         t = first_tick
-        while t <= now:
+        while t <= end:
             tx = x_for(t)
             cr.move_to(tx, ruler_y)
             cr.line_to(tx, ruler_y + 6)
@@ -169,27 +297,39 @@ class TimelineCanvas(Gtk.DrawingArea):
             cr.show_text(label)
             t += step
 
-        # "Now" marker at the right edge.
-        cr.set_source_rgb(*accent)
-        cr.set_line_width(2)
-        cr.move_to(width - 1, 0)
-        cr.line_to(width - 1, height)
-        cr.stroke()
+        # "Now" marker. While following, draw it a couple pixels in from
+        # the right edge rather than via x_for(now) — "now" is resampled
+        # fresh on every redraw and is always a hair ahead of the
+        # _view_end snapshot x_for is built from, which would push it
+        # just past the edge and hide it. The inset also keeps the full
+        # stroke width on-canvas: Cairo strokes are centered on the
+        # path, so a line placed exactly at x=width would have half its
+        # width clipped off. Once panned, x_for(now) is correct (and may
+        # legitimately be off-screen, which is fine — no marker shown
+        # until the live edge scrolls back into view).
+        now_x = width - _NOW_MARKER_WIDTH / 2 if self._following else x_for(now)
+        if 0 <= now_x <= width:
+            cr.set_source_rgb(*accent)
+            cr.set_line_width(_NOW_MARKER_WIDTH)
+            cr.move_to(now_x, 0)
+            cr.line_to(now_x, height)
+            cr.stroke()
 
 
 class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
-    Only the current-time label and the canvas ruler are live; every
-    button here is a placeholder with no behavior wired up yet.
+    The current-time label, the canvas ruler, and the zoom buttons are
+    live; every other button here is still a placeholder with no
+    behavior wired up yet.
     """
 
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("timeline")
 
-        self.append(self._build_toolbar())
         self.canvas = TimelineCanvas()
+        self.append(self._build_toolbar())
         self.append(self.canvas)
 
         self._clock_id = GLib.timeout_add(1000, self._update_clock)
@@ -242,14 +382,23 @@ class Timeline(Gtk.Box):
         calendar_btn.set_tooltip_text("Jump to date/time")
         button_cluster.append(calendar_btn)
 
+        # Same zoom_at() the canvas's own scroll-wheel handler uses, just
+        # centered on the canvas midpoint since a button click has no
+        # cursor position of its own to zoom toward.
         zoom_out_btn = Gtk.Button()
         zoom_out_btn.set_child(magnifier_zoom_icon(zoom_in=False, size=_TOOLBAR_ICON_SIZE))
         zoom_out_btn.set_tooltip_text("Zoom out")
+        zoom_out_btn.connect(
+            "clicked", lambda _btn: self.canvas.zoom_at(-_ZOOM_STEP, self.canvas.get_width() / 2)
+        )
         button_cluster.append(zoom_out_btn)
 
         zoom_in_btn = Gtk.Button()
         zoom_in_btn.set_child(magnifier_zoom_icon(zoom_in=True, size=_TOOLBAR_ICON_SIZE))
         zoom_in_btn.set_tooltip_text("Zoom in")
+        zoom_in_btn.connect(
+            "clicked", lambda _btn: self.canvas.zoom_at(_ZOOM_STEP, self.canvas.get_width() / 2)
+        )
         button_cluster.append(zoom_in_btn)
 
         live_btn = Gtk.Button(label="Live")

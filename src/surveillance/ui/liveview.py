@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,7 +39,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, Gio, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
 from surveillance.config import save_config, save_config_now
@@ -49,6 +50,7 @@ from surveillance.services.live import (
     get_live_view_path,
 )
 from surveillance.services.ptt import PttOccupiedError, PttSession
+from surveillance.services.recording import fetch_camera_thumbnail_at
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
@@ -66,6 +68,9 @@ log = logging.getLogger(__name__)
 # Internal grid is always 4x4 (16 slots).  Positions: idx = row*4 + col.
 _GRID_COLS = 4
 _MAX_SLOTS = 16
+
+_TIMELINE_THUMBNAIL_WIDTH = 160
+_TIMELINE_THUMBNAIL_HEIGHT = 90
 
 
 class CameraSlot(Gtk.Box):
@@ -320,6 +325,15 @@ class CameraSlot(Gtk.Box):
             self._header.add_css_class("dim-label")
             self._header.set_label(f"Slot {self._display_index + 1}")
 
+    def set_timeline_focus(self, focused: bool) -> None:
+        """Toggle the border marking this as the timeline's reference
+        camera — independent of set_selected(), which changes the
+        header text for the unrelated camera-assignment click flow."""
+        if focused:
+            self.add_css_class("timeline-focus-frame")
+        else:
+            self.remove_css_class("timeline-focus-frame")
+
     def set_status(self, status: str) -> None:
         """Show the stream state next to the camera name, "" once playing."""
         self._status = status
@@ -393,6 +407,11 @@ class LiveView(Gtk.Box):
         self.window = window
         self.app = window.app
         self._selected_slot: int | None = None
+        # Slot whose camera the timeline previews on hover — independent
+        # of _selected_slot (that one's for the camera-assignment click
+        # flow and can be unset; this one always points at a real slot).
+        self._timeline_focus_slot: int = 0
+        self._timeline_last_activity: float = 0.0
         self._active: list[int] = []  # physical indices of visible slots
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
@@ -411,7 +430,6 @@ class LiveView(Gtk.Box):
         self.grid.set_hexpand(True)
         self.grid.set_vexpand(True)
         self.grid.set_overflow(Gtk.Overflow.HIDDEN)
-        self.append(self.grid)
 
         # Pre-create all 16 slots (max for 4x4) and attach to the grid.
         # Slots are never removed — only shown/hidden on layout change.
@@ -441,7 +459,63 @@ class LiveView(Gtk.Box):
 
         self.timeline = Timeline()
         self.timeline.set_visible(self.app.config.timeline_visible)
-        self.append(self.timeline)
+        self.timeline.canvas.set_hover_callback(self._on_timeline_hover)
+        self.timeline.canvas.set_hover_leave_callback(self._on_timeline_hover_leave)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self.grid)
+        content.append(self.timeline)
+
+        # A Gtk.Overlay rather than a Gtk.Popover for the hover-preview
+        # thumbnail: a popover is a separate native surface, and one
+        # positioned to appear over the grid never actually became
+        # visible in testing — the grid's video slots are GL-rendered
+        # (MpvGLArea) and paint over it regardless of its own reported
+        # visible/mapped state. An overlay child is composited in the
+        # same render tree as its base, same as each slot's own
+        # hover toolbar already floats over its GL video correctly (see
+        # CameraSlot._player_overlay) — the same fix applied one level
+        # up, spanning the whole grid+timeline rather than one slot.
+        self._thumbnail_picture = Gtk.Picture()
+        self._thumbnail_picture.set_size_request(
+            _TIMELINE_THUMBNAIL_WIDTH, _TIMELINE_THUMBNAIL_HEIGHT
+        )
+        self._thumbnail_picture.add_css_class("timeline-thumbnail")
+
+        # Date/time overlaid on the thumbnail itself, matching DSM's own
+        # hover preview. A second, inner Overlay (its size follows the
+        # picture, the base child — the label is just floated on top,
+        # same as the picture is floated on the grid+timeline below).
+        self._thumbnail_time_label = Gtk.Label()
+        self._thumbnail_time_label.add_css_class("timeline-thumbnail-time")
+        self._thumbnail_time_label.set_justify(Gtk.Justification.CENTER)
+        self._thumbnail_time_label.set_halign(Gtk.Align.CENTER)
+        self._thumbnail_time_label.set_valign(Gtk.Align.END)
+        self._thumbnail_time_label.set_margin_bottom(4)
+
+        self._thumbnail_frame = Gtk.Overlay()
+        self._thumbnail_frame.set_child(self._thumbnail_picture)
+        self._thumbnail_frame.add_overlay(self._thumbnail_time_label)
+        self._thumbnail_frame.set_halign(Gtk.Align.START)
+        self._thumbnail_frame.set_valign(Gtk.Align.START)
+        self._thumbnail_frame.set_visible(False)
+        # Input-transparent: sitting over the ruler, it would otherwise
+        # swallow the very motion events that keep it positioned.
+        self._thumbnail_frame.set_can_target(False)
+        self._timeline_thumbnail_generation = 0
+
+        self._overlay = Gtk.Overlay()
+        self._overlay.set_child(content)
+        self._overlay.add_overlay(self._thumbnail_frame)
+        # Without this, Gtk.Overlay measures the child within whatever
+        # space is left after its margin, shrinking it near the right
+        # edge instead of keeping its requested size — our own margin
+        # clamp in _show_timeline_thumbnail is what actually keeps it
+        # on-screen, so the overlay doesn't need to constrain it too.
+        self._overlay.set_clip_overlay(self._thumbnail_frame, False)
+        self.append(self._overlay)
+
+        GLib.timeout_add(1000, self._check_timeline_focus_idle)
 
     # ------------------------------------------------------------------
     # Layout management
@@ -478,6 +552,122 @@ class LiveView(Gtk.Box):
                     slot.stop_ptt()
 
         self._active = new_active
+        self._set_timeline_focus_slot(new_active[0])
+
+    def register_timeline_activity(self) -> None:
+        """Record mouse activity anywhere in the app window.
+
+        Called from MainWindow's window-level motion controller. Keeps
+        the current timeline-focus slot's frame lit as long as there's
+        been activity within the last 10s, and revives it on the next
+        activity even after it's already faded — so moving toward and
+        hovering the timeline re-lights whichever slot it previews,
+        with nothing timeline-specific needed here to make that happen.
+        """
+        self._timeline_last_activity = time.time()
+        self._slots[self._timeline_focus_slot].set_timeline_focus(True)
+
+    def _check_timeline_focus_idle(self) -> bool:
+        if time.time() - self._timeline_last_activity >= 10.0:
+            self._slots[self._timeline_focus_slot].set_timeline_focus(False)
+        return True  # continue ticking
+
+    def _set_timeline_focus_slot(self, slot_idx: int) -> None:
+        if slot_idx != self._timeline_focus_slot:
+            self._slots[self._timeline_focus_slot].set_timeline_focus(False)
+            self._timeline_focus_slot = slot_idx
+        self.register_timeline_activity()
+
+    def _on_timeline_hover(self, local_x: float, timestamp: float) -> None:
+        """TimelineCanvas.set_hover_callback target.
+
+        Empty and offline slots both just mean "no thumbnail" — same as
+        fetch_camera_thumbnail_at's own empty-result case for a camera
+        with nothing recorded at that time, so nothing further needs to
+        distinguish them here.
+        """
+        camera = self._slots[self._timeline_focus_slot].camera
+        if camera is None or not self.app.api:
+            self._thumbnail_frame.set_visible(False)
+            return
+
+        # PyGObject versions disagree on whether this returns (ok, x, y)
+        # or just (x, y) on success / None on failure — handle both
+        # rather than pin to whichever shape this system happens to use.
+        translated = self.timeline.canvas.translate_coordinates(self._overlay, local_x, 0)
+        if translated is None:
+            return
+        if len(translated) == 3:
+            ok, overlay_x, overlay_y = translated
+            if not ok:
+                return
+        else:
+            overlay_x, overlay_y = translated
+
+        self._timeline_thumbnail_generation += 1
+        generation = self._timeline_thumbnail_generation
+
+        run_async(
+            fetch_camera_thumbnail_at(self.app.api, camera.id, int(timestamp)),
+            callback=lambda data: self._show_timeline_thumbnail(
+                generation, overlay_x, overlay_y, timestamp, data
+            ),
+            error_callback=lambda exc: log.debug("Timeline thumbnail fetch failed: %s", exc),
+        )
+
+    def _on_timeline_hover_leave(self) -> None:
+        self._timeline_thumbnail_generation += 1  # orphan any fetch already in flight
+        self._thumbnail_frame.set_visible(False)
+
+    def _show_timeline_thumbnail(
+        self, generation: int, overlay_x: float, overlay_y: float, timestamp: float, data: bytes
+    ) -> None:
+        # The cursor may have moved on (or left) while the fetch was in
+        # flight — a stale image popping up over wherever it's pointing
+        # now would be worse than just not showing one.
+        if generation != self._timeline_thumbnail_generation:
+            log.debug("Timeline thumbnail: dropped stale response")
+            return
+        if not data:
+            log.debug("Timeline thumbnail: empty response")
+            return
+        try:
+            loader = GdkPixbuf.PixbufLoader()
+            loader.write(data)
+            loader.close()
+            pixbuf = loader.get_pixbuf()
+        except Exception as exc:
+            log.debug("Timeline thumbnail decode failed: %s", exc)
+            return
+        if pixbuf is None:
+            log.debug("Timeline thumbnail: decoded to no pixbuf")
+            return
+
+        # Gtk.Picture's own natural size follows its paintable's native
+        # pixel size, not set_size_request()'s minimum — DSM returns a
+        # much bigger image (seen: 320x180) than the small preview this
+        # is meant to be, and without capping it here the widget renders
+        # at that full native size regardless of what's requested, and
+        # the margin math below (which assumes the requested size) would
+        # then be positioning a box far taller than it actually draws.
+        scaled = pixbuf.scale_simple(
+            _TIMELINE_THUMBNAIL_WIDTH, _TIMELINE_THUMBNAIL_HEIGHT, GdkPixbuf.InterpType.BILINEAR
+        )
+        if scaled is None:
+            return
+        self._thumbnail_picture.set_paintable(Gdk.Texture.new_for_pixbuf(scaled))
+        self._thumbnail_time_label.set_label(
+            datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d\n%H:%M:%S")
+        )
+        # Centered horizontally on the cursor, bottom edge resting on
+        # the ruler's top edge, clamped to stay within the overlay.
+        overlay_width = self._overlay.get_width()
+        max_x = overlay_width - _TIMELINE_THUMBNAIL_WIDTH
+        x = max(0.0, min(overlay_x - _TIMELINE_THUMBNAIL_WIDTH / 2, max_x))
+        y = max(0.0, overlay_y - _TIMELINE_THUMBNAIL_HEIGHT)
+        self._thumbnail_frame.set_margin_start(int(x))
+        self._thumbnail_frame.set_margin_top(int(y))
+        self._thumbnail_frame.set_visible(True)
 
     def set_layout(self, layout: str) -> None:
         """Switch to *layout*, keeping each layout's camera assignments."""
@@ -577,6 +767,7 @@ class LiveView(Gtk.Box):
         """Select a grid slot, or deselect it if already selected."""
         if slot_idx not in self._active:
             return
+        self._set_timeline_focus_slot(slot_idx)
         if self._selected_slot == slot_idx:
             self._select_slot(None)
         else:

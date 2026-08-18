@@ -53,6 +53,17 @@ or
 while retrying. Both recover automatically once the camera is reachable
 again.
 .TP
+.B Live View Timeline
+A shared timeline strip below the grid, toggled from the header bar
+(persists across restarts). Scroll or use the zoom buttons to zoom the
+time scale (centered on the cursor), click-and-drag to pan; a thin blue
+border marks which slot's camera the timeline is currently tracking
+\(em it follows the last-clicked slot, defaults to the upper-left slot
+on layout load, and fades after 10 seconds of no activity anywhere in
+the window. Hovering the ruler shows a small preview thumbnail of that
+camera at the hovered time, with its date/time overlaid. Seeking,
+History-mode playback, and event markers are still in progress.
+.TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.
 The panel button in the header bar hides or shows it, and that choice is

@@ -244,14 +244,52 @@ def clear_snapshot_cache() -> None:
     _recording_thumbnail_cache.clear()
 
 
+async def _request_thumbnail(
+    api: SurveillanceAPI, camera_id: int, arch_id: int, mount_id: int, target_time: int
+) -> bytes:
+    """Recording.GetThumbnail request/response handling, shared by every
+    thumbnail source. eventInfo must be a JSON array of objects matching
+    the APK format (dsId + blFallbackByLoadEvt + eventInfo only). Callers
+    are responsible for holding _thumbnail_semaphore.
+    """
+    try:
+        data = await api.request(
+            api="SYNO.SurveillanceStation.Recording",
+            method="GetThumbnail",
+            version=5,
+            extra_params={
+                "dsId": "0",
+                "blFallbackByLoadEvt": "true",
+                "eventInfo": json.dumps(
+                    [
+                        {
+                            "cameraId": camera_id,
+                            "archId": arch_id,
+                            "mountId": mount_id,
+                            "rec_group": 0,
+                            "targetTime": target_time,
+                        }
+                    ]
+                ),
+            },
+        )
+        thumbs = data if isinstance(data, list) else [data]
+        for thumb in thumbs:
+            b64 = thumb.get("thumbnail", "")
+            if b64:
+                image_data = base64.b64decode(b64)
+                if image_data:
+                    return image_data
+    except Exception as exc:
+        log.debug("Thumbnail request failed for camera %d at %d: %s", camera_id, target_time, exc)
+    return b""
+
+
 async def fetch_recording_thumbnail(
     api: SurveillanceAPI,
     rec: Recording,
 ) -> bytes:
-    """Fetch a thumbnail for a recording.
-
-    Uses Recording.GetThumbnail with eventInfo array matching the APK format.
-    """
+    """Fetch a thumbnail for a recording, cached by recording id."""
     if rec.id in _recording_thumbnail_cache:
         return _recording_thumbnail_cache[rec.id]
 
@@ -261,48 +299,24 @@ async def fetch_recording_thumbnail(
         if rec.id in _recording_thumbnail_cache:
             return _recording_thumbnail_cache[rec.id]
 
-        # Recording.GetThumbnail — eventInfo must be a JSON array of objects
-        # matching the APK format (dsId + blFallbackByLoadEvt + eventInfo only).
-        try:
-            data = await api.request(
-                api="SYNO.SurveillanceStation.Recording",
-                method="GetThumbnail",
-                version=5,
-                extra_params={
-                    "dsId": "0",
-                    "blFallbackByLoadEvt": "true",
-                    "eventInfo": json.dumps(
-                        [
-                            {
-                                "cameraId": rec.camera_id,
-                                "archId": rec.arch_id,
-                                "mountId": rec.mount_id,
-                                "rec_group": 0,
-                                "targetTime": rec.start_time,
-                            }
-                        ]
-                    ),
-                },
-            )
-            thumbs = data if isinstance(data, list) else [data]
-            for thumb in thumbs:
-                b64 = thumb.get("thumbnail", "")
-                if b64:
-                    image_data = base64.b64decode(b64)
-                    if image_data:
-                        if generation == _cache_generation:
-                            _cache_put(
-                                _recording_thumbnail_cache,
-                                rec.id,
-                                image_data,
-                                _MAX_THUMBNAIL_CACHE,
-                            )
-                        return image_data
-        except Exception as exc:
-            log.debug(
-                "Recording thumbnail failed for %d: %s",
-                rec.id,
-                exc,
-            )
+        image_data = await _request_thumbnail(
+            api, rec.camera_id, rec.arch_id, rec.mount_id, rec.start_time
+        )
+        if image_data and generation == _cache_generation:
+            _cache_put(_recording_thumbnail_cache, rec.id, image_data, _MAX_THUMBNAIL_CACHE)
+        return image_data
 
-    return b""
+
+async def fetch_camera_thumbnail_at(api: SurveillanceAPI, camera_id: int, timestamp: int) -> bytes:
+    """Fetch a thumbnail for *camera_id* at approximately *timestamp*.
+
+    Used by the Live View timeline's hover preview — unlike a specific
+    Recording row this is an arbitrary point on the timeline, so it isn't
+    cached; the timeline debounces hover events instead to bound request
+    volume. Returns b"" if the camera has no recording at that time (e.g.
+    it was offline), same as fetch_recording_thumbnail's own failure case.
+    """
+    async with _thumbnail_semaphore:
+        return await _request_thumbnail(
+            api, camera_id, arch_id=0, mount_id=0, target_time=timestamp
+        )

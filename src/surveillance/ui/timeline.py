@@ -36,6 +36,7 @@ what's still open.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import cairo
@@ -64,6 +65,11 @@ _NOW_MARKER_WIDTH = 3
 _ZOOM_STEP = 0.15
 _MIN_WINDOW_SECONDS = 180  # 3 min — below this, tick labels have no room
 _MAX_WINDOW_SECONDS = 30 * 86400  # 30 days — matches this app's other "how far back is sane" bound
+
+# How long the cursor must sit still before notifying the hover
+# callback — without this, dragging the mouse across the ruler would
+# fire one GetThumbnail request per pixel of motion.
+_THUMBNAIL_DEBOUNCE_MS = 100
 
 _TOOLBAR_ICON_SIZE = 16
 # Approximate width of one icon button (icon + padding), used as the
@@ -134,6 +140,11 @@ class TimelineCanvas(Gtk.DrawingArea):
         self._attach_pan_controls()
         self._attach_zoom_controls()
 
+        self._hover_callback: Callable[[float, float], None] | None = None
+        self._hover_leave_callback: Callable[[], None] | None = None
+        self._thumbnail_debounce_id = 0
+        self._attach_thumbnail_hover()
+
     def _attach_pan_controls(self) -> None:
         # drag-update reports the offset cumulative from drag-begin, not
         # incrementally, so track how much has already been applied —
@@ -181,6 +192,54 @@ class TimelineCanvas(Gtk.DrawingArea):
         scroll.connect("scroll", on_scroll)
         self.add_controller(scroll)
 
+    def set_hover_callback(self, callback: Callable[[float, float], None]) -> None:
+        """Set the hover-preview position source.
+
+        *callback* receives (local_x, timestamp) once the cursor has sat
+        still over the ruler for a moment. The canvas only knows about
+        positions and timestamps — LiveView owns resolving which camera
+        that is, fetching its thumbnail, and displaying it, since a
+        Gtk.Popover can't reliably paint over the video grid's GL
+        surfaces the way a same-render-tree Gtk.Overlay can (confirmed
+        live: the popover reported itself visible and mapped, but never
+        actually appeared on screen).
+        """
+        self._hover_callback = callback
+
+    def set_hover_leave_callback(self, callback: Callable[[], None]) -> None:
+        self._hover_leave_callback = callback
+
+    def _attach_thumbnail_hover(self) -> None:
+        hover = Gtk.EventControllerMotion()
+        hover.connect("motion", self._on_thumbnail_hover_motion)
+        hover.connect("leave", self._on_thumbnail_hover_leave)
+        self.add_controller(hover)
+
+    def _on_thumbnail_hover_motion(
+        self, _controller: Gtk.EventControllerMotion, x: float, _y: float
+    ) -> None:
+        if self._thumbnail_debounce_id:
+            GLib.source_remove(self._thumbnail_debounce_id)
+        self._thumbnail_debounce_id = GLib.timeout_add(
+            _THUMBNAIL_DEBOUNCE_MS, self._notify_hover, x
+        )
+
+    def _on_thumbnail_hover_leave(self, _controller: Gtk.EventControllerMotion) -> None:
+        if self._thumbnail_debounce_id:
+            GLib.source_remove(self._thumbnail_debounce_id)
+            self._thumbnail_debounce_id = 0
+        if self._hover_leave_callback:
+            self._hover_leave_callback()
+
+    def _notify_hover(self, x: float) -> bool:
+        self._thumbnail_debounce_id = 0
+        width = self.get_width()
+        if not self._hover_callback or width <= 0:
+            return False  # one-shot timeout, don't repeat
+        timestamp = self._view_end - self._window_seconds + (x / width) * self._window_seconds
+        self._hover_callback(x, timestamp)
+        return False  # one-shot timeout, don't repeat
+
     def zoom_at(self, delta: float, cursor_x: float) -> None:
         """Zoom in/out by *delta* (positive zooms in), keeping the
         timestamp under cursor_x fixed on screen — the same "zoom to
@@ -210,6 +269,9 @@ class TimelineCanvas(Gtk.DrawingArea):
         if self._tick_id:
             GLib.source_remove(self._tick_id)
             self._tick_id = 0
+        if self._thumbnail_debounce_id:
+            GLib.source_remove(self._thumbnail_debounce_id)
+            self._thumbnail_debounce_id = 0
 
     def _on_tick(self) -> bool:
         if self._following:

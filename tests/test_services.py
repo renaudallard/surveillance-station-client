@@ -27,6 +27,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,7 +36,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
-from surveillance.api.models import CameraStatus, HomeModeInfo, LicenseInfo, TimeLapseTask
+from surveillance.api.models import (
+    CameraStatus,
+    HomeModeInfo,
+    LicenseInfo,
+    Recording,
+    TimeLapseTask,
+)
 from surveillance.config import ConnectionProfile
 
 
@@ -762,6 +770,113 @@ class TestRecordingService:
             assert call_kwargs[1]["extra_params"]["toTime"] == "1700086400"
             assert call_kwargs[1]["extra_params"]["offset"] == "100"
             assert call_kwargs[1]["extra_params"]["limit"] == "20"
+
+    @pytest.mark.asyncio
+    async def test_fetch_recording_thumbnail_decodes_and_caches(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import clear_snapshot_cache, fetch_recording_thumbnail
+
+        clear_snapshot_cache()
+        raw = b"fake-thumbnail-bytes"
+        mock_data = [{"thumbnail": base64.b64encode(raw).decode()}]
+        rec = Recording(
+            id=42,
+            camera_id=39,
+            camera_name="CAM 58",
+            start_time=1700000000,
+            stop_time=1700000060,
+            mount_id=1,
+            arch_id=2,
+        )
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            result = await fetch_recording_thumbnail(api, rec)
+            assert result == raw
+            event_info = json.loads(mock.call_args[1]["extra_params"]["eventInfo"])
+            assert event_info == [
+                {
+                    "cameraId": 39,
+                    "archId": 2,
+                    "mountId": 1,
+                    "rec_group": 0,
+                    "targetTime": 1700000000,
+                }
+            ]
+
+            # Cached by recording id — a second call must not re-request.
+            result2 = await fetch_recording_thumbnail(api, rec)
+            assert result2 == raw
+            assert mock.call_count == 1
+        clear_snapshot_cache()
+
+    @pytest.mark.asyncio
+    async def test_fetch_recording_thumbnail_empty_on_failure(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import clear_snapshot_cache, fetch_recording_thumbnail
+
+        clear_snapshot_cache()
+        rec = Recording(
+            id=43, camera_id=39, camera_name="CAM 58", start_time=1700000000, stop_time=1700000060
+        )
+        with patch.object(
+            api, "request", new_callable=AsyncMock, side_effect=RuntimeError("boom")
+        ):
+            assert await fetch_recording_thumbnail(api, rec) == b""
+        clear_snapshot_cache()
+
+
+class TestFetchCameraThumbnailAt:
+    """Hover-preview image source for the Live View timeline — unlike
+    fetch_recording_thumbnail this isn't tied to a specific Recording
+    row, so every call is a fresh request (see fetch_camera_thumbnail_at's
+    own docstring)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_decoded_bytes_with_expected_params(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import fetch_camera_thumbnail_at
+
+        raw = b"fake-thumbnail-bytes"
+        mock_data = [{"thumbnail": base64.b64encode(raw).decode()}]
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            result = await fetch_camera_thumbnail_at(api, camera_id=39, timestamp=1700000000)
+            assert result == raw
+            event_info = json.loads(mock.call_args[1]["extra_params"]["eventInfo"])
+            assert event_info == [
+                {
+                    "cameraId": 39,
+                    "archId": 0,
+                    "mountId": 0,
+                    "rec_group": 0,
+                    "targetTime": 1700000000,
+                }
+            ]
+
+    @pytest.mark.asyncio
+    async def test_empty_thumbnail_is_empty_bytes(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import fetch_camera_thumbnail_at
+
+        mock_data = [{"thumbnail": ""}]
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            assert await fetch_camera_thumbnail_at(api, camera_id=39, timestamp=1700000000) == b""
+
+    @pytest.mark.asyncio
+    async def test_request_failure_is_empty_bytes(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import fetch_camera_thumbnail_at
+
+        with patch.object(
+            api, "request", new_callable=AsyncMock, side_effect=RuntimeError("boom")
+        ):
+            assert await fetch_camera_thumbnail_at(api, camera_id=39, timestamp=1700000000) == b""
+
+    @pytest.mark.asyncio
+    async def test_not_cached_across_calls(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.recording import fetch_camera_thumbnail_at
+
+        raw = b"fake-thumbnail-bytes"
+        mock_data = [{"thumbnail": base64.b64encode(raw).decode()}]
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            await fetch_camera_thumbnail_at(api, camera_id=39, timestamp=1700000000)
+            await fetch_camera_thumbnail_at(api, camera_id=39, timestamp=1700000000)
+            assert mock.call_count == 2
 
 
 class TestWsBridgeClassify:

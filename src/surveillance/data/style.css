@@ -81,6 +81,15 @@
     font-weight: bold;
 }
 
+/* Marks the slot whose camera the Live View timeline previews on hover
+   (see LiveView._timeline_focus_slot) — a border rather than the
+   selection label's text swap, since the two are independent and can
+   apply to the same slot at once. Same blue as .slot-selected-label
+   for a consistent "this is the thing selection is about" language. */
+.timeline-focus-frame {
+    border: 1px solid #3584e4;
+}
+
 /* Push-to-talk mic button while actively transmitting — same red as
    .notification-badge/.status-dot, a familiar "live mic" convention. */
 .mic-active {
@@ -163,4 +172,15 @@
 .timeline-clock {
     font-family: monospace;
     font-size: 1.1em;
+}
+
+.timeline-thumbnail {
+    background-color: #1a1a1a;
+    border-radius: 4px;
+}
+
+.timeline-thumbnail-time {
+    color: #fff;
+    font-weight: bold;
+    text-shadow: 0 0 3px #000, 0 0 3px #000;
 }

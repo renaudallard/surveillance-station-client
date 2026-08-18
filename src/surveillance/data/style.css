@@ -142,3 +142,25 @@
 .home-mode-active {
     color: @success_color;
 }
+
+/* Reuses sidebar-show-symbolic for the timeline toggle (see headerbar.py) —
+   rotating it 90° counter-clockwise turns its highlighted left edge into a
+   highlighted bottom edge, matching the same "highlight = the panel"
+   convention for a bottom pane instead of a side one. */
+.rotate-ccw-90 {
+    transform: rotate(-90deg);
+}
+
+.timeline {
+    background-color: @theme_bg_color;
+    border-top: 1px solid @borders;
+}
+
+.timeline-toolbar {
+    padding: 4px 8px;
+}
+
+.timeline-clock {
+    font-family: monospace;
+    font-size: 1.1em;
+}

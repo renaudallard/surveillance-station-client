@@ -421,6 +421,17 @@ class MainWindow(Gtk.ApplicationWindow):
 
         save_config(self.app.config)
 
+    def toggle_timeline(self, visible: bool) -> None:
+        """Show or hide the Live View timeline."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "timeline"):
+            live_view.timeline.set_visible(visible)
+        self.app.config.timeline_visible = visible
+
+        from surveillance.config import save_config
+
+        save_config(self.app.config)
+
     def show_page(self, page_name: str) -> None:
         """Switch to a content page, pausing/resuming live streams as needed."""
         previous = self.stack.get_visible_child_name()

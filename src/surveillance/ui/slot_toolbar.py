@@ -34,32 +34,8 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, PtzPatrol, PtzPreset
+from surveillance.ui.icons import magnifier_zoom_icon, pan_tilt_icon
 from surveillance.ui.mpv_widget import MpvGLArea
-
-ICON_SIZE = 24
-
-
-def _icon_overlay(*icons: tuple[str, int, int]) -> Gtk.Overlay:
-    """Stack symbolic icons centered on an ICON_SIZE square.
-
-    Each entry is (name, pixel size, offset); *offset* shifts the icon
-    up and left, used to line the Zoom "+" up with the magnifying glass's
-    lens. A Gtk.Overlay takes its size from its main child, so a plain
-    box provides the square and every icon is an overlay child.
-    """
-    overlay = Gtk.Overlay()
-    canvas = Gtk.Box()
-    canvas.set_size_request(ICON_SIZE, ICON_SIZE)
-    overlay.set_child(canvas)
-    for name, pixel_size, offset in icons:
-        image = Gtk.Image.new_from_icon_name(name)
-        image.set_pixel_size(pixel_size)
-        image.set_halign(Gtk.Align.CENTER)
-        image.set_valign(Gtk.Align.CENTER)
-        image.set_margin_end(offset)
-        image.set_margin_bottom(offset)
-        overlay.add_overlay(image)
-    return overlay
 
 
 class SlotToolbar(Gtk.Revealer):
@@ -115,37 +91,15 @@ class SlotToolbar(Gtk.Revealer):
         # numeric-direction Move exists for free-angle click-to-pan.
         self._ptz_btn = Gtk.Button()
         self._ptz_btn.add_css_class("flat")
-        # No single stock icon reads as "pan/tilt", so overlay the
-        # left-right and up-down arrow glyphs into a 4-way arrow instead
-        # of picking an unrelated one (e.g. a gamepad).
-        self._ptz_btn.set_child(
-            _icon_overlay(
-                ("object-flip-horizontal-symbolic", ICON_SIZE, 0),
-                ("object-flip-vertical-symbolic", ICON_SIZE, 0),
-            )
-        )
+        self._ptz_btn.set_child(pan_tilt_icon())
         self._ptz_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._ptz_btn.set_tooltip_text("Pan / Tilt")
         toolbar.append(self._ptz_btn)
 
-        # Zoom — services.ptz.zoom() Start/Stop calls. Plain
-        # zoom-in-symbolic is just a "+" in a square, not a magnifying
-        # glass, so overlay list-add-symbolic on system-search-symbolic.
-        # system-search-symbolic's lens circle is centered at (6.5, 6.5)
-        # in its 16x16 viewBox, not (8, 8) — the handle sticking out to
-        # the bottom-right pulls the icon's overall bounding box off from
-        # the circle's true center. Nudge the "+" up-left to compensate
-        # (a margin shifts a centered widget by half its amount, so use
-        # 2x the (0.5 - 6.5/16) offset fraction).
+        # Zoom — services.ptz.zoom() Start/Stop calls.
         self._zoom_btn = Gtk.Button()
         self._zoom_btn.add_css_class("flat")
-        plus_offset = round(ICON_SIZE * (0.5 - 6.5 / 16) * 2)
-        self._zoom_btn.set_child(
-            _icon_overlay(
-                ("system-search-symbolic", ICON_SIZE, 0),
-                ("list-add-symbolic", ICON_SIZE // 3, plus_offset),
-            )
-        )
+        self._zoom_btn.set_child(magnifier_zoom_icon(zoom_in=True))
         self._zoom_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._zoom_btn.set_tooltip_text("Zoom")
         toolbar.append(self._zoom_btn)

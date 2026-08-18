@@ -105,6 +105,7 @@ class AppConfig:
     profiles: dict[str, ConnectionProfile] = field(default_factory=dict)
     theme: str = "auto"  # "auto", "dark", "light"
     sidebar_visible: bool = True
+    timeline_visible: bool = True
     # Version of the last "new release" notice the user has seen (by
     # visiting the About page) — suppresses the update indicator for that
     # same release without needing to re-check it against the live tag.
@@ -248,6 +249,7 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         profiles=profiles,
         theme=_load_theme(general),
         sidebar_visible=general.get("sidebar_visible", True),
+        timeline_visible=general.get("timeline_visible", True),
         dismissed_update_version=general.get("dismissed_update_version", ""),
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
@@ -327,6 +329,7 @@ def _write_config(config: AppConfig) -> None:
             "poll_interval_homemode": config.poll_interval_homemode,
             "theme": config.theme,
             "sidebar_visible": config.sidebar_visible,
+            "timeline_visible": config.timeline_visible,
             "dismissed_update_version": config.dismissed_update_version,
             "snapshot_dir": config.snapshot_dir,
         },

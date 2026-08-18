@@ -80,10 +80,20 @@ class TestAppConfig:
         assert config.profiles == {}
         assert config.grid_layout == "2x2"
         assert config.poll_interval_cameras == 30
+        assert config.timeline_visible is True
 
     def test_snapshot_dir_default(self) -> None:
         config = AppConfig()
         assert "snapshots" in config.snapshot_dir
+
+    def test_timeline_visible_defaults_true_when_absent(self) -> None:
+        # A config file saved before this setting existed has no such key.
+        cfg = _config_from_data({})
+        assert cfg.timeline_visible is True
+
+    def test_timeline_visible_false_is_loaded(self) -> None:
+        cfg = _config_from_data({"general": {"timeline_visible": False}})
+        assert cfg.timeline_visible is False
 
 
 class TestPollIntervals:
@@ -150,6 +160,7 @@ class TestSaveLoadConfig:
             default_profile="mynas",
             grid_layout="3x3",
             poll_interval_cameras=15,
+            timeline_visible=False,
         )
         profile = ConnectionProfile(
             name="mynas", host="192.168.1.100", port=5001, https=True, verify_ssl=False
@@ -163,6 +174,7 @@ class TestSaveLoadConfig:
         assert loaded.default_profile == "mynas"
         assert loaded.grid_layout == "3x3"
         assert loaded.poll_interval_cameras == 15
+        assert loaded.timeline_visible is False
         assert "mynas" in loaded.profiles
         assert loaded.profiles["mynas"].host == "192.168.1.100"
 

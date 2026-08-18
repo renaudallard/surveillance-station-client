@@ -55,6 +55,7 @@ from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
 from surveillance.ui.rtsp_health import RtspHealthMonitor
 from surveillance.ui.slot_toolbar import SlotToolbar
+from surveillance.ui.timeline import Timeline
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -437,6 +438,10 @@ class LiveView(Gtk.Box):
 
         # Apply initial layout (show/hide slots)
         self._apply_layout()
+
+        self.timeline = Timeline()
+        self.timeline.set_visible(self.app.config.timeline_visible)
+        self.append(self.timeline)
 
     # ------------------------------------------------------------------
     # Layout management

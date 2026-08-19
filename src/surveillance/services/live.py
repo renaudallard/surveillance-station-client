@@ -86,6 +86,21 @@ def _build_ws_live_url(api: SurveillanceAPI, camera_id: int) -> str:
     )
 
 
+def get_history_view_path(api: SurveillanceAPI) -> str:
+    """Build a WebSocket URL for History (recorded) playback.
+
+    Unlike get_live_view_path/_build_ws_live_url, no camera or protocol
+    choice applies here -- History is WS-only (see ws_bridge.py's
+    module docstring: RTSP has no historical/timestamp param at all)
+    and nothing here identifies a camera or recording, which is instead
+    selected by an in-band message WebSocketBridge sends once connected
+    (WebSocketBridge(history_recording=..., history_target=...)).
+    """
+    scheme = "wss" if api.base_url.startswith("https") else "ws"
+    host_port = api.base_url.split("://", 1)[1]
+    return f"{scheme}://{host_port}/ss_webstream_task/?method=MixStream&stmSrc=2&dsId=0&id=0"
+
+
 async def get_live_view_path(
     api: SurveillanceAPI,
     camera_id: int,

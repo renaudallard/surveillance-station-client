@@ -114,7 +114,19 @@ class Recording:
     start_time: int  # unix timestamp
     stop_time: int
     file_size: int = 0
+    # Recording.List's "type" field. Presumed to be the same enum as
+    # Event.event_type just below (mode: 1=motion, 2=alarm, 3=manual,
+    # etc.) since both come from a "why was this recorded" concept and
+    # get_stream_url/ws_bridge.py's History play command both send it
+    # on as recEvtType -- not independently confirmed, since nothing
+    # has decoded the value against a recording of a known trigger type.
     event_type: int = 0
+    # Which storage mount (of possibly several -- external USB, a
+    # second volume, ...) and which archive within it this recording's
+    # file lives on. Opaque beyond that: DSM's own clients pass them
+    # straight through to eventId/mountId/archId (see get_stream_url)
+    # or mountId/archId (the WS History play command, ws_bridge.py)
+    # without this app ever needing to interpret them itself.
     mount_id: int = 0
     arch_id: int = 0
     detection_label: int = 0

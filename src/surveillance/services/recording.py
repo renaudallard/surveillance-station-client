@@ -144,6 +144,56 @@ async def list_recordings(
     return recordings, total
 
 
+# How far around a click-to-seek target to search for a covering
+# recording. Hardcoded for now at a size generous enough to comfortably
+# cover a ~30min rolling recording segment (see ws_bridge.py's module
+# docstring) -- segment rotation size isn't a DSM constant, so this may
+# need to become dynamic or user-configurable if a shorter/longer
+# rotation is ever seen in practice. Cheap enough to call fresh per
+# click regardless.
+_HISTORY_SEEK_WINDOW = 2 * 3600
+
+
+async def find_recording_at(
+    api: SurveillanceAPI, camera_id: int, target_unix: int
+) -> Recording | None:
+    """Find the recording covering *target_unix* for *camera_id*, for
+    History-mode click-to-seek (see ws_bridge.py's module docstring for
+    the wire protocol this feeds).
+
+    A fresh List call per click rather than a locally-cached lookup --
+    DSM's own web client instead resolves clicks against recording data
+    it already has cached from painting the presence bars, but those
+    bars are still a placeholder here (see timeline.py) with nothing
+    cached to search yet. Good enough to prove the seek mechanism
+    works; revisit once real presence data exists to search locally
+    instead of a network round trip per click.
+
+    Returns the containing recording if *target_unix* falls within one,
+    otherwise the nearest recording in the fetched window (a click
+    landing in a gap between recordings -- motion-only recording
+    routinely leaves them -- should still seek to *something* nearby
+    rather than refuse), or None if nothing was recorded anywhere near
+    *target_unix*.
+    """
+    recordings, _total = await list_recordings(
+        api,
+        camera_id=camera_id,
+        from_time=target_unix - _HISTORY_SEEK_WINDOW,
+        to_time=target_unix + _HISTORY_SEEK_WINDOW,
+        limit=500,
+    )
+    if not recordings:
+        return None
+    for rec in recordings:
+        if rec.start_time <= target_unix <= rec.stop_time:
+            return rec
+    return min(
+        recordings,
+        key=lambda r: min(abs(r.start_time - target_unix), abs(r.stop_time - target_unix)),
+    )
+
+
 def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
     """Build a playback URL for a recording.
 

@@ -585,6 +585,18 @@ class SlotToolbar(Gtk.Revealer):
             self._patrol_btn,
         )
 
+    def set_history_mode(self, is_history: bool) -> None:
+        """Ghost the controls that act on the live camera itself (PTZ
+        pad, PTZ zoom, focus, preset, patrol, push-to-talk) while
+        playing recorded video instead -- there's no live camera
+        underneath any of those to move or talk to. Mute/volume and
+        Snapshot stay usable either way: muting is a playback-side
+        choice regardless of what's playing, and a snapshot of recorded
+        video is exactly as meaningful as one of a live frame."""
+        for button in self._ptz_buttons():
+            button.set_sensitive(not is_history)
+        self._mic_btn.set_sensitive(not is_history)
+
     def assign(self, camera: Camera) -> None:
         self._mute_btn.set_visible(camera.has_audio)
         self.set_mic_active(False)

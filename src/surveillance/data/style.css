@@ -169,6 +169,27 @@
     padding: 4px 8px;
 }
 
+/* live_btn — always present (see Timeline.set_history_active: opacity,
+   not visibility, is what reflects whether there's anything to return
+   to, so the rest of the toolbar never shifts). Deliberately plain
+   (the theme's normal text color, not blue): blue is reserved for
+   "this is live/current" (see .timeline-live-text), and this button
+   only ever does anything while that's *not* true. */
+.timeline-live-active {
+    font-weight: bold;
+}
+
+/* The toolbar's own real-time clock/date — always blue, since it's
+   real time regardless of what the ruler shows. Same blue as the
+   timeline's own ruler ticks while following "now" (TimelineCanvas.
+   _draw's _LIVE_TICK_COLOR) and .slot-selected-label/.timeline-focus-
+   frame — matches DSM's own web app, which shows its live clock in
+   the same blue. */
+.timeline-live-text {
+    color: #3584e4;
+    font-weight: bold;
+}
+
 .timeline-clock {
     font-family: monospace;
     font-size: 1.1em;

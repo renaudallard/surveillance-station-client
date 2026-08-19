@@ -61,8 +61,20 @@ border marks which slot's camera the timeline is currently tracking
 \(em it follows the last-clicked slot, defaults to the upper-left slot
 on layout load, and fades after 10 seconds of no activity anywhere in
 the window. Hovering the ruler shows a small preview thumbnail of that
-camera at the hovered time, with its date/time overlaid. Seeking,
-History-mode playback, and event markers are still in progress.
+camera at the hovered time, with its date/time overlaid.
+.IP
+Clicking a point on the ruler switches every slot in the current
+layout into History mode, each playing its own camera's recorded video
+from that time; a
+.B Live
+button returns every slot to the real-time stream. Picking a different
+camera into a slot already in History mode keeps playing recorded
+video, for the newly picked camera, at the same point in time, rather
+than dropping back to live; switching grid layout always returns to
+live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are
+unavailable while a slot shows recorded video (mute/volume and
+Snapshot remain available). Event markers and the transport controls
+(pause, jump \(+-10s, playback speed) are still in progress.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

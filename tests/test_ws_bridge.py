@@ -48,6 +48,7 @@ import types
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
+from urllib.parse import parse_qsl
 
 import pytest
 
@@ -68,6 +69,7 @@ except ModuleNotFoundError:
     _ws.exceptions = _exc  # type: ignore[attr-defined]
     sys.modules["websockets.exceptions"] = _exc
 
+from surveillance.api.models import Recording
 from surveillance.services import ws_bridge
 from surveillance.services.aac import adts_header
 from surveillance.services.ws_bridge import WebSocketBridge
@@ -1278,3 +1280,106 @@ class TestPipeLifetime:
         await bridge.stop()
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+def _recording(
+    id: int = 100,
+    start_time: int = 1_700_000_000,
+    stop_time: int = 1_700_001_800,
+    mount_id: int = 0,
+    arch_id: int = 0,
+    event_type: int = 0,
+) -> Recording:
+    return Recording(
+        id=id,
+        camera_id=21,
+        camera_name="CAM 72 - Trampoline",
+        start_time=start_time,
+        stop_time=stop_time,
+        mount_id=mount_id,
+        arch_id=arch_id,
+        event_type=event_type,
+    )
+
+
+class TestHistoryMode:
+    """History (recorded) playback -- see ws_bridge.py's module docstring
+    for the wire protocol this drives against real DSM, confirmed by
+    sniffing DSM's own Monitor Center web client. Bridge-level only:
+    these exercise WebSocketBridge directly, with no UI/slot wiring."""
+
+    async def test_connect_sends_action_play_with_computed_offsets(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 654
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        assert fake.sent, "the play command must be sent before anything else"
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["action"] == "play"
+        assert fields["id"] == str(rec.id)
+        assert fields["mountId"] == str(rec.mount_id)
+        assert fields["archId"] == str(rec.arch_id)
+        assert fields["recEvtType"] == str(rec.event_type)
+        assert fields["start"] == "654"
+        assert fields["end"] == str(rec.stop_time - rec.start_time)
+        assert fields["stamp"] == "1"
+        await bridge.stop()
+
+    async def test_seek_within_same_recording_reuses_the_connection(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+
+        await bridge.seek(rec, rec.start_time + 900)
+
+        assert fake.closed is False, "a same-recording seek must not reconnect"
+        seek_msgs = [m for m in fake.sent if m.startswith("seekMs=")]
+        assert len(seek_msgs) == 1
+        fields = dict(parse_qsl(seek_msgs[0]))
+        assert fields["seekMs"] == "900000"
+        assert fields["stamp"] == "2"  # 1 was the initial action=play
+        await bridge.stop()
+
+    async def test_seek_to_a_different_recording_reconnects(self, connect: Any) -> None:
+        """A seek landing outside the loaded recording's span must open a
+        fresh connection and repeat the action=play handshake for the new
+        recording -- the same reconnect machinery an ordinary drop uses,
+        not a second path (see seek()'s docstring)."""
+        rec1 = _recording(id=100)
+        rec2 = _recording(id=200, start_time=1_700_010_000, stop_time=1_700_011_800)
+        fake1 = _FakeWS([_codec_frame()], hang=True)
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec1,
+            history_target=rec1.start_time + 50,
+        )
+        await bridge.start()
+
+        await bridge.seek(rec2, rec2.start_time + 200)
+        assert fake1.closed is True
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["id"] == str(rec2.id)
+        assert fields["start"] == "200"
+        assert fields["stamp"] == "1"  # a fresh connection resets the counter
+        await bridge.stop()

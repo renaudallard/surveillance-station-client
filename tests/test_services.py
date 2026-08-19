@@ -123,6 +123,16 @@ class TestLiveService:
         assert url.startswith("wss://")
         assert "id=1" in url
 
+    def test_get_history_view_path(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.live import get_history_view_path
+
+        url = get_history_view_path(api)
+        assert url.startswith("wss://")
+        assert "stmSrc=2" in url
+        # No camera/recording here -- selected by WebSocketBridge's
+        # in-band action=play message instead (see its module docstring).
+        assert "id=0" in url
+
     @pytest.mark.asyncio
     async def test_get_live_view_path_rtsp(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_live_view_path
@@ -772,6 +782,76 @@ class TestRecordingService:
             assert call_kwargs[1]["extra_params"]["limit"] == "20"
 
     @pytest.mark.asyncio
+    async def test_find_recording_at_returns_the_covering_recording(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.recording import find_recording_at
+
+        mock_data = {
+            "events": [
+                {"id": 100, "cameraId": 21, "startTime": 1700000000, "stopTime": 1700001800},
+                {"id": 101, "cameraId": 21, "startTime": 1700001800, "stopTime": 1700003600},
+            ],
+            "total": 2,
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            rec = await find_recording_at(api, camera_id=21, target_unix=1700002000)
+            assert rec is not None
+            assert rec.id == 101
+
+    @pytest.mark.asyncio
+    async def test_find_recording_at_falls_back_to_the_nearest_recording_in_a_gap(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """Motion-only recording routinely leaves gaps with nothing
+        covering the exact clicked time -- the search must still land
+        on something nearby rather than refuse to seek at all."""
+        from surveillance.services.recording import find_recording_at
+
+        mock_data = {
+            "events": [
+                {"id": 100, "cameraId": 21, "startTime": 1700000000, "stopTime": 1700000100},
+                {"id": 101, "cameraId": 21, "startTime": 1700005000, "stopTime": 1700005100},
+            ],
+            "total": 2,
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            # 1700000200 is 100s past recording 100's end and 4800s before
+            # recording 101's start -- nearer to 100.
+            rec = await find_recording_at(api, camera_id=21, target_unix=1700000200)
+            assert rec is not None
+            assert rec.id == 100
+
+    @pytest.mark.asyncio
+    async def test_find_recording_at_returns_none_when_nothing_recorded(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.recording import find_recording_at
+
+        mock_data = {"events": [], "total": 0}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            rec = await find_recording_at(api, camera_id=21, target_unix=1700000000)
+            assert rec is None
+
+    @pytest.mark.asyncio
+    async def test_find_recording_at_searches_a_window_around_the_target(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.recording import _HISTORY_SEEK_WINDOW, find_recording_at
+
+        mock_data = {"events": [], "total": 0}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data) as mock:
+            await find_recording_at(api, camera_id=21, target_unix=1700003600)
+            call_kwargs = mock.call_args
+            assert call_kwargs[1]["extra_params"]["cameraIds"] == "21"
+            assert call_kwargs[1]["extra_params"]["fromTime"] == str(
+                1700003600 - _HISTORY_SEEK_WINDOW
+            )
+            assert call_kwargs[1]["extra_params"]["toTime"] == str(
+                1700003600 + _HISTORY_SEEK_WINDOW
+            )
+
+    @pytest.mark.asyncio
     async def test_fetch_recording_thumbnail_decodes_and_caches(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import clear_snapshot_cache, fetch_recording_thumbnail
 
@@ -816,9 +896,7 @@ class TestRecordingService:
         rec = Recording(
             id=43, camera_id=39, camera_name="CAM 58", start_time=1700000000, stop_time=1700000060
         )
-        with patch.object(
-            api, "request", new_callable=AsyncMock, side_effect=RuntimeError("boom")
-        ):
+        with patch.object(api, "request", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
             assert await fetch_recording_thumbnail(api, rec) == b""
         clear_snapshot_cache()
 
@@ -862,9 +940,7 @@ class TestFetchCameraThumbnailAt:
     async def test_request_failure_is_empty_bytes(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import fetch_camera_thumbnail_at
 
-        with patch.object(
-            api, "request", new_callable=AsyncMock, side_effect=RuntimeError("boom")
-        ):
+        with patch.object(api, "request", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
             assert await fetch_camera_thumbnail_at(api, camera_id=39, timestamp=1700000000) == b""
 
     @pytest.mark.asyncio

@@ -32,6 +32,54 @@ the frame is recovered from what DSM sent, see aac.py) -- mpv's fd://
 pipe then reads ffmpeg's own Matroska output instead of the raw Annex B
 video stream directly. A camera whose audio is neither (or has none at
 all) falls back to the original raw-video-only passthrough, unchanged.
+
+History (recorded) playback (WebSocketBridge's history_recording/
+history_target constructor arguments and seek() -- see LiveView for
+how a Live View slot drives it) uses this same /ss_webstream_task/
+endpoint and 4-byte-length-prefixed message framing as Live. Confirmed
+by sniffing DSM's own Monitor Center web client's WebSocket traffic
+directly (Chrome DevTools), not by reading its JS. Live and History
+are the same `method=MixStream` protocol with a different connect mode
+and one extra in-band control message before video/audio frames start:
+
+- Connect params: `blMux=true&browser=2&stmSrc=2&relay_rec_auth=false&
+  id=0`. Nothing here identifies a camera or recording -- `id=0` is a
+  placeholder, unlike Live's connect-time `id=<cameraId>`.
+- Immediately after connecting, one in-band string selects the
+  recording and the starting point within it:
+  `action=play&method=MixStream&blMux=true&browser=2&stmSrc=1&
+  blAudio=true&mute=<bool>&speed=1&reverse=false&
+  recEvtType=<eventType>&mountId=<mountId>&archId=<archId>&
+  start=<secondsIntoFile>&end=<fileDurationSeconds>&autoDrop=true&
+  restart=true&pause=false&stamp=1&id=<recordingId>`. Only `mute`
+  varied across captures; every other field held the value shown above
+  every time, so whether e.g. `speed`/`reverse`/`blAudio` ever differ
+  at connect time (as opposed to via a later in-band message, see
+  below) isn't confirmed.
+- `recordingId`/`mountId`/`archId`/`eventType` are exactly
+  `Recording.id`/`mount_id`/`arch_id`/`event_type` (api/models.py) --
+  the same fields services/recording.py's HTTP EventStream path
+  already sends as eventId/mountId/archId/recEvtType. Confirmed
+  field-for-field against a live capture: the WS `id` matched one
+  specific recording's own `id_on_RecServer` in a RecordingPicker/
+  Recording.List-shaped API response (complete with that recording's
+  own frameCount and start/stop unix timestamps), not a frame number
+  or anything per-video-frame. `start`/`end` are seconds *into that
+  file*, not wall-clock: `start = target_unix - rec.start_time`,
+  `end = rec.stop_time - rec.start_time`. `stamp` is a per-connection
+  command sequence counter, starting at 1 and incrementing with every
+  later in-band command below.
+- A later seek landing within the *same* recording's span reuses the
+  connection instead of reconnecting -- a much shorter in-band message,
+  `seekMs=<millisecondsIntoFile>&stamp=<n>`. Only a seek crossing into
+  a different recording opens a new connection and repeats the
+  `action=play` handshake above with that recording's own
+  id/mountId/archId/start/end.
+
+Not yet captured: pause/resume, speed changes (including reverse), and
+the +-10s/event-jump transport controls -- expected to be either more
+seekMs-style in-band messages or trivial client-side math, to be
+confirmed the same way (live capture) before implementing them.
 """
 
 from __future__ import annotations
@@ -48,7 +96,10 @@ import subprocess
 import threading
 import time
 from statistics import median
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from surveillance.api.models import Recording
 
 from surveillance.services.aac import (
     adts_header,
@@ -248,10 +299,31 @@ def _parse_header(header: bytes) -> dict[str, str]:
 class WebSocketBridge:
     """Bridge a WebSocket video (+ optional audio) stream to a pipe for mpv."""
 
-    def __init__(self, ws_url: str, verify_ssl: bool, sid: str, label: str = "") -> None:
+    def __init__(
+        self,
+        ws_url: str,
+        verify_ssl: bool,
+        sid: str,
+        label: str = "",
+        history_recording: Recording | None = None,
+        history_target: int = 0,
+    ) -> None:
         self._ws_url = ws_url
         self._verify_ssl = verify_ssl
         self._sid = sid
+        # History (recorded) playback -- see the module docstring for the
+        # wire protocol. None means an ordinary Live bridge; ws_url is
+        # still built by the caller either way (get_live_view_path /
+        # a future history equivalent), same as it always has been.
+        self._history_recording = history_recording
+        self._history_target = history_target
+        self._history_stamp = 0
+        # The currently connected socket, for seek() to send on from
+        # outside _pump's own scope -- None whenever no connection is up
+        # (including between reconnect attempts), so seek() knows to fold
+        # a cross-recording seek into the next reconnect instead of
+        # sending on a dead socket.
+        self._current_ws: Any = None
         # Purely for logging — lets a "dropped"/"stalled"/"gave up" line be
         # traced back to a specific camera after the fact, since the bridge
         # itself only ever sees a bare URL.
@@ -328,6 +400,15 @@ class WebSocketBridge:
         showing audio controls has to read it again rather than once.
         """
         return self._audio_active
+
+    @property
+    def is_history(self) -> bool:
+        """Whether this bridge is playing recorded video (History mode)
+        rather than a camera's live stream -- set for the bridge's whole
+        lifetime by the history_recording constructor argument, not
+        something a caller flips after the fact (see seek() to change
+        what's playing within an existing History bridge)."""
+        return self._history_recording is not None
 
     def _note_attempt_outcome(self, connected: bool, attempt_start: float) -> bool:
         """Track consecutive failed-to-connect attempts; return True to give up.
@@ -1147,6 +1228,109 @@ class WebSocketBridge:
         ready_task.cancel()
         raise RuntimeError(self._error or "WebSocket bridge exited before becoming ready")
 
+    def _build_history_play_message(self) -> str:
+        """Build the in-band `action=play` string that selects a recording
+        and a starting point within it (see the module docstring) --
+        sent once per connection, right after connecting, whenever
+        self._history_recording is set.
+
+        Every field below came from one live capture with one fixed
+        value each (except mute, which we did see vary) -- nothing here
+        has been tested against a different value, so "confirmed" only
+        ever means "this literal string decodes real recorded video",
+        not "this is the whole valid range". Grouped by how much of
+        that is actually known:
+
+        - start/end/stamp/id/mountId/archId/recEvtType: meaning
+          confirmed, not just the value -- see the module docstring for
+          start/end/stamp/id, and Recording.mount_id/.arch_id/
+          .event_type's own docs for the rest.
+        - mute: every capture had this "true" (Monitor Center's own
+          player happened to be muted each time), which first read as
+          "just the client's mute toggle, mirroring Live's separate
+          out-of-band mute=true message" -- but fixing it at "true" here
+          left History sessions with no audio to mute at all, live
+          testing against this app found. Fixed at "false" instead, so
+          DSM actually sends audio frames for _setup_pipes/ffmpeg to mux
+          the same way Live gets them, and playback-side muting (the
+          slot toolbar's mute button, same as Live) is what decides
+          whether that audio is heard.
+        - method/blAudio/speed/reverse/pause/action: name suggests the
+          role (blAudio -- include audio; the rest are self-explanatory)
+          and it lines up with Live's own same-named fields where Live
+          has one, but no capture ever varied it, so e.g. whether
+          speed=2 or reverse=true actually changes playback is unknown.
+        - blMux/browser/stmSrc/autoDrop/restart: genuinely unconfirmed
+          even by name -- included because DSM's own web client always
+          sends them and omitting an unfamiliar field felt riskier than
+          copying it verbatim. stmSrc=1 here vs the connect URL's
+          stmSrc=2 (see module docstring) is the one hint that these
+          matter somehow, not just boilerplate.
+
+        speed/reverse/pause are therefore fixed at their play/forward/
+        unpaused values; a caller wanting to change any of them isn't
+        supported by this bridge yet (see seek()'s docstring for what
+        is).
+        """
+        rec = self._history_recording
+        if rec is None:
+            raise RuntimeError("_build_history_play_message called with no recording set")
+        start = max(0, self._history_target - rec.start_time)
+        end = max(0, rec.stop_time - rec.start_time)
+        self._history_stamp = 1
+        params = {
+            "action": "play",
+            "method": "MixStream",
+            "blMux": "true",
+            "browser": "2",
+            "stmSrc": "1",
+            "blAudio": "true",
+            "mute": "false",
+            "speed": "1",
+            "reverse": "false",
+            "recEvtType": str(rec.event_type),
+            "mountId": str(rec.mount_id),
+            "archId": str(rec.arch_id),
+            "start": str(start),
+            "end": str(end),
+            "autoDrop": "true",
+            "restart": "true",
+            "pause": "false",
+            "stamp": str(self._history_stamp),
+            "id": str(rec.id),
+        }
+        return "&".join(f"{k}={v}" for k, v in params.items())
+
+    async def seek(self, recording: Recording, target_unix: int) -> None:
+        """Seek to *target_unix* within *recording* (History mode only).
+
+        Reuses the connection with an in-band `seekMs` command when
+        *recording* is the one already selected -- matching what a real
+        seek within the loaded recording does (see the module
+        docstring). Otherwise updates the pending recording/target and
+        closes the current connection: _pump's own reconnect loop then
+        opens a fresh one and sends a new action=play for *recording*,
+        the same machinery an ordinary connection drop already uses,
+        rather than a second reconnect path living here too.
+
+        A reconnect that _pump makes on its own (a dropped session, not
+        a caller-requested seek) replays the last recording/target set
+        here rather than wherever playback had actually reached --
+        tracking real playback position through a drop is not
+        implemented yet, so a routine reconnect currently rewinds to
+        the last seek instead of resuming.
+        """
+        if self._history_recording is not None and recording.id == self._history_recording.id:
+            offset_ms = max(0, (target_unix - recording.start_time) * 1000)
+            self._history_stamp += 1
+            if self._current_ws is not None:
+                await self._current_ws.send(f"seekMs={offset_ms}&stamp={self._history_stamp}")
+            return
+        self._history_recording = recording
+        self._history_target = target_unix
+        if self._current_ws is not None:
+            await self._current_ws.close()
+
     async def _pump(self) -> None:
         """Connect to the WebSocket and write video (+ audio) frames to
         the pipe(s).
@@ -1191,6 +1375,7 @@ class WebSocketBridge:
                         log.debug("WebSocket connected for %s", self._label)
                         connected = True
                         self._connected_at = time.monotonic()
+                        self._current_ws = ws
                         # A new session gets the full gap timeout to
                         # deliver its first audio frame. Left at whatever
                         # the dropped session ended on, the stamp is stale
@@ -1201,6 +1386,8 @@ class WebSocketBridge:
                         # can only delay a fire, never cause it.
                         self._last_audio_at = self._connected_at
                         delay = 0.0
+                        if self._history_recording is not None:
+                            await ws.send(self._build_history_play_message())
                         await self._read_messages_with_keepalive(ws)
                 except _PipeWriteStalled as exc:
                     # Unlike a WS-level drop, reconnecting on the same pipe
@@ -1220,6 +1407,11 @@ class WebSocketBridge:
                     pass  # self._error already holds the stall reason
                 except Exception as exc:
                     self._error = _classify_error(exc)
+
+                # The `async with` block above has exited by now, one way
+                # or another -- nothing left for seek() to send on until
+                # the next connection (if any) sets this again.
+                self._current_ws = None
 
                 if self._stopping:
                     break

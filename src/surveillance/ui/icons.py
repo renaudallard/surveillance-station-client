@@ -25,9 +25,10 @@
 
 """Shared composite-icon helpers.
 
-Symbolic icon themes don't ship a "magnifying glass with +/-" glyph, so
-zoom controls (PTZ camera zoom, timeline zoom) stack two symbolic icons
-on one square canvas instead of using a single icon name.
+Some glyphs this app needs (a magnifying glass with +/-, a 4-way pan
+arrow, a filter funnel) aren't shipped by symbolic icon themes under
+any single name, so these stack two symbolic icons on one square
+canvas instead.
 """
 
 from __future__ import annotations
@@ -80,6 +81,39 @@ def magnifier_zoom_icon(zoom_in: bool, size: int = ICON_SIZE) -> Gtk.Overlay:
         ("system-search-symbolic", size, 0),
         (badge_icon, size // 3, badge_offset),
     )
+
+
+def filter_icon(size: int = ICON_SIZE) -> Gtk.Overlay:
+    """Funnel glyph for the timeline's "filter events" button.
+
+    No icon theme ships one: pan-down-symbolic's solid downward
+    triangle -- the same shape the playback-speed dropdown's own arrow
+    uses -- reads as the funnel's wide mouth, and list-remove-symbolic
+    (already reused above as a generic mark rather than its literal
+    "remove" meaning) rotated vertical via style.css's .rotate-ccw-90
+    becomes the spout.
+    """
+    overlay = Gtk.Overlay()
+    canvas = Gtk.Box()
+    canvas.set_size_request(size, size)
+    overlay.set_child(canvas)
+
+    mouth = Gtk.Image.new_from_icon_name("pan-down-symbolic")
+    mouth.set_pixel_size(size)
+    mouth.set_halign(Gtk.Align.CENTER)
+    mouth.set_valign(Gtk.Align.CENTER)
+    mouth.set_margin_bottom(round(size * 0.25))
+    overlay.add_overlay(mouth)
+
+    spout = Gtk.Image.new_from_icon_name("list-remove-symbolic")
+    spout.set_pixel_size(round(size * 0.55))
+    spout.add_css_class("rotate-ccw-90")
+    spout.set_halign(Gtk.Align.CENTER)
+    spout.set_valign(Gtk.Align.CENTER)
+    spout.set_margin_top(round(size * 0.35))
+    overlay.add_overlay(spout)
+
+    return overlay
 
 
 def pan_tilt_icon(size: int = ICON_SIZE) -> Gtk.Overlay:

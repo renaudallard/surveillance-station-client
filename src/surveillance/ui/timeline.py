@@ -30,8 +30,8 @@ scale, pan, zoom, and click-to-seek all work), and so is the Live
 button. The recording-presence bar is a static placeholder with no
 real data behind it yet -- wiring it to DSM's real EnumInterval/
 ListBookmark data is deliberately a separate piece of work from
-History mode itself, not yet started. The speed stepper and transport
-cluster (pause/+-10s/event-jump) are still no-ops too.
+History mode itself, not yet started. The speed dropdown and
+transport cluster (pause/+-10s/event-jump) are still no-ops too.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
-from surveillance.ui.icons import magnifier_zoom_icon
+from surveillance.ui.icons import filter_icon, magnifier_zoom_icon
 
 # Candidate tick spacings (seconds); the smallest that still leaves each
 # label enough room on screen is picked at draw time.
@@ -471,7 +471,7 @@ class Timeline(Gtk.Box):
 
     The current-time label, the canvas ruler, the zoom buttons, and
     click-to-seek/Live (see canvas.set_seek_callback/live_btn) are live;
-    the speed stepper and transport cluster are still placeholders with
+    the speed dropdown and transport cluster are still placeholders with
     no behavior wired up yet.
     """
 
@@ -496,15 +496,23 @@ class Timeline(Gtk.Box):
     def set_history_active(self, active: bool) -> None:
         """Reflect whether any slot is currently playing recorded video
         rather than live — LiveView calls this after every seek and
-        every return-to-live, since live_btn has no way to know that on
-        its own (it only ever emits "clicked", same division of
-        responsibility as the seek/hover callbacks). Opacity rather than
-        set_visible: there's nothing to click while already live, but
-        the button still has to hold its layout space, or every button
-        after it in the toolbar would shift each time this toggles.
+        every return-to-live, since none of the widgets below have a
+        way to know that on their own (they only ever emit "clicked",
+        same division of responsibility as the seek/hover callbacks).
+
+        Opacity plus set_sensitive rather than set_visible throughout:
+        there's nothing for Next event/Forward 10s/Live to do while
+        already live (nothing is "ahead" of live), but they still have
+        to hold their layout space, or every button after them in the
+        toolbar would shift each time this toggles. The "Live Stream"
+        label swaps in for that same reason, rather than being shown
+        alongside a hidden Live button.
         """
-        self.live_btn.set_sensitive(active)
-        self.live_btn.set_opacity(1.0 if active else 0.0)
+        self._history_only_box.set_sensitive(active)
+        self._history_only_box.set_opacity(1.0 if active else 0.0)
+        self._live_stream_label.set_opacity(0.0 if active else 1.0)
+        self._speed_btn.set_sensitive(active)
+        self._speed_btn.set_opacity(1.0 if active else 0.0)
 
     def _update_clock(self) -> bool:
         now = datetime.now()
@@ -514,7 +522,16 @@ class Timeline(Gtk.Box):
 
     def _build_toolbar(self) -> Gtk.Box:
         """Single row above the canvas: everything lives here to save
-        the vertical space a separate header+footer would cost."""
+        the vertical space a separate header+footer would cost.
+
+        Layout, left to right: clock, a fixed one-button gap, the
+        filter/download/calendar/zoom/speed cluster, an expanding gap,
+        then the transport cluster flush against the right edge. Every
+        mode-dependent widget in the transport cluster stays mounted at
+        all times and is hidden via opacity + set_sensitive rather than
+        set_visible (see set_history_active), so nothing else in the
+        toolbar shifts when switching between Live and History mode.
+        """
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         toolbar.add_css_class("timeline-toolbar")
 
@@ -529,21 +546,17 @@ class Timeline(Gtk.Box):
         time_box.append(self._time_label)
         time_box.append(self._date_label)
 
-        # Filter/download/calendar/zoom cluster and the Live/speed
-        # cluster swap sides from where DSM puts them — purely a
-        # visual-balance choice, the smaller cluster on the left reads
-        # more symmetric against the transport cluster. Time/date stays
-        # put on the far left regardless.
         button_cluster = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-        for icon_name, tooltip in (
-            ("system-search-symbolic", "Filter events"),
-            ("document-save-symbolic", "Download"),
-        ):
-            btn = Gtk.Button()
-            btn.set_icon_name(icon_name)
-            btn.set_tooltip_text(tooltip)
-            button_cluster.append(btn)
+        filter_btn = Gtk.Button()
+        filter_btn.set_child(filter_icon(size=_TOOLBAR_ICON_SIZE))
+        filter_btn.set_tooltip_text("Filter events")
+        button_cluster.append(filter_btn)
+
+        download_btn = Gtk.Button()
+        download_btn.set_icon_name("document-save-symbolic")
+        download_btn.set_tooltip_text("Download")
+        button_cluster.append(download_btn)
 
         calendar_btn = Gtk.Button()
         calendar_btn.set_icon_name("x-office-calendar-symbolic")
@@ -569,60 +582,108 @@ class Timeline(Gtk.Box):
         )
         button_cluster.append(zoom_in_btn)
 
+        # Playback speed only means anything once there's a History
+        # position to play back from, so it's opacity/sensitivity-
+        # toggled by set_history_active like the transport cluster's
+        # own History-only widgets. A dropdown rather than the +/-
+        # stepper this replaced: DSM only supports a handful of fixed
+        # multipliers, and stepping through all of them one at a time
+        # to reach the last is exactly the annoyance a dropdown avoids.
+        # The popover of actual speed options is item i's work -- this
+        # is the button shape only.
+        self._speed_btn = Gtk.MenuButton(label="1x")
+        self._speed_btn.set_tooltip_text("Playback speed")
+        button_cluster.append(self._speed_btn)
+
+        toolbar.append(time_box)
+        toolbar.append(self._make_fixed_gap_spacer())
+        toolbar.append(button_cluster)
+        # Soaks up whatever space is left, pushing the transport
+        # cluster flush against the toolbar's right edge — the floor
+        # keeps it from crowding button_cluster in a narrow window.
+        toolbar.append(self._make_min_gap_spacer())
+
+        # Back 10s/Previous event/Pause stay live in both modes:
+        # clicking any of them while live drops into paused History
+        # mode at "now" first (LiveView's job -- this widget only ever
+        # emits the click, same division of responsibility as the
+        # seek/hover callbacks), then acts as it would in History mode.
+        transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+        back_10s_btn = Gtk.Button()
+        back_10s_btn.set_icon_name("media-seek-backward-symbolic")
+        back_10s_btn.set_tooltip_text("Back 10s")
+        transport.append(back_10s_btn)
+
+        prev_event_btn = Gtk.Button()
+        prev_event_btn.set_icon_name("go-previous-symbolic")
+        prev_event_btn.set_tooltip_text("Previous event")
+        transport.append(prev_event_btn)
+
+        self._pause_btn = Gtk.Button()
+        self._pause_btn.set_icon_name("media-playback-pause-symbolic")
+        self._pause_btn.set_tooltip_text("Pause")
+        transport.append(self._pause_btn)
+
+        # Next event/Forward 10s/Live: nothing is "ahead" of live, so
+        # these only make sense in History mode. Grouped in their own
+        # box so set_history_active can toggle all three as one unit.
+        self._history_only_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+        next_event_btn = Gtk.Button()
+        next_event_btn.set_icon_name("go-next-symbolic")
+        next_event_btn.set_tooltip_text("Next event")
+        self._history_only_box.append(next_event_btn)
+
+        forward_10s_btn = Gtk.Button()
+        forward_10s_btn.set_icon_name("media-seek-forward-symbolic")
+        forward_10s_btn.set_tooltip_text("Forward 10s")
+        self._history_only_box.append(forward_10s_btn)
+
         # Public (like self.canvas): LiveView owns what "return to live"
         # means for each slot, the same division of responsibility as
         # the seek/hover callbacks -- this widget only ever knows about
-        # positions and timestamps, never cameras or streams. Always
-        # present -- see set_history_active for why it's opacity, not
-        # visibility, that reflects whether there's anything to return
-        # to.
+        # positions and timestamps, never cameras or streams.
         self.live_btn = Gtk.Button(label="Live")
         self.live_btn.set_tooltip_text("Return to live view")
         self.live_btn.add_css_class("timeline-live-active")
+        self._history_only_box.append(self.live_btn)
 
-        speed_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        speed_box.add_css_class("linked")
-        minus_btn = Gtk.Button()
-        minus_btn.set_icon_name("list-remove-symbolic")
-        minus_btn.set_tooltip_text("Slower")
-        speed_label = Gtk.Label(label="1x")
-        speed_label.set_margin_start(4)
-        speed_label.set_margin_end(4)
-        plus_btn = Gtk.Button()
-        plus_btn.set_icon_name("list-add-symbolic")
-        plus_btn.set_tooltip_text("Faster")
-        speed_box.append(minus_btn)
-        speed_box.append(speed_label)
-        speed_box.append(plus_btn)
+        # Overlay, not a plain sibling: while live, "Live Stream" has to
+        # read as centered across all three History-only buttons'
+        # combined width (see set_history_active) rather than just
+        # sitting in a slot sized to one of them -- and an overlay
+        # child never grows the Overlay's own size, so the button
+        # cluster is what sets that width, not the label.
+        live_slot = Gtk.Overlay()
+        live_slot.set_child(self._history_only_box)
+        self._live_stream_label = Gtk.Label(label="Live Stream")
+        self._live_stream_label.add_css_class("timeline-live-text")
+        self._live_stream_label.add_css_class("timeline-live-stream-label")
+        self._live_stream_label.set_halign(Gtk.Align.CENTER)
+        self._live_stream_label.set_valign(Gtk.Align.CENTER)
+        # Overlay children stay hit-testable at any opacity -- without
+        # this, the label (centered across the full History-only span)
+        # eats clicks meant for whichever button it happens to sit over
+        # even while invisible at opacity 0.
+        self._live_stream_label.set_can_target(False)
+        live_slot.add_overlay(self._live_stream_label)
+        transport.append(live_slot)
 
-        live_cluster = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        live_cluster.append(self.live_btn)
-        live_cluster.append(speed_box)
-
-        transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        for icon_name, tooltip in (
-            ("go-previous-symbolic", "Previous event"),
-            ("media-seek-backward-symbolic", "Back 10s"),
-            ("media-playback-pause-symbolic", "Pause"),
-            ("media-seek-forward-symbolic", "Forward 10s"),
-            ("go-next-symbolic", "Next event"),
-        ):
-            btn = Gtk.Button()
-            btn.set_icon_name(icon_name)
-            btn.set_tooltip_text(tooltip)
-            transport.append(btn)
-
-        toolbar.append(time_box)
-        toolbar.append(live_cluster)
-        # Keeps the transport cluster from ever crowding the buttons on
-        # either side, even in a narrow window — each spacer holds at
-        # least one button's width and only grows from there.
-        toolbar.append(self._make_min_gap_spacer())
         toolbar.append(transport)
-        toolbar.append(self._make_min_gap_spacer())
-        toolbar.append(button_cluster)
 
         return toolbar
+
+    @staticmethod
+    def _make_fixed_gap_spacer() -> Gtk.Box:
+        """A non-expanding gap the width of one toolbar button, so the
+        button cluster doesn't crowd the clock — fixed rather than the
+        expanding floor _make_min_gap_spacer uses, since there's only
+        one expanding gap in this toolbar and it belongs on the other
+        side of the button cluster."""
+        spacer = Gtk.Box()
+        spacer.set_size_request(_MIN_BUTTON_GAP_PX, -1)
+        return spacer
 
     @staticmethod
     def _make_min_gap_spacer() -> Gtk.Box:

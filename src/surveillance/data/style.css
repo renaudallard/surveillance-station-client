@@ -195,14 +195,6 @@
     font-size: 1.1em;
 }
 
-/* Sized to fit inside the Next event/Forward 10s/Live button cluster's
-   own width (see Timeline._build_toolbar's live_slot) -- that cluster
-   sets the slot's width, this label just has to fit inside it, not
-   the other way around. */
-.timeline-live-stream-label {
-    font-size: 0.85em;
-}
-
 .timeline-thumbnail {
     background-color: #1a1a1a;
     border-radius: 4px;

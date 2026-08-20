@@ -26,12 +26,12 @@
 """Shared Live View timeline.
 
 Visual scaffold, in progress: the ruler is live (a live-updating time
-scale, pan, zoom, and click-to-seek all work), and so is the Live
-button. The recording-presence bar is a static placeholder with no
-real data behind it yet -- wiring it to DSM's real EnumInterval/
+scale, pan, zoom, and click-to-seek all work), and so are the Live and
++-10s buttons. The recording-presence bar is a static placeholder with
+no real data behind it yet -- wiring it to DSM's real EnumInterval/
 ListBookmark data is deliberately a separate piece of work from
-History mode itself, not yet started. The speed dropdown and
-transport cluster (pause/+-10s/event-jump) are still no-ops too.
+History mode itself, not yet started. The speed dropdown and the rest
+of the transport cluster (pause/event-jump) are still no-ops too.
 """
 
 from __future__ import annotations
@@ -470,9 +470,10 @@ class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
     The current-time label, the canvas ruler, the zoom buttons, and
-    click-to-seek/Live (see canvas.set_seek_callback/live_btn) are live;
-    the speed dropdown and transport cluster are still placeholders with
-    no behavior wired up yet.
+    click-to-seek/Live/+-10s (see canvas.set_seek_callback/live_btn/
+    back_10s_btn/forward_10s_btn) are live; the speed dropdown and the
+    rest of the transport cluster (pause/event-jump) are still
+    placeholders with no behavior wired up yet.
     """
 
     def __init__(self) -> None:
@@ -610,10 +611,13 @@ class Timeline(Gtk.Box):
         # seek/hover callbacks), then acts as it would in History mode.
         transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        back_10s_btn = Gtk.Button()
-        back_10s_btn.set_icon_name("media-seek-backward-symbolic")
-        back_10s_btn.set_tooltip_text("Back 10s")
-        transport.append(back_10s_btn)
+        # Public (like live_btn/canvas): LiveView owns what "10s back"
+        # means for each slot, the same division of responsibility as
+        # the seek/hover/Live callbacks.
+        self.back_10s_btn = Gtk.Button()
+        self.back_10s_btn.set_icon_name("media-seek-backward-symbolic")
+        self.back_10s_btn.set_tooltip_text("Back 10s")
+        transport.append(self.back_10s_btn)
 
         prev_event_btn = Gtk.Button()
         prev_event_btn.set_icon_name("go-previous-symbolic")
@@ -635,10 +639,10 @@ class Timeline(Gtk.Box):
         next_event_btn.set_tooltip_text("Next event")
         self._history_only_box.append(next_event_btn)
 
-        forward_10s_btn = Gtk.Button()
-        forward_10s_btn.set_icon_name("media-seek-forward-symbolic")
-        forward_10s_btn.set_tooltip_text("Forward 10s")
-        self._history_only_box.append(forward_10s_btn)
+        self.forward_10s_btn = Gtk.Button()
+        self.forward_10s_btn.set_icon_name("media-seek-forward-symbolic")
+        self.forward_10s_btn.set_tooltip_text("Forward 10s")
+        self._history_only_box.append(self.forward_10s_btn)
 
         # Public (like self.canvas): LiveView owns what "return to live"
         # means for each slot, the same division of responsibility as
@@ -659,7 +663,6 @@ class Timeline(Gtk.Box):
         live_slot.set_child(self._history_only_box)
         self._live_stream_label = Gtk.Label(label="Live Stream")
         self._live_stream_label.add_css_class("timeline-live-text")
-        self._live_stream_label.add_css_class("timeline-live-stream-label")
         self._live_stream_label.set_halign(Gtk.Align.CENTER)
         self._live_stream_label.set_valign(Gtk.Align.CENTER)
         # Overlay children stay hit-testable at any opacity -- without

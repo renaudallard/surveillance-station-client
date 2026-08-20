@@ -89,6 +89,18 @@ _TIMELINE_THUMBNAIL_HEIGHT = 90
 # enough that a full 4x4 transition (16 * this) still feels immediate.
 _HISTORY_TRANSITION_STAGGER_MS = 150
 
+_TIMELINE_NUDGE_SECONDS = 10  # Back 10s / Forward 10s's step size
+
+# Safety net for _flush_timeline_nudge's in-flight tracking: normally
+# cleared the moment the focus slot's own recording lookup resolves,
+# but that signal can go missing (e.g. the timeline focus slot changes
+# mid-lookup) -- without this, a single missed signal would wedge
+# Back/Forward 10s shut forever. Generous relative to DSM's observed
+# few-second lookup latency, since firing early just means a
+# still-accumulating burst of clicks gets flushed a little sooner
+# rather than fully coalesced -- never incorrect, just less batched.
+_NUDGE_RESOLVE_TIMEOUT_SECONDS = 10
+
 
 class CameraSlot(Gtk.Box):
     """Self-contained camera slot with a header label, video player, and
@@ -442,6 +454,14 @@ class LiveView(Gtk.Box):
         # flow and can be unset; this one always points at a real slot).
         self._timeline_focus_slot: int = 0
         self._timeline_last_activity: float = 0.0
+        # Back/Forward 10s coalescing -- see _flush_timeline_nudge.
+        self._pending_nudge_seconds: float = 0.0
+        self._nudge_seek_in_flight: bool = False
+        # Bumped once per _seek_slot_to_time batch (see _on_timeline_seek)
+        # so _on_recording_resolved can tell a lookup superseded by a
+        # newer seek -- landing late, after that newer one already
+        # applied -- from one still worth acting on.
+        self._seek_generation: int = 0
         self._active: list[int] = []  # physical indices of visible slots
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
@@ -493,6 +513,8 @@ class LiveView(Gtk.Box):
         self.timeline.canvas.set_hover_leave_callback(self._on_timeline_hover_leave)
         self.timeline.canvas.set_seek_callback(self._on_timeline_seek)
         self.timeline.live_btn.connect("clicked", self._on_timeline_live_clicked)
+        self.timeline.back_10s_btn.connect("clicked", self._on_timeline_back_10s)
+        self.timeline.forward_10s_btn.connect("clicked", self._on_timeline_forward_10s)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.grid)
@@ -686,10 +708,16 @@ class LiveView(Gtk.Box):
         The timeline is one shared display, not a shared stream: it
         tells each slot what to play, the same way Live already works.
         Staggered across slots (see _HISTORY_TRANSITION_STAGGER_MS)
-        rather than all fired in the same instant."""
+        rather than all fired in the same instant.
+
+        One generation (see _seek_generation) for the whole batch, not
+        one per slot -- slots within the same batch must not supersede
+        each other, only a *later* call to this method should."""
         target_unix = int(timestamp)
+        self._seek_generation += 1
+        generation = self._seek_generation
         actions: list[Callable[[], None]] = [
-            partial(self._seek_slot_to_time, self._slots[slot_idx], target_unix)
+            partial(self._seek_slot_to_time, self._slots[slot_idx], target_unix, generation)
             for slot_idx in self._active
         ]
         self._run_staggered(actions)
@@ -711,15 +739,16 @@ class LiveView(Gtk.Box):
         action()
         return False  # one-shot timeout, don't repeat
 
-    def _seek_slot_to_time(self, slot: CameraSlot, target_unix: int) -> None:
+    def _seek_slot_to_time(self, slot: CameraSlot, target_unix: int, generation: int) -> None:
         """Resolve which recording covers *target_unix* for *slot*'s
         camera and enter (or continue) History mode there.
 
         Shared by _on_timeline_seek (once per active slot on a timeline
-        click) and _assign_to_slot (a camera picked into a slot that
-        was already in History mode keeps playing recorded video for
-        the newly picked camera too, at the same point in time, rather
-        than silently dropping back to live)."""
+        click, all sharing one generation) and _assign_to_slot (a
+        camera picked into a slot that was already in History mode
+        keeps playing recorded video for the newly picked camera too,
+        at the same point in time, rather than silently dropping back
+        to live -- its own fresh generation, a batch of one)."""
         if not self.app.api or slot.camera is None:
             return
         api = self.app.api
@@ -729,7 +758,7 @@ class LiveView(Gtk.Box):
         run_async(
             find_recording_at(api, camera.id, target_unix),
             callback=lambda rec, i=slot_idx, c=cam_id: self._on_recording_resolved(
-                i, c, target_unix, rec
+                generation, i, c, target_unix, rec
             ),
             error_callback=lambda exc, name=camera.name: log.error(
                 "History lookup failed for %s: %s", name, exc
@@ -737,31 +766,56 @@ class LiveView(Gtk.Box):
         )
 
     def _on_recording_resolved(
-        self, slot_idx: int, cam_id: int, target_unix: int, recording: Recording | None
+        self,
+        generation: int,
+        slot_idx: int,
+        cam_id: int,
+        target_unix: int,
+        recording: Recording | None,
     ) -> None:
-        """find_recording_at's result for one slot's seek request."""
-        slot = self._slots[slot_idx]
-        if not slot.camera or slot.camera.id != cam_id:
-            return  # the slot moved on to a different camera while this was in flight
-        if recording is None:
-            when = time.strftime("%c", time.localtime(target_unix))
-            log.info("No recording found near %s for %s", when, slot.camera.name)
+        """find_recording_at's result for one slot's seek request.
+
+        Discarded outright if a newer seek has been issued since this
+        lookup started (see _seek_generation) -- DSM's own per-camera
+        lookup latency varies enough, especially across a whole grid,
+        that a burst of clicks/ruler drags can otherwise have a stale
+        lookup land *after* a newer one already applied, silently
+        snapping a slot back to an earlier position and, worse, doing
+        it repeatedly as more stale lookups keep trickling in."""
+        if generation != self._seek_generation:
             return
-        if slot._ws_bridge is not None and slot._ws_bridge.is_history:
-            # Already playing recorded video: let the bridge itself decide
-            # whether this is a same-recording reseek (reuses the
-            # connection) or a jump to a different one (reconnects) — see
-            # WebSocketBridge.seek()'s own docstring.
-            run_async(
-                slot._ws_bridge.seek(recording, target_unix),
-                error_callback=lambda exc: log.error(
-                    "History seek failed for %s: %s", slot.camera.name if slot.camera else "?", exc
-                ),
-            )
-        else:
-            self._enter_history_mode(slot, recording, target_unix)
-        self._set_history_position(slot, target_unix)
-        self.timeline.set_history_active(True)
+        slot = self._slots[slot_idx]
+        if slot.camera and slot.camera.id == cam_id:
+            if recording is None:
+                when = time.strftime("%c", time.localtime(target_unix))
+                log.info("No recording found near %s for %s", when, slot.camera.name)
+            elif slot._ws_bridge is not None and slot._ws_bridge.is_history:
+                # Already playing recorded video: let the bridge itself decide
+                # whether this is a same-recording reseek (reuses the
+                # connection) or a jump to a different one (reconnects) — see
+                # WebSocketBridge.seek()'s own docstring.
+                run_async(
+                    slot._ws_bridge.seek(recording, target_unix),
+                    error_callback=lambda exc: log.error(
+                        "History seek failed for %s: %s",
+                        slot.camera.name if slot.camera else "?",
+                        exc,
+                    ),
+                )
+                self._set_history_position(slot, target_unix)
+                self.timeline.set_history_active(True)
+            else:
+                self._enter_history_mode(slot, recording, target_unix)
+                self._set_history_position(slot, target_unix)
+                self.timeline.set_history_active(True)
+        if slot_idx == self._timeline_focus_slot:
+            # Whatever this lookup's outcome, the focus slot's part in
+            # it is done -- let any Back/Forward 10s clicks that piled
+            # up meanwhile fire as one flush (see _flush_timeline_nudge),
+            # now that _set_history_position above (if it ran) has
+            # already landed rather than still being about to.
+            self._nudge_seek_in_flight = False
+            self._flush_timeline_nudge()
 
     def _set_history_position(self, slot: CameraSlot, position: float | None) -> None:
         """Record *slot*'s own current History playback position (see
@@ -777,6 +831,57 @@ class LiveView(Gtk.Box):
         """Timeline's Live button — return every slot currently playing
         recorded video back to its normal live stream."""
         self._return_all_to_live()
+
+    def _on_timeline_back_10s(self, _btn: Gtk.Button) -> None:
+        """Timeline's Back 10s button — see _nudge_timeline."""
+        self._nudge_timeline(-_TIMELINE_NUDGE_SECONDS)
+
+    def _on_timeline_forward_10s(self, _btn: Gtk.Button) -> None:
+        """Timeline's Forward 10s button — see _nudge_timeline. Only
+        reachable in History mode (see Timeline.set_history_active), so
+        there's always a position on the timeline to jump forward from."""
+        self._nudge_timeline(_TIMELINE_NUDGE_SECONDS)
+
+    def _nudge_timeline(self, delta_seconds: float) -> None:
+        """Accumulate a Back/Forward 10s click and flush it if nothing
+        is already in flight. DSM's per-camera recording lookup
+        (_seek_slot_to_time) takes long enough that a burst of taps
+        would otherwise each fire their own already-stale lookup;
+        instead they collapse into whatever the accumulated delta is
+        once the previous one lands (_flush_timeline_nudge, triggered
+        from _on_recording_resolved)."""
+        self._pending_nudge_seconds += delta_seconds
+        if not self._nudge_seek_in_flight:
+            self._flush_timeline_nudge()
+
+    def _flush_timeline_nudge(self) -> None:
+        """Fire one seek for whatever Back/Forward 10s delta has
+        accumulated since the last one landed. Marked in flight, via
+        the same path _on_timeline_seek already uses (which is also
+        what takes every slot into History mode, so clicking Back 10s
+        while live drops straight into it), until the focus slot's own
+        lookup resolves and calls back in here for anything that
+        accumulated meanwhile."""
+        delta, self._pending_nudge_seconds = self._pending_nudge_seconds, 0.0
+        if delta == 0 or not self._active:
+            return
+        focus = self._slots[self._timeline_focus_slot]
+        reference = focus._history_position if focus._history_position is not None else time.time()
+        target = reference + delta
+        if target >= time.time():
+            self._return_all_to_live()
+            return
+        self._nudge_seek_in_flight = True
+        GLib.timeout_add_seconds(_NUDGE_RESOLVE_TIMEOUT_SECONDS, self._on_nudge_resolve_timeout)
+        self._on_timeline_seek(target)
+
+    def _on_nudge_resolve_timeout(self) -> bool:
+        """Safety net for _flush_timeline_nudge's in-flight tracking —
+        see _NUDGE_RESOLVE_TIMEOUT_SECONDS."""
+        if self._nudge_seek_in_flight:
+            self._nudge_seek_in_flight = False
+            self._flush_timeline_nudge()
+        return False  # one-shot
 
     def _return_all_to_live(self) -> None:
         """Return every active slot currently playing recorded video
@@ -1269,7 +1374,8 @@ class LiveView(Gtk.Box):
         self._update_slot_audio(target, camera)
         self._load_slot_ptz_extras(target, camera)
         if history_target is not None:
-            self._seek_slot_to_time(target, int(history_target))
+            self._seek_generation += 1
+            self._seek_slot_to_time(target, int(history_target), self._seek_generation)
         else:
             self._start_stream(slot_idx, camera)
 
@@ -1376,6 +1482,15 @@ class LiveView(Gtk.Box):
         sid = self.app.api.sid
         label = slot.camera.name if slot.camera else ""
         url = get_history_view_path(self.app.api)
+        camera_id = recording.camera_id
+
+        async def resolve(target: int) -> Recording | None:
+            """Bound to camera_id, not to slot.camera -- this outlives
+            whatever the slot is showing by the time a stale reconnect
+            calls it (see WebSocketBridge's own history_resolver)."""
+            api = self.app.api
+            return await find_recording_at(api, camera_id, target) if api else None
+
         bridge = WebSocketBridge(
             url,
             verify_ssl,
@@ -1383,6 +1498,7 @@ class LiveView(Gtk.Box):
             label=label,
             history_recording=recording,
             history_target=target_unix,
+            history_resolver=resolve,
         )
         self._start_bridge(slot, bridge)
 

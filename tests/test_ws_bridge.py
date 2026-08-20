@@ -1308,11 +1308,18 @@ class TestHistoryMode:
     sniffing DSM's own Monitor Center web client. Bridge-level only:
     these exercise WebSocketBridge directly, with no UI/slot wiring."""
 
-    async def test_connect_sends_action_play_with_computed_offsets(self, connect: Any) -> None:
+    async def test_connect_sends_action_play_with_computed_offsets(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         rec = _recording()
         fake = _FakeWS([_codec_frame()], hang=True)
         connect(fake)
         target = rec.start_time + 654
+        # The bridge stores target as a delta from the wall clock (see
+        # _current_history_target) and recomputes it from that on every
+        # connect -- frozen here so this asserts the same exact value
+        # regardless of how much real time construction-to-connect takes.
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target))
 
         bridge = WebSocketBridge(
             "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
@@ -1329,6 +1336,132 @@ class TestHistoryMode:
         assert fields["start"] == "654"
         assert fields["end"] == str(rec.stop_time - rec.start_time)
         assert fields["stamp"] == "1"
+        await bridge.stop()
+
+    async def test_connect_clamps_start_past_the_recordings_own_end(self, connect: Any) -> None:
+        """find_recording_at hands back the *nearest* recording for a
+        target landing in a gap between recordings, not necessarily one
+        that covers it -- a target past this recording's own end must
+        clamp to its last moment rather than requesting a start beyond
+        its length, which DSM held on the last decoded frame for
+        instead of erroring, reading as the slot having frozen."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.stop_time + 900  # 15 minutes past this recording's end
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["start"] == fields["end"]
+        await bridge.stop()
+
+    async def test_reconnect_resumes_from_elapsed_wall_clock_time_instead_of_rewinding(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """This bridge's own History sessions tend to drop on their own
+        after a fairly consistent ~2 minutes regardless of activity,
+        not just on a real connection drop -- likely this bridge not
+        yet doing whatever DSM's own web client does to keep one open
+        indefinitely, rather than DSM enforcing a session cap. Either
+        way, a reconnect (_pump's own, not a caller seek) must resume
+        near where playback should have reached by then, not replay
+        the original target and rewind every time (see
+        _current_history_target/self._history_delta_seconds)."""
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        clock = [float(target)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        assert dict(parse_qsl(fake1.sent[0]))["start"] == "100"
+
+        clock[0] += 45  # 45s of wall-clock time pass before DSM's own reconnect
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        assert dict(parse_qsl(fake2.sent[0]))["start"] == "145"
+        await bridge.stop()
+
+    async def test_reconnect_resolves_a_fresh_recording_once_the_loaded_one_runs_out(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recording stops extending once DSM finishes writing it --
+        its stop_time is then fixed, however far real time drifts past
+        it. Once a reconnect's target lands beyond that, it must ask
+        history_resolver for whatever now covers the camera at that
+        point rather than keep reconnecting into the same exhausted
+        recording forever (see _refresh_history_recording_if_stale)."""
+        rec1 = _recording(id=100, start_time=1_700_000_000, stop_time=1_700_000_200)
+        rec2 = _recording(id=200, start_time=1_700_000_150, stop_time=1_700_002_000)
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec1.start_time + 50
+        clock = [float(target)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+        resolved_for: list[int] = []
+
+        async def resolver(t: int) -> Recording:
+            resolved_for.append(t)
+            return rec2
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec1,
+            history_target=target,
+            history_resolver=resolver,
+        )
+        await bridge.start()
+        assert dict(parse_qsl(fake1.sent[0]))["id"] == str(rec1.id)
+
+        past_end = rec1.stop_time + 30  # drifted past rec1's own end
+        clock[0] = float(past_end)
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["id"] == str(rec2.id)
+        assert fields["start"] == str(past_end - rec2.start_time)
+        assert resolved_for == [past_end]
+        await bridge.stop()
+
+    async def test_reconnect_skips_the_resolver_while_still_within_the_loaded_recording(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolver call is a network round trip -- not worth paying
+        on every routine reconnect, only once the loaded recording
+        actually stops covering the target."""
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 50
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target))
+        resolved_for: list[int] = []
+
+        async def resolver(t: int) -> Recording:
+            resolved_for.append(t)
+            return rec
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_resolver=resolver,
+        )
+        await bridge.start()
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        assert resolved_for == []
         await bridge.stop()
 
     async def test_seek_within_same_recording_reuses_the_connection(self, connect: Any) -> None:
@@ -1354,7 +1487,34 @@ class TestHistoryMode:
         assert fields["stamp"] == "2"  # 1 was the initial action=play
         await bridge.stop()
 
-    async def test_seek_to_a_different_recording_reconnects(self, connect: Any) -> None:
+    async def test_seek_within_same_recording_clamps_offset_past_the_end(
+        self, connect: Any
+    ) -> None:
+        """Same clamp as the initial action=play's start, and for the
+        same reason -- a same-recording reseek can land past this
+        recording's own end too."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+
+        await bridge.seek(rec, rec.stop_time + 900)
+
+        seek_msgs = [m for m in fake.sent if m.startswith("seekMs=")]
+        fields = dict(parse_qsl(seek_msgs[0]))
+        assert fields["seekMs"] == str((rec.stop_time - rec.start_time) * 1000)
+        await bridge.stop()
+
+    async def test_seek_to_a_different_recording_reconnects(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A seek landing outside the loaded recording's span must open a
         fresh connection and repeat the action=play handshake for the new
         recording -- the same reconnect machinery an ordinary drop uses,
@@ -1364,6 +1524,10 @@ class TestHistoryMode:
         fake1 = _FakeWS([_codec_frame()], hang=True)
         fake2 = _FakeWS([_codec_frame()], hang=True)
         connect([fake1, fake2])
+        # Frozen for the same reason as test_connect_sends_action_play_
+        # with_computed_offsets -- the reconnect's start= is recomputed
+        # from the wall clock (see _current_history_target).
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(rec2.start_time + 200))
 
         bridge = WebSocketBridge(
             "wss://nas/stream",

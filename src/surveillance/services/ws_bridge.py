@@ -95,6 +95,7 @@ import struct
 import subprocess
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -282,6 +283,7 @@ class WebSocketBridge:
         label: str = "",
         history_recording: Recording | None = None,
         history_target: int = 0,
+        history_resolver: Callable[[int], Awaitable[Recording | None]] | None = None,
     ) -> None:
         self._ws_url = ws_url
         self._verify_ssl = verify_ssl
@@ -291,7 +293,24 @@ class WebSocketBridge:
         # still built by the caller either way (get_live_view_path /
         # a future history equivalent), same as it always has been.
         self._history_recording = history_recording
-        self._history_target = history_target
+        # Looks up whatever recording covers a given target_unix (a
+        # thin wrapper around find_recording_at -- this class has no
+        # API access of its own). Only needed for a target that has
+        # drifted past self._history_recording's own span (see
+        # _refresh_history_recording_if_stale); a Live bridge, or a
+        # History one that's never outlived its original recording,
+        # never calls it at all.
+        self._history_resolver = history_resolver
+        # Stored as "seconds behind the wall clock" rather than the
+        # absolute target itself, so a reconnect long after the initial
+        # seek -- this bridge's own History sessions tend to get
+        # dropped after roughly two minutes even with nothing wrong
+        # client-side, most likely because it hasn't yet found whatever
+        # DSM's own web client does to keep one open indefinitely --
+        # computes where playback should have reached by now instead of
+        # rewinding to the original target every time (see
+        # _current_history_target/_build_history_play_message).
+        self._history_delta_seconds: float = time.time() - history_target
         self._history_stamp = 0
         # The currently connected socket, for seek() to send on from
         # outside _pump's own scope -- None whenever no connection is up
@@ -992,6 +1011,35 @@ class WebSocketBridge:
         ready_task.cancel()
         raise RuntimeError(self._error or "WebSocket bridge exited before becoming ready")
 
+    def _current_history_target(self) -> int:
+        """Where History playback should be *right now*, derived fresh
+        from self._history_delta_seconds and the current wall clock
+        rather than read back as a fixed value -- see that attribute's
+        own comment for why."""
+        return int(time.time() - self._history_delta_seconds)
+
+    async def _refresh_history_recording_if_stale(self) -> None:
+        """Swap in a fresh recording via self._history_resolver if the
+        one currently loaded no longer covers _current_history_target().
+
+        Without this, a recording that stops extending (its stop_time
+        stays fixed once DSM finishes writing it) leaves every
+        reconnect after playback catches up to that point clamped to
+        its last offset (_build_history_play_message's own clamp) --
+        DSM serving nothing new from there, so the bridge stalls and
+        reconnects in a tight, unproductive loop instead of picking up
+        wherever a newer recording has since covered the same camera.
+        """
+        rec = self._history_recording
+        if rec is None or self._history_resolver is None:
+            return
+        target = self._current_history_target()
+        if rec.start_time <= target <= rec.stop_time:
+            return
+        fresh = await self._history_resolver(target)
+        if fresh is not None:
+            self._history_recording = fresh
+
     def _build_history_play_message(self) -> str:
         """Build the in-band `action=play` string that selects a recording
         and a starting point within it (see the module docstring) --
@@ -1039,8 +1087,19 @@ class WebSocketBridge:
         rec = self._history_recording
         if rec is None:
             raise RuntimeError("_build_history_play_message called with no recording set")
-        start = max(0, self._history_target - rec.start_time)
         end = max(0, rec.stop_time - rec.start_time)
+        # Clamped to [0, end], not just floored at 0: find_recording_at
+        # hands back the *nearest* recording, not necessarily one that
+        # actually covers the target, for a target landing in a gap
+        # between recordings. Unclamped, a target past this recording's
+        # own end produced a start beyond its length -- DSM held on the
+        # last decoded frame rather than erroring, which read as the
+        # slot having frozen. self._current_history_target() (not the
+        # original target) is what gets clamped: on a reconnect long
+        # after the initial seek, that's what keeps this landing near
+        # where playback should have reached by now instead of
+        # rewinding to the original target every time.
+        start = min(end, max(0, self._current_history_target() - rec.start_time))
         self._history_stamp = 1
         params = {
             "action": "play",
@@ -1077,21 +1136,27 @@ class WebSocketBridge:
         the same machinery an ordinary connection drop already uses,
         rather than a second reconnect path living here too.
 
-        A reconnect that _pump makes on its own (a dropped session, not
-        a caller-requested seek) replays the last recording/target set
-        here rather than wherever playback had actually reached --
-        tracking real playback position through a drop is not
-        implemented yet, so a routine reconnect currently rewinds to
-        the last seek instead of resuming.
+        Either way, self._history_delta_seconds is updated too (see
+        its own comment): a *later* reconnect -- caller-requested, or
+        _pump's own after this bridge's own History session drops on
+        its own after a couple of minutes regardless of activity --
+        resumes from where playback should have reached by then,
+        derived from that delta, rather than rewinding to this seek's
+        target again.
         """
+        self._history_delta_seconds = time.time() - target_unix
         if self._history_recording is not None and recording.id == self._history_recording.id:
-            offset_ms = max(0, (target_unix - recording.start_time) * 1000)
+            # Same clamp as _build_history_play_message's start, and for
+            # the same reason -- target_unix can land past this
+            # recording's own end when it's the nearest one to a target
+            # that's actually in a gap.
+            duration_ms = max(0, (recording.stop_time - recording.start_time) * 1000)
+            offset_ms = min(duration_ms, max(0, (target_unix - recording.start_time) * 1000))
             self._history_stamp += 1
             if self._current_ws is not None:
                 await self._current_ws.send(f"seekMs={offset_ms}&stamp={self._history_stamp}")
             return
         self._history_recording = recording
-        self._history_target = target_unix
         if self._current_ws is not None:
             await self._current_ws.close()
 
@@ -1151,6 +1216,7 @@ class WebSocketBridge:
                         self._last_audio_at = self._connected_at
                         delay = 0.0
                         if self._history_recording is not None:
+                            await self._refresh_history_recording_if_stale()
                             await ws.send(self._build_history_play_message())
                         await self._read_messages_with_keepalive(ws)
                 except _PipeWriteStalled as exc:

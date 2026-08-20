@@ -95,6 +95,15 @@ def get_history_view_path(api: SurveillanceAPI) -> str:
     and nothing here identifies a camera or recording, which is instead
     selected by an in-band message WebSocketBridge sends once connected
     (WebSocketBridge(history_recording=..., history_target=...)).
+
+    Deliberately *not* carrying over blMux/browser/relay_rec_auth from
+    DSM's own web client's connect URL, despite those being genuinely
+    present there: blMux=true at the connect-URL level (unlike the
+    same field already sent in-band in the action=play message, which
+    has no such effect) switches DSM into sending an already-muxed
+    MP4/MOV container from the start of the connection -- a
+    fundamentally different wire format from the raw frames this
+    bridge's reconstruction/AAC-detection pipeline parses.
     """
     scheme = "wss" if api.base_url.startswith("https") else "ws"
     host_port = api.base_url.split("://", 1)[1]

@@ -95,19 +95,12 @@ import struct
 import subprocess
 import threading
 import time
-from statistics import median
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from surveillance.api.models import Recording
 
-from surveillance.services.aac import (
-    adts_header,
-    detect_channel_count,
-    detect_frame_prefix_len,
-    nearest_sample_rate,
-    strip_frame_prefix,
-)
+from surveillance.services.aac import AacDetector, adts_header
 
 log = logging.getLogger(__name__)
 
@@ -161,35 +154,16 @@ _AUDIO_GAP_CHECK_INTERVAL = 0.5  # seconds
 # milliseconds, so this only has to outlast that, not cover a slow start.
 _FFMPEG_START_GRACE = 0.2  # seconds
 
-# Cap on how much video AAC sample-rate detection buffers before giving
-# up on collecting _AAC_DETECTION_INTERVALS real audio intervals and
-# starting anyway with whatever has been measured so far (or the default
-# guess, if audio never arrived at all), so a camera that claims AAC but
-# doesn't actually deliver a steady audio stream still starts.
-_AAC_DETECTION_VIDEO_FRAME_CAP = 60
-
-# The cap above only bounds detection while video keeps arriving. A
-# camera sending video slowly, or holding the connection open with
-# nothing but control frames, fills neither counter, and start() has no
-# timeout of its own, so the slot would wait on it for as long as the
-# connection stays up. Wall-clock ends detection in that case. Well past
-# what a healthy camera needs: 11 intervals take about 1.4s even at the
-# lowest AAC rate, and 60 video frames about 2.4s at 25fps.
+# How long AacDetector may buffer video+audio before the bridge starts
+# it anyway with whatever's been measured so far (or the default guess,
+# if audio never arrived at all) -- AacDetector's own frame/interval
+# counts (_AAC_DETECTION_VIDEO_FRAME_CAP/_AAC_DETECTION_INTERVALS in
+# aac.py) bound it while frames keep arriving; this is what ends it if
+# a camera sending video slowly, or holding the connection open with
+# nothing but control frames, never fills either. Well past what a
+# healthy camera needs: 11 intervals take about 1.4s even at the lowest
+# AAC rate, and 60 video frames about 2.4s at 25fps.
 _AAC_DETECTION_TIMEOUT = 10.0  # seconds
-
-# Inter-frame intervals to collect before locking the AAC sample rate.
-# Odd, because the rate comes from their median: these are wall-clock
-# arrival times measured on the one event loop that also serves every
-# other camera, so a single scheduling hiccup is normal. The rates sit
-# close together (48000 vs 44100 is 8.8% apart, about 0.9ms of interval
-# at 48kHz), so a mean would let one late frame pick the wrong one and
-# play the whole session at the wrong pitch.
-_AAC_DETECTION_INTERVALS = 11
-
-# How long the throwaway ffmpeg that checks a reconstructed AAC framing
-# may take. It decodes a handful of buffered frames from a pipe and
-# exits, so this only has to cover a loaded machine, not real work.
-_AAC_PROBE_TIMEOUT = 3.0  # seconds
 
 # ffmpeg -f value for each video codec DSM reports.
 _FFMPEG_VIDEO_FORMAT = {"H264": "h264", "H265": "hevc"}
@@ -205,10 +179,11 @@ _FFMPEG_AUDIO_ARGS = {
 # Audio codecs that need per-frame transformation (the raw frame
 # recovered from what DSM sent, a synthesized ADTS header prepended)
 # rather than PCMU's raw passthrough. Two camera models are known, and
-# they do not send the frame the same way -- see _reconstruct_aac_frame.
+# they do not send the frame the same way -- see
+# AacDetector.reconstruct_frame (aac.py).
 _AAC_AUDIO_CODECS = frozenset({"MPEG4-GENERIC"})
 
-# AAC detection can buffer up to _AAC_DETECTION_VIDEO_FRAME_CAP frames
+# AAC detection can buffer up to AacDetector's own video-frame cap
 # before anything starts draining them, easily exceeding Linux's default
 # 64KiB pipe buffer (H.265 keyframes alone can run into the hundreds of
 # KB) and blocking our writer on a reader that hasn't attached yet.
@@ -347,39 +322,16 @@ class WebSocketBridge:
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
-        self._last_audio_write_time: float | None = None
         # AAC's real sample rate isn't in the codec-info frame anywhere,
         # but ffmpeg's Matroska muxer needs a correct, stable rate from
         # its very first probe to write valid output -- a wrong initial
         # guess that self-corrects a few frames in still poisons the
-        # muxer's extradata detection. So video+audio are buffered here
-        # (see _aac_detecting) until real inter-frame timing reveals the
-        # rate, and only then does ffmpeg start.
-        self._aac_sample_rate = 16000
-        # Overwritten by detect_frame_prefix_len() in _finish_aac_detection
-        # before any real frame is ever stripped.
-        self._frame_prefix_len = 2
-        # Some cameras don't put the whole frame, prefixed, in the payload
-        # -- the payload is missing its own leading bytes, and those are
-        # what DSM's per-message header ends in instead (see aac.py).
-        # _finish_aac_detection flips this once the payload-only prefix
-        # model fails to validate -- see _reconstruct_aac_frame.
-        self._aac_use_header_prepend = False
-        # Settled once from real frames by _aac_frames_look_valid, since
-        # only a reconstructed frame says what the layout is. Stereo until
-        # then, which is what every camera got before.
-        self._aac_channels = 2
-        # Whether any framing check ran out of time rather than reaching a
-        # verdict, so the two are not reported as one.
-        self._aac_probe_timed_out = False
-        self._aac_intervals: list[float] = []
-        self._aac_detecting = False
-        # Only meaningful while _aac_detecting; _setup_pipes sets it when
-        # it arms detection.
-        self._aac_detection_deadline = 0.0
+        # muxer's extradata detection. So video+audio are buffered (see
+        # AacDetector) until real inter-frame timing reveals the rate,
+        # and only then does ffmpeg start. One instance per bridge,
+        # reused for its whole lifetime -- see aac.py's AacDetector.
+        self._aac = AacDetector()
         self._pending_video_codec: str = ""
-        self._aac_video_buffer: list[bytes] = []
-        self._aac_audio_buffer: list[tuple[bytes, bytes]] = []
         self._fd_lock = threading.Lock()
         self._pump_task: asyncio.Task[None] | None = None
         self._error: str = ""
@@ -456,17 +408,16 @@ class WebSocketBridge:
 
         AAC is a third case: video+audio are buffered rather than piped
         anywhere yet, until real frame timing reveals the sample rate
-        (see _accumulate_aac_detection_frame) — ffmpeg only starts once
-        that's known, so `start()` (and mpv) stay blocked a little
-        longer for these cameras specifically. Bounded three ways:
-        enough intervals, _AAC_DETECTION_VIDEO_FRAME_CAP, or
+        (see AacDetector.feed_audio) — ffmpeg only starts once that's
+        known, so `start()` (and mpv) stay blocked a little longer for
+        these cameras specifically. Bounded three ways: enough
+        intervals, AacDetector's own video-frame cap, or
         _AAC_DETECTION_TIMEOUT.
         """
         self._audio_codec = audio_codec
         if video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _AAC_AUDIO_CODECS:
             self._pending_video_codec = video_codec
-            self._aac_detecting = True
-            self._aac_detection_deadline = time.monotonic() + _AAC_DETECTION_TIMEOUT
+            self._aac.start(_AAC_DETECTION_TIMEOUT)
             log.debug(
                 "WebSocket bridge for %s: detecting AAC sample rate before muxing", self._label
             )
@@ -729,148 +680,27 @@ class WebSocketBridge:
         if "close" in fields:
             log.debug("WebSocket stream close: %s", header.decode(errors="replace"))
             return
-        if self._read_fd < 0 and not self._aac_detecting:
+        if self._read_fd < 0 and not self._aac.detecting:
             await self._setup_pipes(fields.get("vdoCodec", ""), fields.get("adoCodec", ""))
 
     async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
         """Write a real PCMU audio payload to ffmpeg's audio input."""
         await asyncio.to_thread(self._write_pipe, True, payload)
 
-    def _reconstruct_aac_frame(self, header_tail: bytes, payload: bytes) -> bytes:
-        """Recover one raw AAC frame from what DSM actually sent for it.
-
-        Some cameras put the whole frame, prefixed, in the payload --
-        strip_frame_prefix (see aac.py) handles that. At least one model
-        instead splits the frame across the WS message itself: the
-        payload is missing its own leading bytes, and those are exactly
-        what the per-message header ends in. _finish_aac_detection
-        decides which of the two actually decodes for this camera and
-        sets _aac_use_header_prepend accordingly.
-        """
-        if self._aac_use_header_prepend:
-            return header_tail + payload
-        return strip_frame_prefix(payload, self._frame_prefix_len)
-
     async def _handle_aac_audio_frame(self, header_tail: bytes, payload: bytes) -> None:
         """Write a real AAC frame to ffmpeg's audio input, after
-        reconstructing the raw frame (see _reconstruct_aac_frame) and
-        prepending a synthesized ADTS header (see aac.py) — ffmpeg's
-        plain "aac" demuxer needs ADTS framing, not what DSM sends.
+        reconstructing the raw frame (see AacDetector.reconstruct_frame)
+        and prepending a synthesized ADTS header (see aac.py) —
+        ffmpeg's plain "aac" demuxer needs ADTS framing, not what DSM
+        sends.
 
         The sample rate, framing mode and channel count are already
         known by the time this ever runs (detection happens before
-        ffmpeg starts at all — see _accumulate_aac_detection_frame).
+        ffmpeg starts at all — see AacDetector.feed_audio).
         """
-        frame = self._reconstruct_aac_frame(header_tail, payload)
-        header = adts_header(len(frame), self._aac_sample_rate, self._aac_channels)
+        frame = self._aac.reconstruct_frame(header_tail, payload)
+        header = adts_header(len(frame), self._aac.sample_rate, self._aac.channels)
         await asyncio.to_thread(self._write_pipe, True, header + frame)
-
-    async def _accumulate_aac_detection_frame(self, header_tail: bytes, payload: bytes) -> None:
-        """Buffer one audio payload and the header tail it arrived with,
-        while determining the camera's real sample rate from real
-        inter-frame timing. Called instead of _handle_aac_audio_frame
-        until the rate locks in and ffmpeg actually starts (see
-        _setup_pipes).
-
-        Which of the two framings the payload is in is not decided until
-        _finish_aac_detection, so both halves are kept exactly as they
-        arrived (see _reconstruct_aac_frame)."""
-        now = time.monotonic()
-        if self._last_audio_write_time is not None:
-            interval = now - self._last_audio_write_time
-            if 0 < interval < 0.5:  # skip anything spanning a reconnect gap
-                self._aac_intervals.append(interval)
-        self._last_audio_write_time = now
-        self._aac_audio_buffer.append((header_tail, payload))
-        if len(self._aac_intervals) >= _AAC_DETECTION_INTERVALS:
-            await self._finish_aac_detection()
-
-    async def _aac_frames_look_valid(self) -> bool:
-        """Quick sanity check: does the frame reconstruction currently
-        selected (_frame_prefix_len / _aac_use_header_prepend — see
-        _reconstruct_aac_frame) actually produce decodable AAC for this
-        camera?
-
-        detect_frame_prefix_len (see _finish_aac_detection) has already
-        eliminated the prefix lengths that are provably wrong when not
-        using header-prepend mode, but it cannot confirm the one it
-        returns, so this stays the only real check either way. It also
-        covers cameras using neither framing at all: feeding ffmpeg the
-        wrongly-transformed result doesn't just produce bad audio, it
-        stalls the whole muxed pipeline outright. This catches that with
-        a throwaway decode attempt before ever committing to a real
-        session, so an unsupported camera falls back to video-only
-        instead of a broken one.
-
-        Settles _aac_channels on the way through, since the channel
-        count can only be read off a reconstructed frame and this is
-        where the frames get reconstructed. That also means the stream
-        being validated is exactly the one the session will go on to
-        send, rather than one labelling being checked and another sent.
-
-        Raises ValueError if the reconstruction produces something too
-        long to be one frame, which is its own kind of "not ours" -- see
-        _finish_aac_detection, which decides what to do about it.
-        """
-        frames = [
-            self._reconstruct_aac_frame(header_tail, raw)
-            for header_tail, raw in self._aac_audio_buffer
-        ]
-        self._aac_channels = detect_channel_count(frames)
-        buf = bytearray()
-        for frame in frames:
-            buf += adts_header(len(frame), self._aac_sample_rate, self._aac_channels) + frame
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-v",
-                "error",
-                "-f",
-                "aac",
-                "-i",
-                "pipe:0",
-                "-f",
-                "null",
-                "-",
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-        except OSError:
-            # Can't validate without ffmpeg; say yes and let _start_muxed's
-            # own OSError handling drop us to video-only.
-            return True
-        # Which framing was under test, on every line: this runs twice per
-        # bridge (payload-prefix first, then header-prepend), so an
-        # unqualified verdict says nothing about which one produced it.
-        mode = "header-embedded prefix" if self._aac_use_header_prepend else "frame prefix"
-        try:
-            _, stderr = await asyncio.wait_for(
-                proc.communicate(bytes(buf)), timeout=_AAC_PROBE_TIMEOUT
-            )
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            self._aac_probe_timed_out = True
-            log.debug(
-                "WebSocket bridge for %s: %s framing check did not finish in %.0fs",
-                self._label,
-                mode,
-                _AAC_PROBE_TIMEOUT,
-            )
-            return False
-        # The verdict is "ffmpeg printed nothing", so the text it printed is
-        # the whole of the reason a camera loses its audio. Logging it is
-        # the only way to tell a real framing error from, say, a build that
-        # dislikes an argument.
-        complaint = stderr.decode(errors="replace").strip()
-        log.debug(
-            "WebSocket bridge for %s: %s framing %s",
-            self._label,
-            mode,
-            f"rejected by ffmpeg: {complaint}" if complaint else "decodes",
-        )
-        return not complaint
 
     async def _fall_back_to_video_only(self) -> None:
         """Give up on muxing this camera's AAC in and use the original
@@ -898,23 +728,18 @@ class WebSocketBridge:
             # _ready_event, so nobody opens the read end, and the flush
             # below would fill the buffer and then park a worker thread
             # on it for the whole write timeout on the way out.
-            self._aac_video_buffer.clear()
-            self._aac_audio_buffer.clear()
+            self._aac.video_buffer.clear()
+            self._aac.audio_buffer.clear()
             return
         self._read_fd, self._video_write_fd = os.pipe()
         _grow_pipe_buffer(self._read_fd)
         _set_write_end_nonblocking(self._video_write_fd)
         self._audio_active = False
         self._ready_event.set()
-        for nal in self._aac_video_buffer:
+        for nal in self._aac.video_buffer:
             await asyncio.to_thread(self._write_pipe, False, nal)
-        self._aac_video_buffer.clear()
-        self._aac_audio_buffer.clear()
-
-    def _aac_detection_expired(self) -> bool:
-        """Is AAC detection running, and out of time (see
-        _AAC_DETECTION_TIMEOUT)?"""
-        return self._aac_detecting and time.monotonic() >= self._aac_detection_deadline
+        self._aac.video_buffer.clear()
+        self._aac.audio_buffer.clear()
 
     async def _expire_aac_detection(self) -> None:
         """End detection on its deadline rather than on either counter,
@@ -928,72 +753,11 @@ class WebSocketBridge:
         await self._finish_aac_detection()
 
     async def _finish_aac_detection(self) -> None:
-        """Lock in the detected (or, failing that, default) AAC sample
-        rate, work out how to reconstruct a real frame from what DSM
-        actually sent (see _reconstruct_aac_frame), verify that
-        reconstruction actually decodes for this camera, then either
-        start the muxed ffmpeg pipeline or fall back to video-only —
-        flushing everything buffered during detection either way."""
-        if self._aac_intervals:
-            self._aac_sample_rate = nearest_sample_rate(median(self._aac_intervals))
-        self._aac_detecting = False
-        # Detection is over either way. Left populated, these would make a
-        # reconnect that re-enters detection finish instantly off the
-        # previous session's measurements.
-        self._aac_intervals.clear()
-        self._last_audio_write_time = None
-
-        if not self._aac_audio_buffer:
-            # Detection also ends on the video-frame cap and on its own
-            # deadline, so it can finish having seen no audio at all.
-            # There is nothing to work out from an empty buffer, and
-            # nothing to hand ffmpeg either.
-            log.warning(
-                "WebSocket bridge for %s: no AAC audio arrived during detection, "
-                "streaming video without audio",
-                self._label,
-            )
-            await self._fall_back_to_video_only()
-            return
-
-        payloads = [payload for _header_tail, payload in self._aac_audio_buffer]
-        prefix_len = detect_frame_prefix_len(payloads)
-        # Sticky across both framings tried below, not cleared per probe:
-        # "not in a recognized framing" claims every framing was tried and
-        # rejected, so one that ran out of time instead has to disqualify
-        # that sentence even when the other reached a real verdict.
-        self._aac_probe_timed_out = False
-        try:
-            valid = False
-            if prefix_len is not None:
-                self._frame_prefix_len = prefix_len
-                valid = await self._aac_frames_look_valid()
-            if not valid:
-                # The payload-only prefix model didn't hold for this camera,
-                # so try reconstructing frames from the header instead (see
-                # _reconstruct_aac_frame) before giving up on it. This runs
-                # once per bridge, so the flag is still off from __init__ and
-                # the attempt above really was the payload-only one.
-                self._aac_use_header_prepend = True
-                valid = await self._aac_frames_look_valid()
-        except ValueError:
-            # A frame too long for an ADTS header to describe is not one
-            # frame, so this camera is using neither framing. Retrying is
-            # pointless rather than merely unlikely: header-prepend makes
-            # the frame strictly longer than the payload-only strip does,
-            # so it can only overflow the same way.
-            valid = False
-            reason = "AAC frames are longer than an ADTS header can describe"
-        else:
-            # A probe that ran out of time established nothing about the
-            # camera, so it must not be reported as a framing that was
-            # tried and rejected.
-            reason = (
-                f"the AAC framing check did not finish in {_AAC_PROBE_TIMEOUT:.0f}s"
-                if self._aac_probe_timed_out
-                else "AAC frames are not in a recognized framing"
-            )
-
+        """Work out how to read this camera's AAC (see AacDetector.finish)
+        and act on the answer: start the muxed ffmpeg pipeline, or fall
+        back to video-only -- flushing everything buffered during
+        detection either way."""
+        valid, reason = await self._aac.finish(self._label)
         if valid:
             await self._start_aac_pipeline()
             return
@@ -1010,13 +774,13 @@ class WebSocketBridge:
             "WebSocket bridge for %s: AAC sample rate %dHz, %d channel(s), %s, "
             "starting muxed pipeline (%d buffered video, %d buffered audio frames)",
             self._label,
-            self._aac_sample_rate,
-            self._aac_channels,
+            self._aac.sample_rate,
+            self._aac.channels,
             "header-embedded prefix"
-            if self._aac_use_header_prepend
-            else f"{self._frame_prefix_len}-byte frame prefix",
-            len(self._aac_video_buffer),
-            len(self._aac_audio_buffer),
+            if self._aac.use_header_prepend
+            else f"{self._aac.frame_prefix_len}-byte frame prefix",
+            len(self._aac.video_buffer),
+            len(self._aac.audio_buffer),
         )
         try:
             await self._start_muxed(self._pending_video_codec, self._audio_codec)
@@ -1055,26 +819,25 @@ class WebSocketBridge:
         whole buffer written with near-zero time between frames looks like
         a degenerate rate to its estimation and can stall it entirely.
         """
-        for nal in self._aac_video_buffer:
+        for nal in self._aac.video_buffer:
             await asyncio.to_thread(self._write_pipe, False, nal)
             await asyncio.sleep(0.04)
-        self._aac_video_buffer.clear()
+        self._aac.video_buffer.clear()
 
     async def _flush_aac_audio(self) -> None:
         """Drain the audio buffered during detection, paced at the frame
         duration implied by the sample rate just detected."""
-        audio_frame_duration = 1024 / self._aac_sample_rate
-        for header_tail, payload in self._aac_audio_buffer:
+        audio_frame_duration = 1024 / self._aac.sample_rate
+        for header_tail, payload in self._aac.audio_buffer:
             await self._handle_aac_audio_frame(header_tail, payload)
             await asyncio.sleep(audio_frame_duration)
-        self._aac_audio_buffer.clear()
+        self._aac.audio_buffer.clear()
 
     async def _handle_video_frame(self, nal: bytes) -> None:
         """Route a video NAL to ffmpeg's input, or buffer it if still
         waiting on AAC sample-rate detection (see _setup_pipes)."""
-        if self._aac_detecting:
-            self._aac_video_buffer.append(nal)
-            if len(self._aac_video_buffer) >= _AAC_DETECTION_VIDEO_FRAME_CAP:
+        if self._aac.detecting:
+            if self._aac.feed_video(nal):
                 await self._finish_aac_detection()
         else:
             await asyncio.to_thread(self._write_pipe, False, nal)
@@ -1082,9 +845,10 @@ class WebSocketBridge:
     async def _dispatch_audio_frame(self, header_tail: bytes, payload: bytes) -> None:
         """Route a real audio payload to whichever handler matches the
         current codec/detection state. *header_tail* is only used by the
-        AAC path (see _reconstruct_aac_frame)."""
-        if self._aac_detecting:
-            await self._accumulate_aac_detection_frame(header_tail, payload)
+        AAC path (see AacDetector.reconstruct_frame)."""
+        if self._aac.detecting:
+            if self._aac.feed_audio(header_tail, payload):
+                await self._finish_aac_detection()
         elif self._audio_codec in _AAC_AUDIO_CODECS:
             await self._handle_aac_audio_frame(header_tail, payload)
         else:
@@ -1109,16 +873,16 @@ class WebSocketBridge:
         """
         while True:
             timeout = _IDLE_TIMEOUT
-            if self._aac_detecting:
+            if self._aac.detecting:
                 # Waiting the full idle timeout on a camera whose detection
                 # deadline lands sooner would let the stall fire first, and
                 # a stall only reconnects: detection would start over, and
                 # over, with start() still waiting on it.
-                timeout = min(timeout, max(0.0, self._aac_detection_deadline - time.monotonic()))
+                timeout = min(timeout, max(0.0, self._aac.deadline - time.monotonic()))
             try:
                 message = await asyncio.wait_for(ws.recv(), timeout=timeout)
             except TimeoutError:
-                if self._aac_detection_expired():
+                if self._aac.expired():
                     # Nothing is arriving and detection is out of time.
                     # Finishing beats treating it as a stall: the slot gets
                     # video rather than another reconnect it can't use.
@@ -1127,7 +891,7 @@ class WebSocketBridge:
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None
             self._attempt_got_data = True
-            if self._aac_detection_expired():
+            if self._aac.expired():
                 await self._expire_aac_detection()
             if not isinstance(message, bytes) or len(message) < 4:
                 continue
@@ -1142,7 +906,7 @@ class WebSocketBridge:
                 await self._handle_control_frame(fields, header)
                 continue
 
-            if (self._read_fd < 0 and not self._aac_detecting) or not payload:
+            if (self._read_fd < 0 and not self._aac.detecting) or not payload:
                 continue  # haven't seen codec info yet, or an empty frame
 
             media_type = fields.get("mediaType")
@@ -1152,11 +916,11 @@ class WebSocketBridge:
                 # DSM leaves it has never been checked here; the constant
                 # is what the black screen needed.
                 await self._handle_video_frame(b"\x00\x00\x00\x01" + payload)
-            elif media_type == "2" and (self._audio_active or self._aac_detecting):
+            elif media_type == "2" and (self._audio_active or self._aac.detecting):
                 # For some cameras the header ends in the leading bytes
-                # the AAC payload is missing -- see _reconstruct_aac_frame.
-                # Harmless to pass along for PCMU too, since that path
-                # just ignores it.
+                # the AAC payload is missing -- see
+                # AacDetector.reconstruct_frame. Harmless to pass along
+                # for PCMU too, since that path just ignores it.
                 await self._dispatch_audio_frame(header[-4:], payload)
 
     async def _send_keepalive_loop(self, ws: Any) -> None:

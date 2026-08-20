@@ -70,7 +70,7 @@ except ModuleNotFoundError:
     sys.modules["websockets.exceptions"] = _exc
 
 from surveillance.api.models import Recording
-from surveillance.services import ws_bridge
+from surveillance.services import aac, ws_bridge
 from surveillance.services.aac import adts_header
 from surveillance.services.ws_bridge import WebSocketBridge
 
@@ -752,7 +752,7 @@ async def _spawn_fake_mux_holder(**kwargs: Any) -> Any:
 # resolution, not a real race), so intervals never accumulate. Padding
 # with enough video frames to hit _AAC_DETECTION_VIDEO_FRAME_CAP makes
 # detection finish deterministically either way.
-_AAC_DETECTION_PADDING = [_video_frame() for _ in range(ws_bridge._AAC_DETECTION_VIDEO_FRAME_CAP)]
+_AAC_DETECTION_PADDING = [_video_frame() for _ in range(aac._AAC_DETECTION_VIDEO_FRAME_CAP)]
 
 
 async def _wait_until(done: Callable[[], bool], timeout: float = 5.0) -> None:
@@ -864,8 +864,8 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
-        assert bridge._frame_prefix_len == 3
-        assert bridge._aac_use_header_prepend is False
+        assert bridge._aac.frame_prefix_len == 3
+        assert bridge._aac.use_header_prepend is False
         await bridge.stop()
 
     async def test_mux_active_when_the_frame_is_split_across_the_header(
@@ -874,7 +874,7 @@ class TestAudioMuxDecision:
         """A camera whose payload doesn't validate under any prefix
         length (see _undetectable_prefix_frame), because the payload is
         missing its own leading bytes -- those are the last 4 bytes of
-        the WS message's own header instead (see _reconstruct_aac_frame).
+        the WS message's own header instead (see AacDetector.reconstruct_frame).
         Once the payload-only model is ruled out, the bridge must
         reconstruct frames from the header tail and mux with that instead
         of giving up.
@@ -913,7 +913,7 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
-        assert bridge._aac_use_header_prepend is True
+        assert bridge._aac.use_header_prepend is True
 
         # start() returns before the buffered frames are flushed -- the
         # pipeline sets its ready event first, on purpose (see
@@ -921,8 +921,8 @@ class TestAudioMuxDecision:
         await _wait_until(lambda: len(audio_writes) >= 6)
         first_frame = b"\x01\x02\x03\x00" + b"\xe0" * 50
         # 0x01's top 3 bits are an SCE, so the settled layout is mono.
-        assert bridge._aac_channels == 1
-        expected = adts_header(len(first_frame), bridge._aac_sample_rate, 1)
+        assert bridge._aac.channels == 1
+        expected = adts_header(len(first_frame), bridge._aac.sample_rate, 1)
         assert audio_writes[0] == expected + first_frame
         await bridge.stop()
 
@@ -957,7 +957,7 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
-        assert bridge._aac_use_header_prepend is True
+        assert bridge._aac.use_header_prepend is True
         assert validations == 2
         await bridge.stop()
 
@@ -1056,7 +1056,7 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await asyncio.wait_for(bridge.start(), timeout=5.0)
         assert bridge.audio_active is False
-        assert bridge._aac_detecting is False
+        assert bridge._aac.detecting is False
         # Ended as a deadline, not as a stall: a stall would have recorded
         # its reason and dropped the connection instead.
         assert bridge._error == ""
@@ -1075,7 +1075,7 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await asyncio.wait_for(bridge.start(), timeout=5.0)
         assert bridge.audio_active is False
-        assert bridge._aac_detecting is False
+        assert bridge._aac.detecting is False
         assert bridge._error == ""
         await bridge.stop()
 
@@ -1104,7 +1104,7 @@ class TestAudioMuxDecision:
             return real_adts_header(payload_length, sample_rate, channels)
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
-        monkeypatch.setattr(ws_bridge, "adts_header", _counting_adts_header)
+        monkeypatch.setattr(aac, "adts_header", _counting_adts_header)
         frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
         frames += [_aac_audio_frame(payload_len=8200) for _ in range(6)]
         frames += _AAC_DETECTION_PADDING
@@ -1127,22 +1127,22 @@ class TestAacFrameReconstruction:
 
     def test_payload_only_mode_strips_the_detected_prefix(self) -> None:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._frame_prefix_len = 3
-        frame = bridge._reconstruct_aac_frame(b"\x01\x02\x03\x04", b"\x34\x1f\xfc\x21\x1a")
+        bridge._aac.frame_prefix_len = 3
+        frame = bridge._aac.reconstruct_frame(b"\x01\x02\x03\x04", b"\x34\x1f\xfc\x21\x1a")
         assert frame == b"\x21\x1a"
 
     def test_header_prepend_mode_puts_the_header_tail_back_in_front(self) -> None:
         """The payload is missing its own leading bytes; the WS message's
         header ends in exactly those bytes. Nothing is stripped."""
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._aac_use_header_prepend = True
-        frame = bridge._reconstruct_aac_frame(b"\x01\x2e\x35\xa8", b"\xaa\xbb")
+        bridge._aac.use_header_prepend = True
+        frame = bridge._aac.reconstruct_frame(b"\x01\x2e\x35\xa8", b"\xaa\xbb")
         assert frame == b"\x01\x2e\x35\xa8\xaa\xbb"
 
     async def test_writes_an_adts_header_in_front_of_the_reconstructed_frame(self) -> None:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._aac_use_header_prepend = True
-        bridge._aac_sample_rate = 16000
+        bridge._aac.use_header_prepend = True
+        bridge._aac.sample_rate = 16000
         written: list[bytes] = []
         bridge._write_pipe = lambda audio, data: written.append(data)  # type: ignore[method-assign]
 
@@ -1158,9 +1158,9 @@ class TestAacFrameReconstruction:
         announces a channel_configuration that changes mid-stream, which
         no valid ADTS stream does."""
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._aac_sample_rate = 16000
-        bridge._frame_prefix_len = 0
-        bridge._aac_channels = 1
+        bridge._aac.sample_rate = 16000
+        bridge._aac.frame_prefix_len = 0
+        bridge._aac.channels = 1
         written: list[bytes] = []
         bridge._write_pipe = lambda audio, data: written.append(data)  # type: ignore[method-assign]
 

@@ -23,13 +23,14 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""AAC helpers for WebSocket audio muxing (see ws_bridge.py).
+"""AAC helpers for WebSocket audio muxing (see ws_bridge.py, which
+drives AacDetector below).
 
 DSM never sends a self-contained ADTS frame, which is what ffmpeg's
-plain "aac" demuxer needs. The bridge recovers the raw frame and
-prepends a synthesized ADTS header the demuxer can find via the sync
-word. What has to be recovered is not the same for every camera -- see
-_reconstruct_aac_frame in ws_bridge.py for the two shapes seen so far.
+plain "aac" demuxer needs. AacDetector.reconstruct_frame recovers the
+raw frame and adts_header() below synthesizes a header the demuxer can
+find via the sync word. What has to be recovered is not the same for
+every camera -- see reconstruct_frame for the two shapes seen so far.
 
 On the camera whose frames were captured, the payload arrives behind a
 short prefix, and that prefix is the tail of an ADTS header rather than
@@ -54,8 +55,8 @@ reporting a decode error: leaving one prefix byte unstripped makes its
 decoder recover through an internal retry that drops the packet's own
 timestamp without surfacing anything, which is what let WebSocket
 reconnect gaps pass unnoticed until audio and video had drifted apart.
-_aac_frames_look_valid in ws_bridge.py only checks that ffmpeg stays
-quiet, so it cannot catch that by itself.
+AacDetector.frames_look_valid only checks that ffmpeg stays quiet, so
+it cannot catch that by itself.
 
 A second camera model (reported in PR #17 as a Reolink RLC-823A) sends
 the same adoCodec with no payload prefix at all: the payload is missing
@@ -63,13 +64,20 @@ the frame's own leading bytes, and the WS message's header ends in
 exactly those. detect_frame_prefix_len does not report that -- it only
 eliminates, so it hands back whichever length happens to survive -- so
 it is the ffmpeg check that rules the payload-only model out, and
-ws_bridge.py's _reconstruct_aac_frame then rebuilds the frame from the
-header instead.
+reconstruct_frame then rebuilds the frame from the header instead.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
+import subprocess
+import time
 from collections.abc import Sequence
+from statistics import median
+
+log = logging.getLogger(__name__)
 
 # DSM doesn't expose the negotiated sample rate directly (adoExtra's
 # encoding isn't known), but every AAC-LC frame carries a fixed 1024
@@ -218,3 +226,273 @@ def adts_header(payload_length: int, sample_rate: int, channels: int) -> bytes:
     h[5] = ((frame_len & 0x7) << 5) | 0x1F
     h[6] = 0xFC
     return bytes(h)
+
+
+# Cap on how much video AacDetector buffers before giving up on
+# collecting _AAC_DETECTION_INTERVALS real audio intervals and starting
+# anyway with whatever has been measured so far (or the default guess,
+# if audio never arrived at all), so a camera that claims AAC but
+# doesn't actually deliver a steady audio stream still starts.
+_AAC_DETECTION_VIDEO_FRAME_CAP = 60
+
+# Inter-frame intervals to collect before locking the AAC sample rate.
+# Odd, because the rate comes from their median: these are wall-clock
+# arrival times measured on the one event loop that also serves every
+# other camera, so a single scheduling hiccup is normal. The rates sit
+# close together (48000 vs 44100 is 8.8% apart, about 0.9ms of interval
+# at 48kHz), so a mean would let one late frame pick the wrong one and
+# play the whole session at the wrong pitch.
+_AAC_DETECTION_INTERVALS = 11
+
+# How long the throwaway ffmpeg that checks a reconstructed AAC framing
+# may take. It decodes a handful of buffered frames from a pipe and
+# exits, so this only has to cover a loaded machine, not real work.
+_AAC_PROBE_TIMEOUT = 3.0  # seconds
+
+
+class AacDetector:
+    """Works out how to turn one camera's raw AAC into something
+    ffmpeg's ADTS demuxer can read, and buffers video+audio while doing
+    it -- see the module docstring for what's actually being determined
+    and why it can't be known upfront.
+
+    One instance per WebSocketBridge connection attempt, created once
+    and reused for the bridge's whole lifetime (detection only ever
+    runs on the first codec-info frame -- see ws_bridge.py's
+    _handle_control_frame). The bridge owns starting it, feeding it
+    frames, calling finish() once enough have arrived, and acting on
+    the result (start the muxed pipeline, or fall back to video-only);
+    this class only ever decides *how* to read this camera's AAC, never
+    what to do with that answer.
+    """
+
+    def __init__(self) -> None:
+        # Defaults match what every camera got before either of these
+        # was detected -- see nearest_sample_rate/detect_channel_count.
+        self.sample_rate = 16000
+        self.channels = 2
+        # Some cameras don't put the whole frame, prefixed, in the
+        # payload -- the payload is missing its own leading bytes, and
+        # those are what DSM's per-message header ends in instead (see
+        # reconstruct_frame). finish() flips this once the payload-only
+        # prefix model fails to validate.
+        self.use_header_prepend = False
+        # Overwritten by detect_frame_prefix_len() in finish() before
+        # any real frame is ever stripped.
+        self.frame_prefix_len = 2
+        self.detecting = False
+        # Whether the *last* framing check ran out of time rather than
+        # reaching a verdict, so the two are never reported as one.
+        self.probe_timed_out = False
+        self.deadline = 0.0
+        self._intervals: list[float] = []
+        self._last_audio_at: float | None = None
+        self.video_buffer: list[bytes] = []
+        self.audio_buffer: list[tuple[bytes, bytes]] = []
+
+    def start(self, timeout_seconds: float) -> None:
+        """Arm detection -- the caller feeds video/audio via feed_video/
+        feed_audio from here on, until one of them reports the buffer
+        full, or *timeout_seconds* passes with the caller checking
+        expired() itself (there is no timer here to cancel)."""
+        self.detecting = True
+        self.deadline = time.monotonic() + timeout_seconds
+
+    def expired(self) -> bool:
+        """Is detection running, and out of time?"""
+        return self.detecting and time.monotonic() >= self.deadline
+
+    def feed_video(self, nal: bytes) -> bool:
+        """Buffer one video NAL. Returns True once the video-frame cap
+        is hit, meaning the caller should call finish() now."""
+        self.video_buffer.append(nal)
+        return len(self.video_buffer) >= _AAC_DETECTION_VIDEO_FRAME_CAP
+
+    def feed_audio(self, header_tail: bytes, payload: bytes) -> bool:
+        """Buffer one audio payload and the header tail it arrived
+        with -- which of the two framings it's actually in is not
+        decided until finish(), so both halves are kept exactly as
+        they arrived (see reconstruct_frame). Returns True once enough
+        real inter-frame intervals have been measured, meaning the
+        caller should call finish() now."""
+        now = time.monotonic()
+        if self._last_audio_at is not None:
+            interval = now - self._last_audio_at
+            if 0 < interval < 0.5:  # skip anything spanning a reconnect gap
+                self._intervals.append(interval)
+        self._last_audio_at = now
+        self.audio_buffer.append((header_tail, payload))
+        return len(self._intervals) >= _AAC_DETECTION_INTERVALS
+
+    def reconstruct_frame(self, header_tail: bytes, payload: bytes) -> bytes:
+        """Recover one raw AAC frame from what DSM actually sent for it.
+
+        Some cameras put the whole frame, prefixed, in the payload --
+        strip_frame_prefix handles that. At least one model instead
+        splits the frame across the WS message itself: the payload is
+        missing its own leading bytes, and those are exactly what the
+        per-message header ends in. finish() decides which of the two
+        actually decodes for this camera and sets use_header_prepend
+        accordingly.
+        """
+        if self.use_header_prepend:
+            return header_tail + payload
+        return strip_frame_prefix(payload, self.frame_prefix_len)
+
+    async def frames_look_valid(self, label: str) -> bool:
+        """Quick sanity check: does the frame reconstruction currently
+        selected (frame_prefix_len / use_header_prepend -- see
+        reconstruct_frame) actually produce decodable AAC for this
+        camera?
+
+        detect_frame_prefix_len (see finish()) has already eliminated
+        the prefix lengths that are provably wrong when not using
+        header-prepend mode, but it cannot confirm the one it returns,
+        so this stays the only real check either way. It also covers
+        cameras using neither framing at all: feeding ffmpeg the
+        wrongly-transformed result doesn't just produce bad audio, it
+        stalls the whole muxed pipeline outright. This catches that
+        with a throwaway decode attempt before ever committing to a
+        real session, so an unsupported camera falls back to
+        video-only instead of a broken one.
+
+        Settles channels on the way through, since the channel count
+        can only be read off a reconstructed frame and this is where
+        the frames get reconstructed. That also means the stream being
+        validated is exactly the one the session will go on to send,
+        rather than one labelling being checked and another sent.
+
+        Raises ValueError if the reconstruction produces something too
+        long to be one frame, which is its own kind of "not ours" --
+        see finish(), which decides what to do about it. *label*
+        identifies the camera in the log lines below, same as
+        WebSocketBridge's own label.
+        """
+        frames = [
+            self.reconstruct_frame(header_tail, raw) for header_tail, raw in self.audio_buffer
+        ]
+        self.channels = detect_channel_count(frames)
+        buf = bytearray()
+        for frame in frames:
+            buf += adts_header(len(frame), self.sample_rate, self.channels) + frame
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "aac",
+                "-i",
+                "pipe:0",
+                "-f",
+                "null",
+                "-",
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except OSError:
+            # Can't validate without ffmpeg; say yes and let the
+            # bridge's own OSError handling drop us to video-only.
+            return True
+        # Which framing was under test, on every line: this runs twice
+        # per camera (payload-prefix first, then header-prepend), so an
+        # unqualified verdict says nothing about which one produced it.
+        mode = "header-embedded prefix" if self.use_header_prepend else "frame prefix"
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(bytes(buf)), timeout=_AAC_PROBE_TIMEOUT
+            )
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            self.probe_timed_out = True
+            log.debug(
+                "WebSocket bridge for %s: %s framing check did not finish in %.0fs",
+                label,
+                mode,
+                _AAC_PROBE_TIMEOUT,
+            )
+            return False
+        # The verdict is "ffmpeg printed nothing", so the text it
+        # printed is the whole of the reason a camera loses its audio.
+        # Logging it is the only way to tell a real framing error from,
+        # say, a build that dislikes an argument.
+        complaint = stderr.decode(errors="replace").strip()
+        log.debug(
+            "WebSocket bridge for %s: %s framing %s",
+            label,
+            mode,
+            f"rejected by ffmpeg: {complaint}" if complaint else "decodes",
+        )
+        return not complaint
+
+    async def finish(self, label: str) -> tuple[bool, str]:
+        """Lock in the detected (or, failing that, default) AAC sample
+        rate, work out how to reconstruct a real frame from what DSM
+        actually sent (see reconstruct_frame), and verify that
+        reconstruction actually decodes for this camera -- everything
+        buffered during detection is left in video_buffer/audio_buffer
+        either way, for the caller to flush.
+
+        Returns (valid, reason): *reason* explains a False verdict
+        (video-only was the right call) and is meaningless otherwise.
+        *label* identifies the camera in frames_look_valid's log lines.
+        """
+        if self._intervals:
+            self.sample_rate = nearest_sample_rate(median(self._intervals))
+        self.detecting = False
+        # Detection is over either way. Left populated, these would make
+        # a reconnect that re-enters detection finish instantly off the
+        # previous session's measurements.
+        self._intervals.clear()
+        self._last_audio_at = None
+
+        if not self.audio_buffer:
+            # Detection also ends on the video-frame cap and on its own
+            # deadline, so it can finish having seen no audio at all.
+            # There is nothing to work out from an empty buffer, and
+            # nothing to hand ffmpeg either.
+            return False, "no AAC audio arrived during detection"
+
+        payloads = [payload for _header_tail, payload in self.audio_buffer]
+        prefix_len = detect_frame_prefix_len(payloads)
+        # Sticky across both framings tried below, not cleared per probe:
+        # "not in a recognized framing" claims every framing was tried
+        # and rejected, so one that ran out of time instead has to
+        # disqualify that sentence even when the other reached a real
+        # verdict.
+        self.probe_timed_out = False
+        try:
+            valid = False
+            if prefix_len is not None:
+                self.frame_prefix_len = prefix_len
+                valid = await self.frames_look_valid(label)
+            if not valid:
+                # The payload-only prefix model didn't hold for this
+                # camera, so try reconstructing frames from the header
+                # instead (see reconstruct_frame) before giving up on
+                # it. This runs once per bridge, so the flag is still
+                # off from __init__ and the attempt above really was
+                # the payload-only one.
+                self.use_header_prepend = True
+                valid = await self.frames_look_valid(label)
+        except ValueError:
+            # A frame too long for an ADTS header to describe is not
+            # one frame, so this camera is using neither framing.
+            # Retrying is pointless rather than merely unlikely:
+            # header-prepend makes the frame strictly longer than the
+            # payload-only strip does, so it can only overflow the
+            # same way.
+            valid = False
+            reason = "AAC frames are longer than an ADTS header can describe"
+        else:
+            # A probe that ran out of time established nothing about
+            # the camera, so it must not be reported as a framing that
+            # was tried and rejected.
+            reason = (
+                f"the AAC framing check did not finish in {_AAC_PROBE_TIMEOUT:.0f}s"
+                if self.probe_timed_out
+                else "AAC frames are not in a recognized framing"
+            )
+        return valid, reason

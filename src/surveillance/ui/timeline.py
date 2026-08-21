@@ -26,12 +26,12 @@
 """Shared Live View timeline.
 
 Visual scaffold, in progress: the ruler is live (a live-updating time
-scale, pan, zoom, and click-to-seek all work), and so are the Live and
-+-10s buttons. The recording-presence bar is a static placeholder with
-no real data behind it yet -- wiring it to DSM's real EnumInterval/
-ListBookmark data is deliberately a separate piece of work from
-History mode itself, not yet started. The speed dropdown and the rest
-of the transport cluster (pause/event-jump) are still no-ops too.
+scale, pan, zoom, and click-to-seek all work), and so are the Live,
++-10s, and Pause/Play buttons. The recording-presence bar is a static
+placeholder with no real data behind it yet -- wiring it to DSM's real
+EnumInterval/ListBookmark data is deliberately a separate piece of
+work from History mode itself, not yet started. The speed dropdown and
+event-jump buttons are still no-ops too.
 """
 
 from __future__ import annotations
@@ -470,10 +470,10 @@ class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
     The current-time label, the canvas ruler, the zoom buttons, and
-    click-to-seek/Live/+-10s (see canvas.set_seek_callback/live_btn/
-    back_10s_btn/forward_10s_btn) are live; the speed dropdown and the
-    rest of the transport cluster (pause/event-jump) are still
-    placeholders with no behavior wired up yet.
+    click-to-seek/Live/+-10s/Pause (see canvas.set_seek_callback/
+    live_btn/back_10s_btn/forward_10s_btn/pause_btn) are live; the
+    speed dropdown and event-jump buttons are still placeholders with
+    no behavior wired up yet.
     """
 
     def __init__(self) -> None:
@@ -481,6 +481,8 @@ class Timeline(Gtk.Box):
         self.add_css_class("timeline")
 
         self.canvas = TimelineCanvas()
+        self.canvas.set_margin_start(8)
+        self.canvas.set_margin_end(8)
         self.append(self._build_toolbar())
         self.append(self.canvas)
         self.set_history_active(False)  # nothing to return to yet
@@ -514,6 +516,16 @@ class Timeline(Gtk.Box):
         self._live_stream_label.set_opacity(0.0 if active else 1.0)
         self._speed_btn.set_sensitive(active)
         self._speed_btn.set_opacity(1.0 if active else 0.0)
+
+    def set_paused(self, paused: bool) -> None:
+        """Swap pause_btn's icon/tooltip to reflect LiveView's own
+        paused state -- same division of responsibility as
+        set_history_active: this widget only ever emits "clicked" and
+        is told afterwards what that meant."""
+        self.pause_btn.set_icon_name(
+            "media-playback-start-symbolic" if paused else "media-playback-pause-symbolic"
+        )
+        self.pause_btn.set_tooltip_text("Play" if paused else "Pause")
 
     def _update_clock(self) -> bool:
         now = datetime.now()
@@ -604,11 +616,13 @@ class Timeline(Gtk.Box):
         # keeps it from crowding button_cluster in a narrow window.
         toolbar.append(self._make_min_gap_spacer())
 
-        # Back 10s/Previous event/Pause stay live in both modes:
-        # clicking any of them while live drops into paused History
-        # mode at "now" first (LiveView's job -- this widget only ever
-        # emits the click, same division of responsibility as the
-        # seek/hover callbacks), then acts as it would in History mode.
+        # Back 10s/Previous event/Pause stay live in both modes: Back
+        # 10s and Previous event drop a live slot into History mode
+        # first (LiveView's job -- this widget only ever emits the
+        # click, same division of responsibility as the seek/hover
+        # callbacks), but Pause deliberately doesn't -- pausing a live
+        # slot freezes it in place without leaving Live mode at all
+        # (see LiveView._pause_all_slots).
         transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
         # Public (like live_btn/canvas): LiveView owns what "10s back"
@@ -624,10 +638,15 @@ class Timeline(Gtk.Box):
         prev_event_btn.set_tooltip_text("Previous event")
         transport.append(prev_event_btn)
 
-        self._pause_btn = Gtk.Button()
-        self._pause_btn.set_icon_name("media-playback-pause-symbolic")
-        self._pause_btn.set_tooltip_text("Pause")
-        transport.append(self._pause_btn)
+        # Public (like back_10s_btn/live_btn): LiveView owns what
+        # pausing/resuming means for each slot, the same division of
+        # responsibility as the seek/hover/Live callbacks. Icon/tooltip
+        # toggled by set_paused, not by this widget deciding on its own
+        # what a click meant.
+        self.pause_btn = Gtk.Button()
+        self.pause_btn.set_icon_name("media-playback-pause-symbolic")
+        self.pause_btn.set_tooltip_text("Pause")
+        transport.append(self.pause_btn)
 
         # Next event/Forward 10s/Live: nothing is "ahead" of live, so
         # these only make sense in History mode. Grouped in their own

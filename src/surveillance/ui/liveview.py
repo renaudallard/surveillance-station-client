@@ -462,6 +462,11 @@ class LiveView(Gtk.Box):
         # newer seek -- landing late, after that newer one already
         # applied -- from one still worth acting on.
         self._seek_generation: int = 0
+        # Timeline Pause/Play's own state -- distinct from
+        # _streams_paused below (that one's for navigating away from
+        # Live View entirely, this one's a deliberate user action that
+        # persists while the page stays open; see _pause_all_slots).
+        self._timeline_paused: bool = False
         self._active: list[int] = []  # physical indices of visible slots
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
@@ -515,6 +520,7 @@ class LiveView(Gtk.Box):
         self.timeline.live_btn.connect("clicked", self._on_timeline_live_clicked)
         self.timeline.back_10s_btn.connect("clicked", self._on_timeline_back_10s)
         self.timeline.forward_10s_btn.connect("clicked", self._on_timeline_forward_10s)
+        self.timeline.pause_btn.connect("clicked", self._on_timeline_pause_play)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.grid)
@@ -583,6 +589,23 @@ class LiveView(Gtk.Box):
         # hidden (see _return_all_to_live). Before self._active changes
         # below, since that's what it reads to know which slots to check.
         self._return_all_to_live()
+        # Same scoping for a Pause left active. Every slot's own local
+        # pause needs clearing explicitly here, not just the toolbar's
+        # tracking flag/icon: slot objects are a fixed pool reused
+        # across layout switches, not recreated, and mpv.play() never
+        # resets mpv.pause on its own -- a slot paused in the old
+        # layout would otherwise still show a frozen picture under
+        # whatever camera the new layout puts on it, with the toolbar
+        # wrongly reading "playing". Unconditionally, across the whole
+        # pool rather than just self._active: a slot hidden by this
+        # switch can still be reused by a later one.
+        if self._timeline_paused:
+            self._timeline_paused = False
+            self.timeline.set_paused(False)
+        for slot in self._slots:
+            slot.player.set_paused(False)
+            if slot._rtsp_monitor is not None:
+                slot._rtsp_monitor.set_paused(False)
         new_active = list(LAYOUT_VISIBLE[self._current_layout])
         self._select_slot(None)
 
@@ -648,14 +671,18 @@ class LiveView(Gtk.Box):
         of real time — the closest approximation available to a real
         playback-progress readout (see WebSocketBridge's module
         docstring: DSM doesn't report one over this WS protocol, and
-        speed/pause aren't implemented yet, so 1x forward is always
-        right for as long as this ticks at all)."""
+        speed isn't implemented yet, so 1x forward is always right for
+        as long as this ticks at all). Skipped for a paused slot: its
+        position is frozen by WebSocketBridge.pause() itself, so
+        ticking it here regardless would visibly drift the on-screen
+        marker away from what's actually loaded and playing."""
         for slot_idx in self._active:
             slot = self._slots[slot_idx]
             if (
                 slot._history_position is not None
                 and slot._ws_bridge is not None
                 and slot._ws_bridge.is_history
+                and not slot._ws_bridge.is_paused
             ):
                 self._set_history_position(slot, slot._history_position + 1.0)
         return True  # continue ticking
@@ -712,7 +739,18 @@ class LiveView(Gtk.Box):
 
         One generation (see _seek_generation) for the whole batch, not
         one per slot -- slots within the same batch must not supersede
-        each other, only a *later* call to this method should."""
+        each other, only a *later* call to this method should.
+
+        Also clears a pending Pause, the same as WebSocketBridge.seek()
+        does at its own level: a seek is "go here and play", so leaving
+        the toolbar showing Play (and every slot's own player still
+        locally paused) after this would read as still paused when it
+        isn't."""
+        if self._timeline_paused:
+            self._timeline_paused = False
+            self.timeline.set_paused(False)
+            for slot_idx in self._active:
+                self._slots[slot_idx].player.set_paused(False)
         target_unix = int(timestamp)
         self._seek_generation += 1
         generation = self._seek_generation
@@ -760,10 +798,16 @@ class LiveView(Gtk.Box):
             callback=lambda rec, i=slot_idx, c=cam_id: self._on_recording_resolved(
                 generation, i, c, target_unix, rec
             ),
-            error_callback=lambda exc, name=camera.name: log.error(
-                "History lookup failed for %s: %s", name, exc
+            error_callback=lambda exc, i=slot_idx, name=camera.name: self._on_history_lookup_failed(
+                i, name, exc
             ),
         )
+
+    def _on_history_lookup_failed(
+        self, slot_idx: int, camera_name: str, exc: BaseException
+    ) -> None:
+        log.error("History lookup failed for %s: %s", camera_name, exc)
+        self._finish_timeline_seek(slot_idx)
 
     def _on_recording_resolved(
         self,
@@ -781,39 +825,64 @@ class LiveView(Gtk.Box):
         that a burst of clicks/ruler drags can otherwise have a stale
         lookup land *after* a newer one already applied, silently
         snapping a slot back to an earlier position and, worse, doing
-        it repeatedly as more stale lookups keep trickling in."""
+        it repeatedly as more stale lookups keep trickling in.
+
+        Still calls _finish_timeline_seek even when discarded this
+        way: a stale lookup's role as *an* in-flight one for this slot
+        is over regardless of whether its own result gets used.
+        Skipping that release here stranded a superseded Back/Forward
+        10s click until only _NUDGE_RESOLVE_TIMEOUT_SECONDS' safety
+        net eventually cleared it, several seconds later than a click
+        should ever take to register.
+        """
         if generation != self._seek_generation:
+            self._finish_timeline_seek(slot_idx)
             return
         slot = self._slots[slot_idx]
-        if slot.camera and slot.camera.id == cam_id:
-            if recording is None:
-                when = time.strftime("%c", time.localtime(target_unix))
-                log.info("No recording found near %s for %s", when, slot.camera.name)
-            elif slot._ws_bridge is not None and slot._ws_bridge.is_history:
-                # Already playing recorded video: let the bridge itself decide
-                # whether this is a same-recording reseek (reuses the
-                # connection) or a jump to a different one (reconnects) — see
-                # WebSocketBridge.seek()'s own docstring.
-                run_async(
-                    slot._ws_bridge.seek(recording, target_unix),
-                    error_callback=lambda exc: log.error(
-                        "History seek failed for %s: %s",
-                        slot.camera.name if slot.camera else "?",
-                        exc,
-                    ),
-                )
-                self._set_history_position(slot, target_unix)
-                self.timeline.set_history_active(True)
-            else:
-                self._enter_history_mode(slot, recording, target_unix)
-                self._set_history_position(slot, target_unix)
-                self.timeline.set_history_active(True)
+        if not (slot.camera and slot.camera.id == cam_id):
+            self._finish_timeline_seek(slot_idx)
+            return
+        if recording is None:
+            when = time.strftime("%c", time.localtime(target_unix))
+            log.info("No recording found near %s for %s", when, slot.camera.name)
+            self._finish_timeline_seek(slot_idx)
+        elif slot._ws_bridge is not None and slot._ws_bridge.is_history:
+            # Already playing recorded video: let the bridge itself decide
+            # whether this is a same-recording reseek (reuses the
+            # connection) or a jump to a different one (reconnects) — see
+            # WebSocketBridge.seek()'s own docstring.
+            run_async(
+                slot._ws_bridge.seek(recording, target_unix),
+                callback=lambda pos, s=slot, i=slot_idx: self._on_history_seek_applied(s, i, pos),
+                error_callback=lambda exc, i=slot_idx: self._on_history_seek_failed(slot, i, exc),
+            )
+        else:
+            position = self._enter_history_mode(slot, recording, target_unix)
+            self._on_history_seek_applied(slot, slot_idx, position)
+
+    def _on_history_seek_applied(self, slot: CameraSlot, slot_idx: int, position: int) -> None:
+        """Common tail for _on_recording_resolved's two seek-performing
+        branches. *position* may differ from what was requested (see
+        WebSocketBridge.seek's/_enter_history_mode's own near-live
+        clamp) -- reflecting it here, not the raw click/nudge target,
+        is what keeps the on-screen marker and a follow-up Forward 10s
+        (whose own reference point is this slot's _history_position)
+        from drifting past wall clock click by click."""
+        self._set_history_position(slot, position)
+        self.timeline.set_history_active(True)
+        self._finish_timeline_seek(slot_idx)
+
+    def _on_history_seek_failed(self, slot: CameraSlot, slot_idx: int, exc: BaseException) -> None:
+        log.error("History seek failed for %s: %s", slot.camera.name if slot.camera else "?", exc)
+        self._finish_timeline_seek(slot_idx)
+
+    def _finish_timeline_seek(self, slot_idx: int) -> None:
+        """Whatever a seek's outcome, the focus slot's part in it is
+        done -- let any Back/Forward 10s clicks that piled up meanwhile
+        fire as one flush (see _flush_timeline_nudge), now that
+        _set_history_position (if it ran) has already landed rather
+        than still being about to."""
         if slot_idx == self._timeline_focus_slot:
-            # Whatever this lookup's outcome, the focus slot's part in
-            # it is done -- let any Back/Forward 10s clicks that piled
-            # up meanwhile fire as one flush (see _flush_timeline_nudge),
-            # now that _set_history_position above (if it ran) has
-            # already landed rather than still being about to.
             self._nudge_seek_in_flight = False
             self._flush_timeline_nudge()
 
@@ -861,16 +930,19 @@ class LiveView(Gtk.Box):
         what takes every slot into History mode, so clicking Back 10s
         while live drops straight into it), until the focus slot's own
         lookup resolves and calls back in here for anything that
-        accumulated meanwhile."""
+        accumulated meanwhile.
+
+        A target landing within WebSocketBridge's own near-live floor
+        is left for it to clamp (see _set_history_delta there) rather
+        than caught here and redirected to Live -- Forward 10s stays
+        historical navigation like every other seek; the Live button
+        right next to it is the deliberate way back to real time."""
         delta, self._pending_nudge_seconds = self._pending_nudge_seconds, 0.0
         if delta == 0 or not self._active:
             return
         focus = self._slots[self._timeline_focus_slot]
         reference = focus._history_position if focus._history_position is not None else time.time()
         target = reference + delta
-        if target >= time.time():
-            self._return_all_to_live()
-            return
         self._nudge_seek_in_flight = True
         GLib.timeout_add_seconds(_NUDGE_RESOLVE_TIMEOUT_SECONDS, self._on_nudge_resolve_timeout)
         self._on_timeline_seek(target)
@@ -882,6 +954,86 @@ class LiveView(Gtk.Box):
             self._nudge_seek_in_flight = False
             self._flush_timeline_nudge()
         return False  # one-shot
+
+    def _on_timeline_pause_play(self, _btn: Gtk.Button) -> None:
+        """Timeline's Pause/Play button — a single shared toggle for
+        every active slot, the same scope as Back/Forward 10s and
+        Live."""
+        if self._timeline_paused:
+            self._resume_all_slots()
+        else:
+            self._pause_all_slots()
+
+    def _pause_all_slots(self) -> None:
+        """Freeze every active slot in place, each per its own current
+        mode rather than forcing a shared one -- see
+        WebSocketBridge.pause's own docstring for what "freeze" means
+        per mode. A Live slot never leaves Live mode just because it's
+        paused (see timeline.py's transport-cluster comment for why
+        that differs from Back 10s/Previous event)."""
+        self._timeline_paused = True
+        self.timeline.set_paused(True)
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None:
+                continue
+            if slot._ws_bridge is not None:
+                # Synchronously, before mpv -- see request_pause's own
+                # docstring for the write-stall race this closes.
+                slot._ws_bridge.request_pause()
+            if slot._rtsp_monitor is not None:
+                # Also before mpv -- same idea as request_pause: its
+                # own stall detection must already know a pause is
+                # deliberate before mpv.pause stops time_pos advancing,
+                # or it reads the frozen clock as the stream having
+                # died (see RtspHealthMonitor.set_paused's docstring).
+                slot._rtsp_monitor.set_paused(True)
+            # The local freeze applies regardless of protocol -- a
+            # camera on RTSP/mjpeg/etc. has no _ws_bridge at all, but
+            # mpv is still what's rendering it either way.
+            slot.player.set_paused(True)
+            if slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.pause(),
+                callback=lambda pos, s=slot: (
+                    self._set_history_position(s, pos) if pos is not None else None
+                ),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Pause failed for %s: %s", name, exc
+                ),
+            )
+
+    def _resume_all_slots(self) -> None:
+        """Undo _pause_all_slots for every active slot. A History
+        slot's resumed position can land later than where it was
+        paused (WebSocketBridge.resume's own wall-clock floor), hence
+        still updating _set_history_position here rather than assuming
+        the frozen marker was already correct."""
+        self._timeline_paused = False
+        self.timeline.set_paused(False)
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None:
+                continue
+            # Same reasoning as _pause_all_slots: the local unfreeze
+            # applies regardless of protocol.
+            slot.player.set_paused(False)
+            if slot._rtsp_monitor is not None:
+                slot._rtsp_monitor.set_paused(False)
+            if slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.resume(),
+                callback=lambda pos, s=slot: (
+                    self._set_history_position(s, pos) if pos is not None else None
+                ),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Resume failed for %s: %s", name, exc
+                ),
+            )
 
     def _return_all_to_live(self) -> None:
         """Return every active slot currently playing recorded video
@@ -1467,16 +1619,24 @@ class LiveView(Gtk.Box):
         bridge = WebSocketBridge(url, verify_ssl, sid, label=label)
         self._start_bridge(slot, bridge)
 
-    def _enter_history_mode(self, slot: CameraSlot, recording: Recording, target_unix: int) -> None:
+    def _enter_history_mode(self, slot: CameraSlot, recording: Recording, target_unix: int) -> int:
         """Switch *slot* into History mode, playing *recording* from
         *target_unix* (see ws_bridge.py's module docstring for the wire
         protocol). Only for a fresh seek -- a slot already in History
         mode reuses its existing bridge's seek() instead, which reuses
         the connection when it can rather than tearing down and
         rebuilding a whole pipeline for every click (see
-        _on_recording_resolved)."""
+        _on_recording_resolved).
+
+        Returns the actual (possibly clamped, see
+        WebSocketBridge._set_history_delta) position now playing --
+        available synchronously right off the freshly constructed
+        bridge, no await needed, since the clamp runs in its own
+        __init__ -- for the caller to reflect on its own UI rather than
+        assuming target_unix was used as-is. Falls back to target_unix
+        itself if there's no API to build a bridge at all."""
         if not self.app.api:
-            return
+            return target_unix
         slot.stop_stream()
         verify_ssl = self.app.api.profile.verify_ssl
         sid = self.app.api.sid
@@ -1501,6 +1661,8 @@ class LiveView(Gtk.Box):
             history_resolver=resolve,
         )
         self._start_bridge(slot, bridge)
+        position = bridge.current_history_position
+        return position if position is not None else target_unix
 
     def _start_bridge(self, slot: CameraSlot, bridge: WebSocketBridge) -> None:
         """Plumbing shared by Live and History bridges alike: assign

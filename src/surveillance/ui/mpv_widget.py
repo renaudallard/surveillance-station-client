@@ -392,6 +392,15 @@ class MpvGLArea(Gtk.GLArea):
             with contextlib.suppress(Exception):
                 self._mpv.pause = not self._mpv.pause
 
+    def set_paused(self, paused: bool) -> None:
+        """Explicitly pause or resume, unlike pause()'s toggle -- for a
+        caller tracking its own paused state (Live View's timeline
+        Pause/Play button) where a toggle could drift out of sync with
+        it if this and some other trigger ever raced."""
+        if self._mpv:
+            with contextlib.suppress(Exception):
+                self._mpv.pause = paused
+
     def _letterbox_fraction(self, width: int, height: int) -> tuple[float, float]:
         """Fraction of the widget's width/height the fitted (unzoomed)
         video actually occupies — 1.0 on an axis mpv doesn't letterbox to

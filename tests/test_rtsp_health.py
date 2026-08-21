@@ -112,3 +112,36 @@ class TestRtspHealth:
             if not mon._check():
                 break
         assert gave_up, "a permanently frozen stream must give up"
+
+    def test_set_paused_suspends_stall_detection(self) -> None:
+        """A frozen time_pos while deliberately paused (Live View's
+        timeline Pause button) must not be read as a dead stream --
+        see set_paused's own docstring. Checks while paused read
+        time_pos not at all, so two positions cover an advancing
+        stream followed by any number of paused checks."""
+        mon, player, (gave_up, _recovered) = _monitor([10.0, 11.0])
+        mon._check()
+        mon._check()
+        mon.set_paused(True)
+        for _ in range(10):
+            mon._check()
+        assert not gave_up, "a deliberate pause must not be read as a dead stream"
+        assert player.play_calls == 0, "must not retry play() while deliberately paused"
+
+    def test_resume_clears_the_stall_baseline(self) -> None:
+        """Resuming must not immediately read the paused gap as zero
+        progress -- the first post-resume check should read like a
+        fresh startup window, not an instant stall (see set_paused's
+        own docstring)."""
+        mon, player, (gave_up, recovered) = _monitor([10.0, 11.0, 11.0, 12.0])
+        mon._check()
+        mon._check()
+        mon.set_paused(True)
+        for _ in range(10):
+            mon._check()
+        mon.set_paused(False)
+        mon._check()  # first tick after resume: startup-like, not a stall
+        mon._check()  # advances again -> recovered
+        assert not gave_up
+        assert player.play_calls == 0
+        assert recovered

@@ -140,6 +140,13 @@ _KEEPALIVE_INTERVAL = 10.0  # seconds
 # genuinely stopped draining.
 _WRITE_TIMEOUT = 5.0  # seconds
 
+# Floor for how close to wall clock any History target may land --
+# entering History mode, seeking, or resuming from pause, whichever is
+# asking (see _set_history_delta, the single place this is enforced).
+# A delta this small is inside the near-live window this bridge/DSM
+# can't reliably serve yet.
+_MIN_HISTORY_DELTA_SECONDS = 10.0
+
 # How long a muxed camera may deliver no audio at all before its audio
 # stream is ended to stop it holding up the video (see _watch_audio_gap).
 # Must fire before the write timeout above does: the mux stops draining
@@ -309,9 +316,23 @@ class WebSocketBridge:
         # DSM's own web client does to keep one open indefinitely --
         # computes where playback should have reached by now instead of
         # rewinding to the original target every time (see
-        # _current_history_target/_build_history_play_message).
-        self._history_delta_seconds: float = time.time() - history_target
+        # _current_history_target/_build_history_play_message). Set via
+        # _set_history_delta, not assigned directly, even here in the
+        # constructor -- entering History mode by clicking within
+        # _MIN_HISTORY_DELTA_SECONDS of live must clamp exactly like a
+        # seek()/resume() landing there does.
+        self._history_delta_seconds: float = 0.0
+        self._set_history_delta(history_target)
         self._history_stamp = 0
+        # True while pause()/resume() has this bridge paused -- Live and
+        # History act on it differently (see both methods' docstrings),
+        # so it means "don't write frames to the pipe" for one and "DSM
+        # was asked to stop sending" for the other.
+        self._paused = False
+        # The position _current_history_target() freezes at while
+        # self._paused, instead of continuing to advance -- None
+        # whenever not paused. Set by pause(), cleared by resume().
+        self._history_paused_position: int | None = None
         # The currently connected socket, for seek() to send on from
         # outside _pump's own scope -- None whenever no connection is up
         # (including between reconnect attempts), so seek() knows to fold
@@ -889,15 +910,22 @@ class WebSocketBridge:
         when media happens to be flowing. Doing it here rather than from
         a timer task also keeps every _finish_aac_detection call on the
         pump task, so nothing arrives mid-decision.
+
+        Also where a paused History bridge's idle timeout is suspended
+        (see the self._paused branch below): pause() asks DSM to stop
+        sending entirely, so the silence this would otherwise treat as
+        a stall is exactly what was asked for.
         """
         while True:
-            timeout = _IDLE_TIMEOUT
+            timeout: float | None = _IDLE_TIMEOUT
             if self._aac.detecting:
                 # Waiting the full idle timeout on a camera whose detection
                 # deadline lands sooner would let the stall fire first, and
                 # a stall only reconnects: detection would start over, and
                 # over, with start() still waiting on it.
-                timeout = min(timeout, max(0.0, self._aac.deadline - time.monotonic()))
+                timeout = min(_IDLE_TIMEOUT, max(0.0, self._aac.deadline - time.monotonic()))
+            elif self._paused and self.is_history:
+                timeout = None
             try:
                 message = await asyncio.wait_for(ws.recv(), timeout=timeout)
             except TimeoutError:
@@ -928,19 +956,29 @@ class WebSocketBridge:
             if (self._read_fd < 0 and not self._aac.detecting) or not payload:
                 continue  # haven't seen codec info yet, or an empty frame
 
-            media_type = fields.get("mediaType")
-            if media_type == "1":
-                # The payload arrives without the Annex B start code, so
-                # prepend it and mpv/ffmpeg can find NAL boundaries. Where
-                # DSM leaves it has never been checked here; the constant
-                # is what the black screen needed.
-                await self._handle_video_frame(b"\x00\x00\x00\x01" + payload)
-            elif media_type == "2" and (self._audio_active or self._aac.detecting):
-                # For some cameras the header ends in the leading bytes
-                # the AAC payload is missing -- see
-                # AacDetector.reconstruct_frame. Harmless to pass along
-                # for PCMU too, since that path just ignores it.
-                await self._dispatch_audio_frame(header[-4:], payload)
+            await self._dispatch_media_frame(fields.get("mediaType"), header, payload)
+
+    async def _dispatch_media_frame(
+        self, media_type: str | None, header: bytes, payload: bytes
+    ) -> None:
+        """Route one video/audio frame from _read_messages -- pulled out
+        of that loop just to keep its own branch count down, not
+        because this is reused anywhere else."""
+        if self._paused and not self.is_history:
+            self._discard_paused_frame(media_type)
+            return
+        if media_type == "1":
+            # The payload arrives without the Annex B start code, so
+            # prepend it and mpv/ffmpeg can find NAL boundaries. Where
+            # DSM leaves it has never been checked here; the constant
+            # is what the black screen needed.
+            await self._handle_video_frame(b"\x00\x00\x00\x01" + payload)
+        elif media_type == "2" and (self._audio_active or self._aac.detecting):
+            # For some cameras the header ends in the leading bytes
+            # the AAC payload is missing -- see
+            # AacDetector.reconstruct_frame. Harmless to pass along
+            # for PCMU too, since that path just ignores it.
+            await self._dispatch_audio_frame(header[-4:], payload)
 
     async def _send_keepalive_loop(self, ws: Any) -> None:
         """Send a keepalive every _KEEPALIVE_INTERVAL for as long as the
@@ -1012,11 +1050,133 @@ class WebSocketBridge:
         raise RuntimeError(self._error or "WebSocket bridge exited before becoming ready")
 
     def _current_history_target(self) -> int:
-        """Where History playback should be *right now*, derived fresh
-        from self._history_delta_seconds and the current wall clock
-        rather than read back as a fixed value -- see that attribute's
-        own comment for why."""
+        """Where History playback should be *right now* -- frozen at
+        self._history_paused_position while self._paused, otherwise
+        derived fresh from self._history_delta_seconds and the current
+        wall clock rather than read back as a fixed value (see that
+        attribute's own comment for why)."""
+        if self._history_paused_position is not None:
+            return self._history_paused_position
         return int(time.time() - self._history_delta_seconds)
+
+    def _set_history_delta(self, target_unix: float) -> int:
+        """Store *target_unix* as self._history_delta_seconds, clamped
+        so the resulting delta is never less than
+        _MIN_HISTORY_DELTA_SECONDS behind wall clock -- a delta that
+        small is inside the near-live window this bridge/DSM can't
+        reliably serve yet.
+
+        The single place that sets self._history_delta_seconds --
+        __init__, seek(), and resume() all go through this rather than
+        assigning it directly, so nothing can ask DSM to play within
+        that window no matter which of the three is doing the asking.
+
+        Returns the clamped target actually stored, for a caller that
+        needs to reflect what's really playing (e.g. seek()'s own
+        return value, or a UI syncing its on-screen position) rather
+        than assuming the requested target_unix was used as-is.
+        """
+        now = time.time()
+        clamped = min(target_unix, now - _MIN_HISTORY_DELTA_SECONDS)
+        self._history_delta_seconds = now - clamped
+        return int(clamped)
+
+    def request_pause(self) -> None:
+        """Synchronously arm self._paused, ahead of the rest of what
+        pause() does.
+
+        A caller that's also about to pause mpv locally (Live View,
+        for the local freeze -- see _write_pipe's own guard) must call
+        this *before* touching mpv, not just await pause(): mpv's own
+        pause takes effect immediately on the GTK thread, while
+        pause() itself only runs once scheduled onto this bridge's own
+        event loop/thread, which is not guaranteed to happen first. In
+        that gap, a video write already in flight (or one that starts
+        in it) sees mpv stop draining before self._paused is actually
+        set, blocks for the full _WRITE_TIMEOUT, and gets mistaken for
+        a stalled/dead stream -- more likely the larger a camera's own
+        frames are, since that widens the window a write can still be
+        in flight when the race is lost. The visible symptom is a
+        flicker: the stream gets killed and reconnected purely from
+        this race, not from anything actually wrong with it.
+
+        A plain bool write -- idempotent, and safe to call from any
+        thread.
+        """
+        self._paused = True
+
+    async def pause(self) -> int | None:
+        """Freeze playback in place until resume(). Callers pausing
+        mpv locally too should call request_pause() first (see its own
+        docstring for why) -- this covers what's left: nothing further
+        for Live (the WS feed keeps flowing quietly in the background,
+        so resume() needs no reconnect, just wall-clock live again),
+        or, for History, asking DSM to actually stop sending and
+        freezing the position _current_history_target() returns, so
+        the real time behind wall clock grows for as long as this
+        lasts, the same way a real DVR pause works.
+
+        Returns the frozen position for a History bridge, for the
+        caller to reflect on its own UI; None for Live, which has no
+        such position.
+        """
+        self.request_pause()
+        if not self.is_history:
+            return None
+        if self._history_paused_position is not None:
+            return self._history_paused_position  # already paused
+        self._history_paused_position = self._current_history_target()
+        await self._send_history_pause_toggle()
+        return self._history_paused_position
+
+    async def resume(self) -> int | None:
+        """Undo pause(). History clamps the resume point to at least
+        _MIN_HISTORY_DELTA_SECONDS behind wall clock -- a pause
+        shorter than that would otherwise resume closer to live than
+        this bridge/DSM can reliably serve (see that constant). Live
+        forces a fresh reconnect on the same pipe rather than just
+        letting frames flow again from wherever DSM happens to be --
+        pause() discarded every frame while frozen, I-frames included,
+        so simply resuming mid-GOP fed the decoder P/B-frames with no
+        recent keyframe behind them, producing corrupt/artifacted
+        video until the next one arrived naturally, several seconds
+        later. Reusing the same reconnect _pump already does for an
+        ordinary drop -- DSM sends fresh codec-info and a clean start
+        on the same pipe -- is what already makes that look like
+        routine buffering to mpv instead (see _pump's own reconnect
+        comment), rather than inventing a second recovery path here.
+
+        Returns the resumed position for a History bridge, same as
+        pause(); None for Live.
+        """
+        if not self._paused:
+            return self._history_paused_position
+        self._paused = False
+        if not self.is_history:
+            if self._current_ws is not None:
+                await self._current_ws.close()
+            return None
+        if self._history_paused_position is None:
+            return None
+        resume_position = self._set_history_delta(self._history_paused_position)
+        self._history_paused_position = None
+        await self._send_history_pause_toggle()
+        return resume_position
+
+    @property
+    def is_paused(self) -> bool:
+        """Whether pause() currently has this bridge paused -- read by
+        Live View to stop ticking a History slot's on-screen position
+        forward while frozen (see _tick_history_positions)."""
+        return self._paused
+
+    @property
+    def current_history_position(self) -> int | None:
+        """Where History playback currently is, including while frozen
+        by pause() -- None for a Live bridge, which has no such
+        position. A thin public wrapper around
+        _current_history_target() for callers outside this class."""
+        return self._current_history_target() if self.is_history else None
 
     async def _refresh_history_recording_if_stale(self) -> None:
         """Swap in a fresh recording via self._history_resolver if the
@@ -1040,11 +1200,13 @@ class WebSocketBridge:
         if fresh is not None:
             self._history_recording = fresh
 
-    def _build_history_play_message(self) -> str:
-        """Build the in-band `action=play` string that selects a recording
-        and a starting point within it (see the module docstring) --
-        sent once per connection, right after connecting, whenever
-        self._history_recording is set.
+    def _history_play_params(self) -> dict[str, str]:
+        """Shared field set for History's in-band `action=play` message
+        (see the module docstring for the wire protocol) -- used both
+        to open a connection (_build_history_play_message) and to
+        toggle pause in place on one already open
+        (_send_history_pause_toggle), which differ only in restart and
+        (implicitly, via self._paused) pause.
 
         Every field below came from one live capture with one fixed
         value each (except mute, which we did see vary) -- nothing here
@@ -1067,26 +1229,29 @@ class WebSocketBridge:
           the same way Live gets them, and playback-side muting (the
           slot toolbar's mute button, same as Live) is what decides
           whether that audio is heard.
-        - method/blAudio/speed/reverse/pause/action: name suggests the
-          role (blAudio -- include audio; the rest are self-explanatory)
-          and it lines up with Live's own same-named fields where Live
-          has one, but no capture ever varied it, so e.g. whether
-          speed=2 or reverse=true actually changes playback is unknown.
-        - blMux/browser/stmSrc/autoDrop/restart: genuinely unconfirmed
-          even by name -- included because DSM's own web client always
-          sends them and omitting an unfamiliar field felt riskier than
+        - method/blAudio/speed/reverse/action: name suggests the role
+          (blAudio -- include audio; the rest are self-explanatory) and
+          it lines up with Live's own same-named fields where Live has
+          one, but no capture ever varied it, so e.g. whether speed=2
+          or reverse=true actually changes playback is unknown.
+        - blMux/browser/stmSrc/autoDrop: genuinely unconfirmed even by
+          name -- included because DSM's own web client always sends
+          them and omitting an unfamiliar field felt riskier than
           copying it verbatim. stmSrc=1 here vs the connect URL's
           stmSrc=2 (see module docstring) is the one hint that these
           matter somehow, not just boilerplate.
+        - pause: unlike the rest of this list, confirmed both ways by a
+          live capture -- pause=true does make DSM stop sending
+          entirely (not just video), and pause=false resumes it (see
+          pause()/resume()).
 
-        speed/reverse/pause are therefore fixed at their play/forward/
-        unpaused values; a caller wanting to change any of them isn't
-        supported by this bridge yet (see seek()'s docstring for what
-        is).
+        speed/reverse are therefore fixed at their forward/unpaused
+        values; a caller wanting to change either isn't supported by
+        this bridge yet.
         """
         rec = self._history_recording
         if rec is None:
-            raise RuntimeError("_build_history_play_message called with no recording set")
+            raise RuntimeError("_history_play_params called with no recording set")
         end = max(0, rec.stop_time - rec.start_time)
         # Clamped to [0, end], not just floored at 0: find_recording_at
         # hands back the *nearest* recording, not necessarily one that
@@ -1100,8 +1265,7 @@ class WebSocketBridge:
         # where playback should have reached by now instead of
         # rewinding to the original target every time.
         start = min(end, max(0, self._current_history_target() - rec.start_time))
-        self._history_stamp = 1
-        params = {
+        return {
             "action": "play",
             "method": "MixStream",
             "blMux": "true",
@@ -1118,13 +1282,48 @@ class WebSocketBridge:
             "end": str(end),
             "autoDrop": "true",
             "restart": "true",
-            "pause": "false",
+            "pause": "true" if self._paused else "false",
             "stamp": str(self._history_stamp),
             "id": str(rec.id),
         }
+
+    def _build_history_play_message(self) -> str:
+        """Build the in-band `action=play` string sent once per
+        connection, right after connecting, whenever
+        self._history_recording is set -- see _history_play_params for
+        what each field means.
+
+        Resets the stamp to 1 for a fresh connection, and always
+        carries self._paused/_history_paused_position through (via
+        _history_play_params/_current_history_target): a reconnect
+        that happens to land mid-pause -- _pump's own, not just a
+        caller's -- opens already paused at the frozen position rather
+        than accidentally resuming.
+        """
+        self._history_stamp = 1
+        params = self._history_play_params()
         return "&".join(f"{k}={v}" for k, v in params.items())
 
-    async def seek(self, recording: Recording, target_unix: int) -> None:
+    async def _send_history_pause_toggle(self) -> None:
+        """Ask DSM to actually stop/resume sending, in place, on the
+        connection already open -- restart=false so DSM doesn't also
+        jump back to _history_play_params' start= the way a fresh
+        action=play does; only pause (and, for resume(), the
+        already-advanced start=) is meant to change here.
+
+        A no-op while no connection is up: _build_history_play_message
+        picks up self._paused on the next connect/reconnect regardless
+        (see its own docstring), so pause()/resume() still leave the
+        bridge in the right state either way.
+        """
+        if self._current_ws is None:
+            return
+        self._history_stamp += 1
+        params = self._history_play_params()
+        params["restart"] = "false"
+        await self._current_ws.send("&".join(f"{k}={v}" for k, v in params.items()))
+
+    async def seek(self, recording: Recording, target_unix: int) -> int:
         """Seek to *target_unix* within *recording* (History mode only).
 
         Reuses the connection with an in-band `seekMs` command when
@@ -1136,29 +1335,61 @@ class WebSocketBridge:
         the same machinery an ordinary connection drop already uses,
         rather than a second reconnect path living here too.
 
-        Either way, self._history_delta_seconds is updated too (see
-        its own comment): a *later* reconnect -- caller-requested, or
-        _pump's own after this bridge's own History session drops on
-        its own after a couple of minutes regardless of activity --
-        resumes from where playback should have reached by then,
-        derived from that delta, rather than rewinding to this seek's
-        target again.
+        Either way, self._history_delta_seconds is updated too, via
+        _set_history_delta rather than directly -- target_unix within
+        _MIN_HISTORY_DELTA_SECONDS of wall clock (a click right near
+        the live edge of the ruler) must clamp exactly like resume()
+        landing there does, never asking DSM to play that close to
+        live. A *later* reconnect -- caller-requested, or _pump's own
+        after this bridge's own History session drops on its own after
+        a couple of minutes regardless of activity -- resumes from
+        where playback should have reached by then, derived from that
+        delta, rather than rewinding to this seek's target again.
+
+        Also clears pause() unconditionally: a seek is "go here and
+        play", the same as clicking play on a paused video always
+        implicitly resumes it, and leaving self._paused set would
+        otherwise strand the bridge in a stale, wrong state -- either
+        still asking DSM to hold at the *old* frozen position
+        (_current_history_target ignoring this seek's target entirely
+        while self._history_paused_position stays set), or, worse, a
+        cross-recording reconnect opening the new connection already
+        paused (_build_history_play_message picks up self._paused too).
+
+        Returns the actual (possibly clamped) target now in effect,
+        for the caller to reflect on its own UI rather than assuming
+        target_unix was used as-is.
         """
-        self._history_delta_seconds = time.time() - target_unix
+        was_paused = self._paused
+        self._paused = False
+        self._history_paused_position = None
+        clamped_target = self._set_history_delta(target_unix)
         if self._history_recording is not None and recording.id == self._history_recording.id:
-            # Same clamp as _build_history_play_message's start, and for
-            # the same reason -- target_unix can land past this
-            # recording's own end when it's the nearest one to a target
-            # that's actually in a gap.
-            duration_ms = max(0, (recording.stop_time - recording.start_time) * 1000)
-            offset_ms = min(duration_ms, max(0, (target_unix - recording.start_time) * 1000))
-            self._history_stamp += 1
             if self._current_ws is not None:
-                await self._current_ws.send(f"seekMs={offset_ms}&stamp={self._history_stamp}")
-            return
+                if was_paused:
+                    # An explicit pause=false (which increments
+                    # self._history_stamp itself) beats relying on an
+                    # untested assumption that a bare seekMs also
+                    # implicitly resumes a connection DSM still thinks
+                    # is paused.
+                    await self._send_history_pause_toggle()
+                else:
+                    self._history_stamp += 1
+                    # Same clamp as _build_history_play_message's
+                    # start, and for the same reason -- clamped_target
+                    # can still land past this recording's own end when
+                    # it's the nearest one to a target that's actually
+                    # in a gap.
+                    duration_ms = max(0, (recording.stop_time - recording.start_time) * 1000)
+                    offset_ms = min(
+                        duration_ms, max(0, (clamped_target - recording.start_time) * 1000)
+                    )
+                    await self._current_ws.send(f"seekMs={offset_ms}&stamp={self._history_stamp}")
+            return clamped_target
         self._history_recording = recording
         if self._current_ws is not None:
             await self._current_ws.close()
+        return clamped_target
 
     async def _pump(self) -> None:
         """Connect to the WebSocket and write video (+ audio) frames to
@@ -1353,6 +1584,22 @@ class WebSocketBridge:
         # audio controls have something to go on besides a log line.
         self._audio_active = False
 
+    def _discard_paused_frame(self, media_type: str | None) -> None:
+        """Drop an incoming video/audio frame while a Live bridge is
+        paused (see _write_pipe's own guard, which this pre-empts a
+        layer earlier -- avoiding a to_thread dispatch, not just the
+        write itself, for every frame a long pause across many cameras
+        at once would otherwise submit for nothing).
+
+        Still stamps the gap watchdog's timestamps directly, same as a
+        real write would (see _write_pipe's own comment on why those
+        must keep moving regardless of whether anything was written).
+        """
+        if media_type == "1":
+            self._last_video_at = time.monotonic()
+        elif media_type == "2":
+            self._last_audio_at = time.monotonic()
+
     def _write_pipe(self, audio: bool, data: bytes) -> None:
         """Write to one of the pipes through a private copy of the fd.
 
@@ -1375,6 +1622,16 @@ class WebSocketBridge:
         block here forever, with no way back to ws.recv() and so no way
         to ever raise, reconnect, or hand off to the stream-lost recovery
         path that's built for exactly this.
+
+        Also where a paused *Live* bridge discards frames instead of
+        writing them (History pauses DSM itself instead -- see
+        pause()): mpv's own pause alone only freezes rendering, its
+        demuxer keeps reading ahead into its own cache regardless, so
+        without this the WS feed's normal flow would keep writing into
+        this pipe until that cache fills -- at which point the write
+        above would block long enough to misread a deliberate, healthy
+        pause as a stalled pipe and reconnect a stream that was never
+        actually broken.
         """
         # Stamped here rather than at the call sites, so the gap watchdog
         # measures when media reached the pipe and cannot be kept alive by
@@ -1383,6 +1640,8 @@ class WebSocketBridge:
             self._last_audio_at = time.monotonic()
         else:
             self._last_video_at = time.monotonic()
+        if self._paused and not self.is_history:
+            return
         with self._fd_lock:
             fd = self._audio_write_fd if audio else self._video_write_fd
             if fd < 0:

@@ -74,9 +74,15 @@ than dropping back to live; switching grid layout always returns to
 live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are
 unavailable while a slot shows recorded video (mute/volume and
 Snapshot remain available). Jump \(+-10s buttons seek every slot in
-the current layout the same way clicking the ruler does. Event
-markers and the rest of the transport controls (pause, playback
-speed) are still in progress.
+the current layout the same way clicking the ruler does. A
+.B Pause
+button freezes every active slot in place \(em a live slot just
+freezes locally without leaving Live mode, while a History slot asks
+DSM to actually stop sending, so the gap behind wall clock grows for
+as long as it stays paused; resuming a History slot paused for under
+10 seconds lands at least 10 seconds behind live rather than right at
+the edge. Event markers and the rest of the transport controls
+(playback speed) are still in progress.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

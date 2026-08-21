@@ -114,13 +114,17 @@ class _FakeWS:
 
         if self.closed:
             raise ConnectionClosedOK(None, None)
-        if self._messages:
-            return self._messages.pop(0)
-        while self._hang:
+        while True:
+            if self._messages:
+                return self._messages.pop(0)
+            if not self._hang:
+                raise ConnectionClosedOK(None, None)
+            # Re-checked each pass rather than just once up front, so a
+            # test can append a message while this is already hanging
+            # (e.g. simulating traffic that resumes after a pause).
             await asyncio.sleep(0.01)
             if self.closed:
                 raise ConnectionClosedOK(None, None)
-        raise ConnectionClosedOK(None, None)
 
 
 def _frame(header: bytes, payload: bytes) -> bytes:
@@ -1319,7 +1323,10 @@ class TestHistoryMode:
         # _current_history_target) and recomputes it from that on every
         # connect -- frozen here so this asserts the same exact value
         # regardless of how much real time construction-to-connect takes.
-        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target))
+        # Comfortably past _MIN_HISTORY_DELTA_SECONDS ahead of target,
+        # or _set_history_delta's own floor would clamp it -- that
+        # clamp has its own tests in TestPauseResume.
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
 
         bridge = WebSocketBridge(
             "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
@@ -1376,7 +1383,9 @@ class TestHistoryMode:
         fake2 = _FakeWS([_codec_frame()], hang=True)
         connect([fake1, fake2])
         target = rec.start_time + 100
-        clock = [float(target)]
+        # 20s ahead of target, comfortably past _set_history_delta's own
+        # floor (that clamp has its own tests in TestPauseResume).
+        clock = [float(target + 20)]
         monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
 
         bridge = WebSocketBridge(
@@ -1405,7 +1414,11 @@ class TestHistoryMode:
         fake2 = _FakeWS([_codec_frame()], hang=True)
         connect([fake1, fake2])
         target = rec1.start_time + 50
-        clock = [float(target)]
+        # +20 both here and below (a fixed offset, not a floor breach):
+        # comfortably past _set_history_delta's own floor, and uniform
+        # so it cancels out of every _current_history_target() read
+        # below rather than needing every assertion rederived for it.
+        clock = [float(target + 20)]
         monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
         resolved_for: list[int] = []
 
@@ -1425,7 +1438,7 @@ class TestHistoryMode:
         assert dict(parse_qsl(fake1.sent[0]))["id"] == str(rec1.id)
 
         past_end = rec1.stop_time + 30  # drifted past rec1's own end
-        clock[0] = float(past_end)
+        clock[0] = float(past_end + 20)
         await _wait_until(lambda: len(fake2.sent) >= 1)
         fields = dict(parse_qsl(fake2.sent[0]))
         assert fields["id"] == str(rec2.id)
@@ -1526,8 +1539,10 @@ class TestHistoryMode:
         connect([fake1, fake2])
         # Frozen for the same reason as test_connect_sends_action_play_
         # with_computed_offsets -- the reconnect's start= is recomputed
-        # from the wall clock (see _current_history_target).
-        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(rec2.start_time + 200))
+        # from the wall clock (see _current_history_target). +20 past
+        # the seek target, comfortably past _set_history_delta's own
+        # floor.
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(rec2.start_time + 220))
 
         bridge = WebSocketBridge(
             "wss://nas/stream",
@@ -1546,4 +1561,260 @@ class TestHistoryMode:
         assert fields["id"] == str(rec2.id)
         assert fields["start"] == "200"
         assert fields["stamp"] == "1"  # a fresh connection resets the counter
+
+
+class TestPauseResume:
+    """WebSocketBridge.pause()/resume() -- Live and History act on them
+    differently (see both methods' own docstrings), so most of these
+    are split per mode rather than shared."""
+
+    def test_request_pause_sets_paused_synchronously(self) -> None:
+        """No event loop tick needed -- see request_pause's own
+        docstring for why a caller pausing mpv locally too must be
+        able to rely on this running to completion before it returns,
+        not just before pause() (an async method scheduled onto a
+        different thread/event loop) gets around to it."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        assert not bridge.is_paused
+        bridge.request_pause()
+        assert bridge.is_paused
+
+    async def test_pause_sends_pause_true_and_freezes_the_position(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        # +20 past target, comfortably past _set_history_delta's own
+        # floor -- that clamp has its own dedicated tests below.
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        clock[0] += 5  # 5s of real playback pass before the user pauses
+        frozen = await bridge.pause()
+        assert frozen == target + 5
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["pause"] == "true"
+        assert fields["restart"] == "false"
+        assert fields["start"] == str(frozen - rec.start_time)
+
+        clock[0] += 20  # wall clock keeps moving while paused
+        assert bridge._current_history_target() == frozen, "position must stay frozen while paused"
+        await bridge.stop()
+
+    async def test_entering_history_close_to_live_clamps_to_the_minimum_delta(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Entering History mode within _MIN_HISTORY_DELTA_SECONDS of
+        wall clock -- a ruler click right near the live edge -- must
+        clamp rather than ask DSM to play that close to live, the same
+        floor seek()/resume() enforce (see _set_history_delta, the
+        single place this is applied, for why it lives there and not
+        just in resume() as it once did)."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        now = rec.start_time + 500
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(now))
+        near_live = now - 3  # only 3s behind wall clock -- inside the floor
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=near_live
+        )
+        await bridge.start()
+
+        expected = now - int(ws_bridge._MIN_HISTORY_DELTA_SECONDS)
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["start"] == str(expected - rec.start_time)
+        await bridge.stop()
+
+    async def test_seek_close_to_live_clamps_to_the_minimum_delta(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same floor as entering History mode close to live, but on
+        an ordinary seek (ruler click/Back-Forward-10s) within an
+        already-loaded recording -- this is the scenario that was
+        actually reachable live (clicking the ruler near the live
+        edge), unlike a short pause-then-resume, which the floor
+        already enforced at pause() time makes impossible to reach
+        (pausing always freezes at least the floor behind wall clock,
+        and only more time passes from there)."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        clock[0] += 20
+        near_live = int(clock[0]) - 3  # only 3s behind wall clock -- inside the floor
+        clamped = await bridge.seek(rec, near_live)
+        assert clamped == int(clock[0]) - int(ws_bridge._MIN_HISTORY_DELTA_SECONDS)
+
+        duration_ms = (rec.stop_time - rec.start_time) * 1000
+        expected_offset_ms = min(duration_ms, (clamped - rec.start_time) * 1000)
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["seekMs"] == str(expected_offset_ms)
+        await bridge.stop()
+
+    async def test_resume_does_not_clamp_after_a_long_enough_pause(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        frozen = await bridge.pause()
+
+        clock[0] += 25  # well past the floor
+        resumed = await bridge.resume()
+        assert resumed == frozen, "a long enough pause must resume exactly where it froze"
+        await bridge.stop()
+
+    async def test_pause_suspends_the_idle_timeout_in_history_mode(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pause() asks DSM to stop sending entirely -- the resulting
+        silence must not be mistaken for a stalled connection and
+        reconnected out from under a deliberate pause."""
+        monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.05)
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+        await bridge.pause()
+        await asyncio.sleep(0.3)  # several idle-timeout multiples
+        assert not fake.closed, "a deliberate pause must not trip the idle-stall reconnect"
+        await bridge.stop()
+
+    async def test_seek_within_same_recording_while_paused_explicitly_resumes(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ruler click/Back-Forward-10s while paused (same recording)
+        must not leave the bridge stuck asking DSM to hold at the old
+        frozen position, or send a bare seekMs to a connection DSM
+        still thinks is paused (untested whether that alone would
+        resume it) -- see seek()'s own docstring."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.pause()
+
+        new_target = rec.start_time + 300  # still within the same recording
+        # +20 past new_target, comfortably past _set_history_delta's
+        # own floor -- that clamp has its own dedicated tests below.
+        clock[0] = float(new_target + 20)
+        await bridge.seek(rec, new_target)
+
+        assert not bridge.is_paused
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["pause"] == "false"
+        assert fields["start"] == str(new_target - rec.start_time)
+        await bridge.stop()
+
+    async def test_seek_to_a_different_recording_while_paused_reconnects_unpaused(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same failure as the same-recording case above, but on the
+        reconnect path: the fresh connection must open with pause=false
+        and this seek's own target, not a stale frozen position dragged
+        in from _build_history_play_message picking up self._paused."""
+        rec1 = _recording(id=100)
+        rec2 = _recording(id=200, start_time=1_700_010_000, stop_time=1_700_011_800)
+        fake1 = _FakeWS([_codec_frame()], hang=True)
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec1.start_time + 50
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec1, history_target=target
+        )
+        await bridge.start()
+        await bridge.pause()
+
+        new_target = rec2.start_time + 200
+        # +20 past new_target, comfortably past _set_history_delta's
+        # own floor -- that clamp has its own dedicated tests below.
+        clock[0] = float(new_target + 20)
+        await bridge.seek(rec2, new_target)
+        assert fake1.closed is True
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["id"] == str(rec2.id)
+        assert fields["start"] == "200"
+        assert fields["pause"] == "false"
+        assert not bridge.is_paused
+        await bridge.stop()
+
+    async def test_pause_discards_frames_locally_in_live_mode(self, connect: Any) -> None:
+        """Live's pause() never touches DSM -- the WS feed keeps
+        flowing, but frames must stop reaching the pipe while paused,
+        or a real pause would fill mpv's own cache and misread as a
+        stalled pipe within seconds (see _write_pipe's own guard).
+        resume() then forces a fresh reconnect (see its own docstring
+        for why: resuming mid-GOP on the same connection fed the
+        decoder frames with no recent keyframe behind them), hence two
+        fakes here rather than one."""
+        fake1 = _FakeWS([_codec_frame()], hang=True)
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        os.set_blocking(bridge._read_fd, False)
+
+        def _drain() -> bytes:
+            try:
+                return os.read(bridge._read_fd, 65536)
+            except BlockingIOError:
+                return b""
+
+        fake1._messages.append(_frame(b"mediaType=1", b"AAA"))
+        await _wait_until(lambda: _drain() != b"")
+
+        await bridge.pause()
+        fake1._messages.append(_frame(b"mediaType=1", b"BBB"))
+        await asyncio.sleep(0.1)
+        assert _drain() == b"", "a paused Live bridge must not write incoming frames to the pipe"
+
+        await bridge.resume()
+        assert fake1.closed, "resume() must force a fresh reconnect, not resume mid-GOP"
+        fake2._messages.append(_frame(b"mediaType=1", b"CCC"))
+        await _wait_until(lambda: _drain() != b"")
         await bridge.stop()

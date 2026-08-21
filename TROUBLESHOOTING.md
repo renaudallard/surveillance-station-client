@@ -142,6 +142,20 @@ than a one-off recovery. Workarounds:
   codec to mux, the stream is piped straight to mpv, so this does not
   apply to it either. Keeps WebSocket, at the price of the audio.
 
+## The Live View timeline's buttons feel sluggish with many cameras
+
+Clicking the ruler, Back/Forward 10s, or Pause/Play seeks every active slot
+in the current layout at once. On a 4x4 (or larger) grid, each slot's own
+lookup against the NAS adds up, so response can lag noticeably behind a
+click — this is more noticeable than on a smaller layout, not a hang.
+
+- Avoid clicking a button again before the previous click has visibly taken
+  effect. Rapid repeats are coalesced into a single request rather than
+  queued one-by-one, but still wait on the same round trip, so spamming a
+  button does not make it respond faster.
+- Switch to a smaller layout (2x2 or 1x1) for snappier timeline response,
+  especially while scrubbing through History mode.
+
 ## Recording playback never starts
 
 The player dialog opens, the video area stays black, and after seven seconds

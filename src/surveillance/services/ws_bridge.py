@@ -280,11 +280,12 @@ class WebSocketBridge:
         # ffmpeg's Matroska muxer needs a correct, stable rate from its
         # very first probe to write valid output -- a wrong initial guess
         # that self-corrects a few frames in still poisons the muxer's
-        # extradata detection. Some cameras give the real rate (and
-        # channel count) up front, in the codec-info payload (see
-        # _aac_config_from_header below); for the rest, video+audio are
-        # buffered here (see _aac_detecting) until real inter-frame
-        # timing reveals it, and only then does ffmpeg start.
+        # extradata detection. Some cameras give the real rate up front,
+        # in the codec-info payload (see _aac_config_from_header below);
+        # the rest need real inter-frame timing to reveal it. Either way
+        # video+audio are buffered here (see _aac_detecting) until
+        # framing detection finishes, and only then does ffmpeg start:
+        # knowing the rate early does not let a camera skip that wait.
         self._aac_sample_rate = 16000
         # Set by _setup_pipes when parse_audio_config (see aac.py) reads
         # the real sample rate straight off the wire, so
@@ -771,11 +772,11 @@ class WebSocketBridge:
         Settles _aac_channels on the way through, since the channel count
         can only be read off a reconstructed frame and this is where the
         frames get reconstructed. What _setup_pipes read off the
-        codec-info payload (_aac_declared_channels) is passed in as the
-        fallback, so a declaration
-        only decides it where no frame names a layout: DSM declares what
-        the camera negotiated, the frames carry what it actually sends,
-        and ffmpeg cannot tell the two apart (see adts_header in aac.py).
+        codec-info payload (_aac_declared_channels) goes in as the
+        fallback, so a declaration only decides the layout where no frame
+        names one: DSM declares what the camera negotiated, the frames
+        carry what it actually sends, and ffmpeg cannot tell the two
+        apart (see adts_header in aac.py).
         That also means the stream being validated is exactly the one the
         session will go on to send, rather than one labelling being
         checked and another sent.
@@ -900,9 +901,11 @@ class WebSocketBridge:
         await self._finish_aac_detection()
 
     async def _finish_aac_detection(self) -> None:
-        """Lock in the detected (or, failing that, default) AAC sample
-        rate, work out how to reconstruct a real frame from what DSM
-        actually sent (see _reconstruct_aac_frame), verify that
+        """Lock in the AAC sample rate, taken from the codec-info payload
+        where _setup_pipes found one and from the measured intervals
+        otherwise, falling back to the default when neither produced one.
+        Work out how to reconstruct a real frame from what DSM actually
+        sent (see _reconstruct_aac_frame), verify that
         reconstruction actually decodes for this camera, then either
         start the muxed ffmpeg pipeline or fall back to video-only —
         flushing everything buffered during detection either way."""

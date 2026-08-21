@@ -27,10 +27,10 @@
 
 Visual scaffold, in progress: the ruler is live (a live-updating time
 scale, pan, zoom, and click-to-seek all work), and so are the Live,
-+-10s, and Pause/Play buttons. The recording-presence bar is a static
-placeholder with no real data behind it yet -- wiring it to DSM's real
-EnumInterval/ListBookmark data is deliberately a separate piece of
-work from History mode itself, not yet started. The speed dropdown and
++-10s, Pause/Play, and speed-dropdown buttons. The recording-presence
+bar is a static placeholder with no real data behind it yet -- wiring
+it to DSM's real EnumInterval/ListBookmark data is deliberately a
+separate piece of work from History mode itself, not yet started. The
 event-jump buttons are still no-ops too.
 """
 
@@ -47,7 +47,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
-from surveillance.ui.icons import filter_icon, magnifier_zoom_icon
+from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier_zoom_icon
 
 # Candidate tick spacings (seconds); the smallest that still leaves each
 # label enough room on screen is picked at draw time.
@@ -98,6 +98,26 @@ _LIVE_TICK_COLOR = (0x35 / 255, 0x84 / 255, 0xE4 / 255)
 # relying on the ticks/labels' own (comparatively subtle) color change
 # alone.
 _HISTORY_PRESENCE_COLOR = (0.5, 0.5, 0.5)
+
+# History playback speed choices for _speed_btn's popover, and DSM's
+# own literal multiplier string for each -- confirmed to genuinely
+# scale playback by that factor, not just a hint left for mpv to
+# interpret (see WebSocketBridge._history_play_params' own "speed"
+# bullet for what's confirmed about the range).
+_SPEED_OPTIONS: list[tuple[str, str]] = [
+    ("0.125", "1/8x"),
+    ("0.25", "1/4x"),
+    ("0.5", "1/2x"),
+    ("1", "1x"),
+    ("2", "2x"),
+    ("4", "4x"),
+    ("8", "8x"),
+    ("16", "16x"),
+    ("32", "32x"),
+    ("64", "64x"),
+    ("100", "100x"),
+]
+_SPEED_LABELS: dict[str, str] = dict(_SPEED_OPTIONS)
 
 
 def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
@@ -470,15 +490,25 @@ class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
     The current-time label, the canvas ruler, the zoom buttons, and
-    click-to-seek/Live/+-10s/Pause (see canvas.set_seek_callback/
-    live_btn/back_10s_btn/forward_10s_btn/pause_btn) are live; the
-    speed dropdown and event-jump buttons are still placeholders with
-    no behavior wired up yet.
+    click-to-seek/Live/+-10s/Pause/speed (see canvas.set_seek_callback/
+    live_btn/back_10s_btn/forward_10s_btn/pause_btn/set_speed_callback)
+    are live; the event-jump buttons are still placeholders with no
+    behavior wired up yet.
     """
 
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("timeline")
+        self._speed_callback: Callable[[str], None] | None = None
+        self._reverse_callback: Callable[[bool], None] | None = None
+        # Set while set_speed()/set_reverse() is driving a widget's
+        # state itself (LiveView syncing the display, e.g. resetting
+        # to 1x/Fwd on returning to Live) rather than the user
+        # interacting with it -- _on_speed_radio_toggled/
+        # _on_direction_toggled check this so that path never
+        # re-invokes _speed_callback/_reverse_callback for a change
+        # LiveView already knows about.
+        self._suppress_playback_callback = False
 
         self.canvas = TimelineCanvas()
         self.canvas.set_margin_start(8)
@@ -526,6 +556,101 @@ class Timeline(Gtk.Box):
             "media-playback-start-symbolic" if paused else "media-playback-pause-symbolic"
         )
         self.pause_btn.set_tooltip_text("Play" if paused else "Pause")
+
+    def set_speed_callback(self, callback: Callable[[str], None]) -> None:
+        self._speed_callback = callback
+
+    def set_reverse_callback(self, callback: Callable[[bool], None]) -> None:
+        self._reverse_callback = callback
+
+    def set_speed(self, value: str) -> None:
+        """Reflect LiveView's own current speed (e.g. resetting the
+        display to 1x on returning to Live) -- same division of
+        responsibility as set_paused: this widget only ever emits a
+        value on user selection, and is told separately what to show
+        otherwise. Suppresses _speed_callback for the change this
+        causes (see self._suppress_playback_callback's own comment), so
+        LiveView syncing the display never talks back to itself."""
+        radio = self._speed_radios.get(value)
+        if radio is None or radio.get_active():
+            return
+        self._suppress_playback_callback = True
+        radio.set_active(True)
+        self._suppress_playback_callback = False
+
+    def set_reverse(self, reverse: bool) -> None:
+        """Reflect LiveView's own current direction (e.g. resetting to
+        Fwd on returning to Live) -- same division of responsibility
+        as set_speed, including suppressing _reverse_callback for the
+        change this causes."""
+        target = self._reverse_btn if reverse else self._forward_btn
+        if target.get_active():
+            return
+        self._suppress_playback_callback = True
+        target.set_active(True)
+        self._suppress_playback_callback = False
+
+    def _build_speed_popover(self) -> Gtk.Popover:
+        """Radio-button popover for _speed_btn -- same shape as
+        HeaderBar's own theme popover, plus a Fwd/Rev button pair at
+        the top (see _on_direction_toggled) rather than a second
+        dropdown or toolbar button, since direction only ever matters
+        alongside a speed choice."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        # A grouped ToggleButton pair, same radio-group technique as
+        # the speed choices below -- icon buttons matching the
+        # transport cluster's own style, reading directly as "which of
+        # these two" rather than needing a separate on/off indicator.
+        reverse_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        reverse_row.set_halign(Gtk.Align.CENTER)
+        self._reverse_btn = Gtk.ToggleButton()
+        self._reverse_btn.set_child(history_direction_icon(reverse=True, size=_TOOLBAR_ICON_SIZE))
+        self._reverse_btn.set_tooltip_text("Play backward")
+        self._reverse_btn.connect("toggled", self._on_direction_toggled, True)
+        reverse_row.append(self._reverse_btn)
+        self._forward_btn = Gtk.ToggleButton()
+        self._forward_btn.set_group(self._reverse_btn)
+        self._forward_btn.set_child(history_direction_icon(reverse=False, size=_TOOLBAR_ICON_SIZE))
+        self._forward_btn.set_tooltip_text("Play forward")
+        self._forward_btn.set_active(True)
+        self._forward_btn.connect("toggled", self._on_direction_toggled, False)
+        reverse_row.append(self._forward_btn)
+        box.append(reverse_row)
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        group: Gtk.CheckButton | None = None
+        for value, label in _SPEED_OPTIONS:
+            radio = Gtk.CheckButton(label=label)
+            if group is not None:
+                radio.set_group(group)
+            else:
+                group = radio
+            if value == "1":
+                radio.set_active(True)
+            radio.connect("toggled", self._on_speed_radio_toggled, value)
+            self._speed_radios[value] = radio
+            box.append(radio)
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        return popover
+
+    def _on_speed_radio_toggled(self, radio: Gtk.CheckButton, value: str) -> None:
+        if not radio.get_active():
+            return
+        self._speed_btn.set_label(_SPEED_LABELS[value])
+        if self._speed_callback is not None and not self._suppress_playback_callback:
+            self._speed_callback(value)
+
+    def _on_direction_toggled(self, btn: Gtk.ToggleButton, reverse: bool) -> None:
+        if not btn.get_active():
+            return
+        if self._reverse_callback is not None and not self._suppress_playback_callback:
+            self._reverse_callback(reverse)
 
     def _update_clock(self) -> bool:
         now = datetime.now()
@@ -581,7 +706,7 @@ class Timeline(Gtk.Box):
         # cursor position of its own to zoom toward.
         zoom_out_btn = Gtk.Button()
         zoom_out_btn.set_child(magnifier_zoom_icon(zoom_in=False, size=_TOOLBAR_ICON_SIZE))
-        zoom_out_btn.set_tooltip_text("Zoom out")
+        zoom_out_btn.set_tooltip_text("Zoom out timeline")
         zoom_out_btn.connect(
             "clicked", lambda _btn: self.canvas.zoom_at(-_ZOOM_STEP, self.canvas.get_width() / 2)
         )
@@ -589,7 +714,7 @@ class Timeline(Gtk.Box):
 
         zoom_in_btn = Gtk.Button()
         zoom_in_btn.set_child(magnifier_zoom_icon(zoom_in=True, size=_TOOLBAR_ICON_SIZE))
-        zoom_in_btn.set_tooltip_text("Zoom in")
+        zoom_in_btn.set_tooltip_text("Zoom in timeline")
         zoom_in_btn.connect(
             "clicked", lambda _btn: self.canvas.zoom_at(_ZOOM_STEP, self.canvas.get_width() / 2)
         )
@@ -602,10 +727,10 @@ class Timeline(Gtk.Box):
         # stepper this replaced: DSM only supports a handful of fixed
         # multipliers, and stepping through all of them one at a time
         # to reach the last is exactly the annoyance a dropdown avoids.
-        # The popover of actual speed options is item i's work -- this
-        # is the button shape only.
         self._speed_btn = Gtk.MenuButton(label="1x")
         self._speed_btn.set_tooltip_text("Playback speed")
+        self._speed_radios: dict[str, Gtk.CheckButton] = {}
+        self._speed_btn.set_popover(self._build_speed_popover())
         button_cluster.append(self._speed_btn)
 
         toolbar.append(time_box)

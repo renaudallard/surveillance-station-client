@@ -1818,3 +1818,238 @@ class TestPauseResume:
         fake2._messages.append(_frame(b"mediaType=1", b"CCC"))
         await _wait_until(lambda: _drain() != b"")
         await bridge.stop()
+
+
+class TestHistorySpeed:
+    """WebSocketBridge.set_speed() -- confirmed live (0.5x-32x) to
+    genuinely scale DSM's own frame delivery rate, not just a hint left
+    for mpv (see _history_play_params' own "speed" bullet)."""
+
+    async def test_set_speed_updates_the_open_connection_in_place(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        await bridge.set_speed("2")
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["speed"] == "2"
+        assert fields["restart"] == "false"
+        await bridge.stop()
+
+    async def test_set_speed_persists_across_a_reconnect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.set_speed("8")
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["speed"] == "8"
+        await bridge.stop()
+
+    async def test_set_speed_is_a_noop_for_live(self, connect: Any) -> None:
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+
+        await bridge.set_speed("2")
+
+        assert not any("speed=2" in str(m) for m in fake.sent), "Live has no speed concept"
+        await bridge.stop()
+
+    async def test_history_speed_constructor_param_applies_from_the_first_connect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slot freshly entering History mid-layout starts at
+        whatever speed the rest of the layout is already at (see
+        self._speed's own comment), not always 1x."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_speed="4",
+        )
+        await bridge.start()
+
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["speed"] == "4"
+        await bridge.stop()
+
+
+class TestHistoryReverse:
+    """WebSocketBridge.set_reverse() -- confirmed live: DSM delivers
+    frames with genuinely decreasing msec, decodes cleanly through
+    this bridge's existing pipeline with no changes needed, and
+    combines correctly with a non-1 speed (see _history_play_params'
+    own "reverse" bullet)."""
+
+    async def test_set_reverse_updates_the_open_connection_in_place(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        await bridge.set_reverse(True)
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["reverse"] == "true"
+        assert fields["restart"] == "false"
+        await bridge.stop()
+
+    async def test_set_reverse_persists_across_a_reconnect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.set_reverse(True)
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["reverse"] == "true"
+        await bridge.stop()
+
+    async def test_set_reverse_is_a_noop_for_live(self, connect: Any) -> None:
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+
+        await bridge.set_reverse(True)
+
+        assert not any("reverse=true" in str(m) for m in fake.sent), "Live has no reverse concept"
+        await bridge.stop()
+
+    async def test_history_reverse_constructor_param_applies_from_the_first_connect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slot freshly entering History mid-layout starts in
+        reverse if the rest of the layout already is (see
+        self._reverse's own comment), not always forward."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_reverse=True,
+        )
+        await bridge.start()
+
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["reverse"] == "true"
+        await bridge.stop()
+
+
+class TestHistoryActualPosition:
+    """_current_history_target() prefers self._last_video_msec (DSM's
+    own per-frame timestamp) over the wall-clock*delta estimate once a
+    frame has actually arrived -- the delta estimate assumes 1x, so at
+    any other speed it drifts from real playback (fast at first, since
+    DSM needs real time to ramp delivery up to a new rate, and forever
+    after for as long as the estimate's own 1x assumption doesn't
+    match what's actually playing)."""
+
+    async def test_uses_the_last_video_frames_own_msec_once_one_arrives(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        assert bridge.current_history_position == target  # delta estimate, nothing arrived yet
+
+        # A frame claiming far more progress than 1x*elapsed real time
+        # would ever produce -- e.g. mid-fast-forward.
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        await bridge.stop()
+
+    async def test_speed_change_uses_the_actual_position_not_the_stale_delta_estimate(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reproduces the reported bug: fast-forward for a while, then
+        change speed again -- the in-place update's own start= must
+        reflect where playback actually reached, not rewind to near
+        the original seek target the way the plain delta estimate
+        (which has no notion of speed at all) would."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.set_speed("16")
+
+        # 15 wall-clock seconds at 16x landed DSM's own reporting far
+        # past what a naive delta*1x estimate (~135) would ever reach.
+        fake._messages.append(_frame(b"mediaType=1&msec=750000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 750)
+
+        await bridge.set_speed("1")
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["speed"] == "1"
+        assert fields["start"] == "750"  # actual position reached, not back near 100
+        await bridge.stop()

@@ -291,6 +291,8 @@ class WebSocketBridge:
         history_recording: Recording | None = None,
         history_target: int = 0,
         history_resolver: Callable[[int], Awaitable[Recording | None]] | None = None,
+        history_speed: str = "1",
+        history_reverse: bool = False,
     ) -> None:
         self._ws_url = ws_url
         self._verify_ssl = verify_ssl
@@ -333,6 +335,32 @@ class WebSocketBridge:
         # self._paused, instead of continuing to advance -- None
         # whenever not paused. Set by pause(), cleared by resume().
         self._history_paused_position: int | None = None
+        # History playback speed multiplier, as the literal string DSM
+        # expects (see _history_play_params) -- history_speed lets a
+        # slot freshly entering History mid-layout start at whatever
+        # speed the rest of the layout is already at, matching the
+        # scope every other timeline control shares, rather than
+        # always resetting to 1x (meaningless for Live, which never
+        # sets it). Persists across this bridge's own periodic
+        # reconnects the same way self._paused does, until a later
+        # set_speed() changes it.
+        self._speed: str = history_speed
+        # History playback direction -- see history_speed's own
+        # comment, same reasoning applies (a slot freshly entering
+        # History mid-layout starts in reverse if the rest of the
+        # layout already is, and this persists across reconnects the
+        # same way).
+        self._reverse: bool = history_reverse
+        # Ground truth for _current_history_target(), taken from the
+        # most recent video frame's own msec header field (see
+        # _dispatch_media_frame) rather than derived purely from
+        # self._history_delta_seconds/wall clock -- accurate at any
+        # speed, where the delta-based estimate is only ever right at
+        # 1x. None whenever nothing has arrived yet for whatever is
+        # currently loaded (a fresh connect/reconnect, a seek, a
+        # recording swap, or a resume from pause), all of which reset
+        # it so a stale value from before that point is never reused.
+        self._last_video_msec: int | None = None
         # The currently connected socket, for seek() to send on from
         # outside _pump's own scope -- None whenever no connection is up
         # (including between reconnect attempts), so seek() knows to fold
@@ -968,6 +996,16 @@ class WebSocketBridge:
             self._discard_paused_frame(media_type)
             return
         if media_type == "1":
+            if self.is_history:
+                # Ground truth for _current_history_target(): DSM's own
+                # msec is where playback has actually reached, not a
+                # theoretical wall-clock*speed estimate -- the two
+                # diverge as soon as speed is anything but 1x, since
+                # DSM needs real time to ramp delivery up (or down) to
+                # a new rate rather than changing it instantly.
+                msec = _parse_header(header).get("msec")
+                if msec is not None:
+                    self._last_video_msec = int(msec)
             # The payload arrives without the Annex B start code, so
             # prepend it and mpv/ffmpeg can find NAL boundaries. Where
             # DSM leaves it has never been checked here; the constant
@@ -1051,12 +1089,17 @@ class WebSocketBridge:
 
     def _current_history_target(self) -> int:
         """Where History playback should be *right now* -- frozen at
-        self._history_paused_position while self._paused, otherwise
-        derived fresh from self._history_delta_seconds and the current
-        wall clock rather than read back as a fixed value (see that
-        attribute's own comment for why)."""
+        self._history_paused_position while self._paused; otherwise
+        self._last_video_msec if a frame has actually arrived for
+        whatever is currently loaded (accurate at any speed -- see
+        that attribute's own comment for why); otherwise derived from
+        self._history_delta_seconds and the current wall clock, which
+        is only ever right at 1x, as a fallback for the moment before
+        the first frame of a fresh connect/reconnect/seek arrives."""
         if self._history_paused_position is not None:
             return self._history_paused_position
+        if self._last_video_msec is not None and self._history_recording is not None:
+            return self._history_recording.start_time + self._last_video_msec // 1000
         return int(time.time() - self._history_delta_seconds)
 
     def _set_history_delta(self, target_unix: float) -> int:
@@ -1126,7 +1169,7 @@ class WebSocketBridge:
         if self._history_paused_position is not None:
             return self._history_paused_position  # already paused
         self._history_paused_position = self._current_history_target()
-        await self._send_history_pause_toggle()
+        await self._send_history_update()
         return self._history_paused_position
 
     async def resume(self) -> int | None:
@@ -1160,7 +1203,12 @@ class WebSocketBridge:
             return None
         resume_position = self._set_history_delta(self._history_paused_position)
         self._history_paused_position = None
-        await self._send_history_pause_toggle()
+        # The frozen position may have just been clamped forward (see
+        # _set_history_delta) -- self._last_video_msec, last stamped
+        # before the pause, would otherwise outrank that fresh delta
+        # estimate in _current_history_target and undo the clamp.
+        self._last_video_msec = None
+        await self._send_history_update()
         return resume_position
 
     @property
@@ -1199,14 +1247,21 @@ class WebSocketBridge:
         fresh = await self._history_resolver(target)
         if fresh is not None:
             self._history_recording = fresh
+            # self._last_video_msec belongs to the recording just
+            # swapped out -- interpreted against the new one's
+            # start_time it would land somewhere meaningless, so
+            # _current_history_target must fall back to the delta
+            # estimate until a frame actually arrives for this one.
+            self._last_video_msec = None
 
     def _history_play_params(self) -> dict[str, str]:
         """Shared field set for History's in-band `action=play` message
         (see the module docstring for the wire protocol) -- used both
         to open a connection (_build_history_play_message) and to
-        toggle pause in place on one already open
-        (_send_history_pause_toggle), which differ only in restart and
-        (implicitly, via self._paused) pause.
+        update pause/speed/reverse in place on one already open
+        (_send_history_update), which differ only in restart and
+        (implicitly, via self._paused/self._speed/self._reverse)
+        pause/speed/reverse.
 
         Every field below came from one live capture with one fixed
         value each (except mute, which we did see vary) -- nothing here
@@ -1229,25 +1284,35 @@ class WebSocketBridge:
           the same way Live gets them, and playback-side muting (the
           slot toolbar's mute button, same as Live) is what decides
           whether that audio is heard.
-        - method/blAudio/speed/reverse/action: name suggests the role
-          (blAudio -- include audio; the rest are self-explanatory) and
-          it lines up with Live's own same-named fields where Live has
-          one, but no capture ever varied it, so e.g. whether speed=2
-          or reverse=true actually changes playback is unknown.
+        - method/blAudio/action: name suggests the role (blAudio --
+          include audio) and it lines up with Live's own same-named
+          field, but no capture ever varied it.
         - blMux/browser/stmSrc/autoDrop: genuinely unconfirmed even by
           name -- included because DSM's own web client always sends
           them and omitting an unfamiliar field felt riskier than
           copying it verbatim. stmSrc=1 here vs the connect URL's
           stmSrc=2 (see module docstring) is the one hint that these
           matter somehow, not just boilerplate.
-        - pause: unlike the rest of this list, confirmed both ways by a
-          live capture -- pause=true does make DSM stop sending
-          entirely (not just video), and pause=false resumes it (see
-          pause()/resume()).
-
-        speed/reverse are therefore fixed at their forward/unpaused
-        values; a caller wanting to change either isn't supported by
-        this bridge yet.
+        - pause: confirmed both ways by a live capture -- pause=true
+          does make DSM stop sending entirely (not just video), and
+          pause=false resumes it (see pause()/resume()).
+        - speed: also confirmed by a live capture across 0.5x-32x --
+          DSM genuinely delivers frames that many times faster (frame
+          rate and the msec header both scale by the same factor, in
+          lockstep), not just a hint mpv is left to interpret on its
+          own, so no client-side pacing is needed beyond relaying
+          whatever arrives (see set_speed()). Untested below 0.5x or
+          above 32x.
+        - reverse: also confirmed by a live capture -- reverse=true
+          delivers frames with genuinely decreasing msec (matching the
+          current speed's own magnitude when combined, e.g.
+          reverse=true&speed=4 ran backward at ~4x), and this bridge's
+          existing frame-reconstruction pipeline decodes it with no
+          changes needed (see set_reverse()). One asymmetry: frame
+          delivery at reverse&speed=1 specifically arrived markedly
+          slower than forward at the same nominal speed -- a DSM-side
+          characteristic of reverse itself, not something client-side
+          pacing could fix.
         """
         rec = self._history_recording
         if rec is None:
@@ -1273,8 +1338,8 @@ class WebSocketBridge:
             "stmSrc": "1",
             "blAudio": "true",
             "mute": "false",
-            "speed": "1",
-            "reverse": "false",
+            "speed": self._speed,
+            "reverse": "true" if self._reverse else "false",
             "recEvtType": str(rec.event_type),
             "mountId": str(rec.mount_id),
             "archId": str(rec.arch_id),
@@ -1304,17 +1369,18 @@ class WebSocketBridge:
         params = self._history_play_params()
         return "&".join(f"{k}={v}" for k, v in params.items())
 
-    async def _send_history_pause_toggle(self) -> None:
-        """Ask DSM to actually stop/resume sending, in place, on the
-        connection already open -- restart=false so DSM doesn't also
-        jump back to _history_play_params' start= the way a fresh
-        action=play does; only pause (and, for resume(), the
-        already-advanced start=) is meant to change here.
+    async def _send_history_update(self) -> None:
+        """Push whatever pause()/resume()/set_speed() last set (via
+        self._paused/self._speed) to DSM, in place, on the connection
+        already open -- restart=false so DSM doesn't also jump back to
+        _history_play_params' start= the way a fresh action=play does;
+        only the field(s) the caller just changed are meant to change
+        here.
 
         A no-op while no connection is up: _build_history_play_message
-        picks up self._paused on the next connect/reconnect regardless
-        (see its own docstring), so pause()/resume() still leave the
-        bridge in the right state either way.
+        picks up self._paused/self._speed on the next connect/reconnect
+        regardless (see its own docstring), so the caller still leaves
+        the bridge in the right state either way.
         """
         if self._current_ws is None:
             return
@@ -1322,6 +1388,43 @@ class WebSocketBridge:
         params = self._history_play_params()
         params["restart"] = "false"
         await self._current_ws.send("&".join(f"{k}={v}" for k, v in params.items()))
+
+    async def set_speed(self, speed: str) -> None:
+        """Change History playback speed in place on the connection
+        already open. History-only: a no-op for Live, which has no
+        speed concept -- matches the toolbar's own speed dropdown,
+        disabled outside History mode, but callers need not gate on
+        is_history themselves.
+
+        *speed* is DSM's own literal multiplier string ("2", "0.5",
+        ...) -- see _history_play_params' own "speed" bullet for what's
+        confirmed about the range. Persists across this bridge's own
+        periodic reconnects the same way self._speed's own comment
+        describes, until a later set_speed() or a fresh History entry
+        changes it again.
+        """
+        if not self.is_history:
+            return
+        self._speed = speed
+        await self._send_history_update()
+
+    async def set_reverse(self, reverse: bool) -> None:
+        """Toggle History playback direction in place on the
+        connection already open. History-only: a no-op for Live,
+        which has no reverse concept -- matches the toolbar's own
+        Fwd/Rev toggle, disabled outside History mode, but callers
+        need not gate on is_history themselves.
+
+        See _history_play_params' own "reverse" bullet for what's
+        confirmed about combining this with speed. Persists across
+        this bridge's own periodic reconnects the same way
+        self._reverse's own comment describes, until a later
+        set_reverse() or a fresh History entry changes it again.
+        """
+        if not self.is_history:
+            return
+        self._reverse = reverse
+        await self._send_history_update()
 
     async def seek(self, recording: Recording, target_unix: int) -> int:
         """Seek to *target_unix* within *recording* (History mode only).
@@ -1363,6 +1466,12 @@ class WebSocketBridge:
         was_paused = self._paused
         self._paused = False
         self._history_paused_position = None
+        # A seek moves the position outright, same or different
+        # recording alike -- self._last_video_msec belongs to wherever
+        # playback was *before* this, and _current_history_target must
+        # fall back to the (freshly set, below) delta estimate until a
+        # frame actually arrives for the new target.
+        self._last_video_msec = None
         clamped_target = self._set_history_delta(target_unix)
         if self._history_recording is not None and recording.id == self._history_recording.id:
             if self._current_ws is not None:
@@ -1372,7 +1481,7 @@ class WebSocketBridge:
                     # untested assumption that a bare seekMs also
                     # implicitly resumes a connection DSM still thinks
                     # is paused.
-                    await self._send_history_pause_toggle()
+                    await self._send_history_update()
                 else:
                     self._history_stamp += 1
                     # Same clamp as _build_history_play_message's
@@ -1447,6 +1556,13 @@ class WebSocketBridge:
                         self._last_audio_at = self._connected_at
                         delay = 0.0
                         if self._history_recording is not None:
+                            # Belongs to whatever connection just ended
+                            # -- _build_history_play_message's own
+                            # start= must fall back to the delta
+                            # estimate until a frame actually arrives
+                            # on this one (see self._last_video_msec's
+                            # own comment).
+                            self._last_video_msec = None
                             await self._refresh_history_recording_if_stale()
                             await ws.send(self._build_history_play_message())
                         await self._read_messages_with_keepalive(ws)

@@ -116,6 +116,43 @@ def filter_icon(size: int = ICON_SIZE) -> Gtk.Overlay:
     return overlay
 
 
+def history_direction_icon(reverse: bool, size: int = ICON_SIZE) -> Gtk.Overlay:
+    """Looping-arrow + play-triangle glyph for the Live View timeline's
+    Fwd/Rev playback-direction buttons.
+
+    No stock icon reads as "play backward"/"play forward on a loop",
+    so stack view-refresh-symbolic's loop arrow with
+    media-playback-start-symbolic's triangle. The reverse variant is
+    the same two glyphs mirrored via style.css's .flip-horizontal
+    rather than separately drawn -- both read as "play" only in the
+    direction their triangle points, so mirroring the whole icon
+    (loop arrow included) reads as the opposite direction rather than
+    just an oddly-aimed triangle.
+    """
+    overlay = Gtk.Overlay()
+    canvas = Gtk.Box()
+    canvas.set_size_request(size, size)
+    overlay.set_child(canvas)
+
+    loop = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
+    loop.set_pixel_size(size)
+    loop.set_halign(Gtk.Align.CENTER)
+    loop.set_valign(Gtk.Align.CENTER)
+    if reverse:
+        loop.add_css_class("flip-horizontal")
+    overlay.add_overlay(loop)
+
+    triangle = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+    triangle.set_pixel_size(round(size * 0.5))
+    triangle.set_halign(Gtk.Align.CENTER)
+    triangle.set_valign(Gtk.Align.CENTER)
+    if reverse:
+        triangle.add_css_class("flip-horizontal")
+    overlay.add_overlay(triangle)
+
+    return overlay
+
+
 def pan_tilt_icon(size: int = ICON_SIZE) -> Gtk.Overlay:
     """4-way arrow for PTZ pan/tilt controls.
 

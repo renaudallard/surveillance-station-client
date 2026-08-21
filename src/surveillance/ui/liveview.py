@@ -467,6 +467,15 @@ class LiveView(Gtk.Box):
         # Live View entirely, this one's a deliberate user action that
         # persists while the page stays open; see _pause_all_slots).
         self._timeline_paused: bool = False
+        # Timeline speed dropdown's own state -- DSM's literal
+        # multiplier string (see WebSocketBridge.set_speed), applied to
+        # every active History slot the same way Pause is, and reset to
+        # "1" wherever Pause's own state is (leaving History, switching
+        # layout): see _return_all_to_live/_apply_layout.
+        self._timeline_speed: str = "1"
+        # Timeline Fwd/Rev toggle's own state -- same scope/reset as
+        # _timeline_speed (see WebSocketBridge.set_reverse).
+        self._timeline_reverse: bool = False
         self._active: list[int] = []  # physical indices of visible slots
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
@@ -521,6 +530,8 @@ class LiveView(Gtk.Box):
         self.timeline.back_10s_btn.connect("clicked", self._on_timeline_back_10s)
         self.timeline.forward_10s_btn.connect("clicked", self._on_timeline_forward_10s)
         self.timeline.pause_btn.connect("clicked", self._on_timeline_pause_play)
+        self.timeline.set_speed_callback(self._on_timeline_speed_selected)
+        self.timeline.set_reverse_callback(self._on_timeline_reverse_selected)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.grid)
@@ -667,24 +678,23 @@ class LiveView(Gtk.Box):
         self.register_timeline_activity()
 
     def _tick_history_positions(self) -> bool:
-        """Advance every slot's History playback position by one second
-        of real time — the closest approximation available to a real
-        playback-progress readout (see WebSocketBridge's module
-        docstring: DSM doesn't report one over this WS protocol, and
-        speed isn't implemented yet, so 1x forward is always right for
-        as long as this ticks at all). Skipped for a paused slot: its
-        position is frozen by WebSocketBridge.pause() itself, so
-        ticking it here regardless would visibly drift the on-screen
-        marker away from what's actually loaded and playing."""
+        """Refresh every slot's History playback position from its own
+        bridge's actual last-received frame (see
+        WebSocketBridge.current_history_position) rather than assuming
+        forward progress ourselves -- a theoretical wall-clock-based
+        estimate drifts from real playback at any speed but 1x, since
+        DSM needs real time to ramp delivery up (or down) to a new
+        rate rather than changing it instantly, and stays wrong
+        afterwards for as long as the estimate's own assumptions don't
+        match what's actually playing. Skipped for a paused slot: its
+        position is frozen by WebSocketBridge.pause() itself."""
         for slot_idx in self._active:
             slot = self._slots[slot_idx]
-            if (
-                slot._history_position is not None
-                and slot._ws_bridge is not None
-                and slot._ws_bridge.is_history
-                and not slot._ws_bridge.is_paused
-            ):
-                self._set_history_position(slot, slot._history_position + 1.0)
+            if slot._ws_bridge is None or slot._ws_bridge.is_paused:
+                continue
+            position = slot._ws_bridge.current_history_position
+            if position is not None:
+                self._set_history_position(slot, position)
         return True  # continue ticking
 
     def _on_timeline_hover(self, local_x: float, timestamp: float) -> None:
@@ -1035,6 +1045,41 @@ class LiveView(Gtk.Box):
                 ),
             )
 
+    def _on_timeline_speed_selected(self, value: str) -> None:
+        """Timeline's speed dropdown — applies to every active History
+        slot at once, the same scope as Pause/Back/Forward 10s. A Live
+        slot has no speed concept (WebSocketBridge.set_speed is a
+        no-op for one), so this only actually does anything for slots
+        already in History mode."""
+        self._timeline_speed = value
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None or slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.set_speed(value),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Speed change failed for %s: %s", name, exc
+                ),
+            )
+
+    def _on_timeline_reverse_selected(self, reverse: bool) -> None:
+        """Timeline's Fwd/Rev toggle — same scope/reasoning as
+        _on_timeline_speed_selected."""
+        self._timeline_reverse = reverse
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None or slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.set_reverse(reverse),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Direction change failed for %s: %s", name, exc
+                ),
+            )
+
     def _return_all_to_live(self) -> None:
         """Return every active slot currently playing recorded video
         back to its normal live stream — shared by the Live button and
@@ -1059,6 +1104,10 @@ class LiveView(Gtk.Box):
         self._run_staggered(actions)
         if hasattr(self, "timeline"):
             self.timeline.set_history_active(False)
+            self._timeline_speed = "1"
+            self.timeline.set_speed("1")
+            self._timeline_reverse = False
+            self.timeline.set_reverse(False)
             if actions:
                 # Only when something actually left History -- a layout
                 # switch while every slot was already Live shouldn't
@@ -1659,6 +1708,8 @@ class LiveView(Gtk.Box):
             history_recording=recording,
             history_target=target_unix,
             history_resolver=resolve,
+            history_speed=self._timeline_speed,
+            history_reverse=self._timeline_reverse,
         )
         self._start_bridge(slot, bridge)
         position = bridge.current_history_position

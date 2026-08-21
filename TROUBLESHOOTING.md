@@ -156,6 +156,21 @@ click — this is more noticeable than on a smaller layout, not a hang.
 - Switch to a smaller layout (2x2 or 1x1) for snappier timeline response,
   especially while scrubbing through History mode.
 
+## High playback speed is demanding, especially on larger layouts
+
+The Live View timeline's speed dropdown (History mode only) asks DSM to
+deliver frames that many times faster — at 8x or above, decoding that many
+times more video per second, multiplied across every active History slot in
+the layout, is a real load on both the NAS and this client's own CPU/memory,
+not just a UI setting. Running a high speed across a full 4x4 grid at once
+has been observed to crash the app outright, and to be heavy enough on the
+system as a whole to affect other running applications too.
+
+If a high speed causes instability, drop to a smaller layout (2x2 or 1x1).
+
+There is no guard against this yet — high-speed playback under load is
+still being characterized.
+
 ## Recording playback never starts
 
 The player dialog opens, the video area stays black, and after seven seconds

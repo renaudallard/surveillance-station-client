@@ -160,6 +160,13 @@
     transform: rotate(-90deg);
 }
 
+/* The Live View timeline's Rev icon (icons.py's history_direction_icon)
+   mirrors the same loop-arrow+triangle glyph used for Fwd, rather than
+   needing separate reverse-drawn art. */
+.flip-horizontal {
+    transform: scaleX(-1);
+}
+
 .timeline {
     background-color: @theme_bg_color;
     border-top: 1px solid @borders;

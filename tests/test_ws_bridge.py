@@ -696,13 +696,17 @@ class _FakeValidationProc:
         pass
 
 
-def _aac_audio_frame(payload_len: int = 50) -> bytes:
+def _aac_audio_frame(payload_len: int = 50, first_frame_byte: int = 0xAA) -> bytes:
     """A mediaType=2 frame with a 3-byte prefix, like the real camera
     that needed one: the third byte reads as AAC's "no elements follow"
     marker, so a 2-byte prefix is ruled out and 3 is what detection
     settles on. The payload itself is arbitrary, since these tests
-    exercise the mux/fallback decision, not real AAC decoding."""
-    return _frame(b"mediaType=2", b"\x00\x00\xe0" + b"\xaa" * payload_len)
+    exercise the mux/fallback decision, not real AAC decoding -- except
+    for *first_frame_byte*, whose top three bits are the id_syn_ele
+    detect_channel_count reads the layout off (0xAA names none)."""
+    return _frame(
+        b"mediaType=2", b"\x00\x00\xe0" + bytes([first_frame_byte]) + b"\xaa" * (payload_len - 1)
+    )
 
 
 def _undetectable_prefix_frame(payload_len: int = 50, header_suffix: bytes = b"") -> bytes:
@@ -723,7 +727,9 @@ def _video_frame() -> bytes:
 def _aac_codec_frame_with_config(channels: int, sample_rate: int) -> bytes:
     """A codec-info frame whose payload carries the audio-config trailer
     a camera confirmed to send this puts after its video config -- see
-    parse_audio_config in aac.py."""
+    parse_audio_config in aac.py. The two bytes after the second "|"
+    stand in for the AudioSpecificConfig: parse_audio_config never reads
+    them, so they are fixed filler rather than tracking the arguments."""
     trailer = f"{channels}|{sample_rate}|".encode() + b"\x14\x08"
     header = f"vdoCodec=H264&adoCodec=MPEG4-GENERIC&adoExtra={len(trailer)}".encode()
     return _frame(header, b"\x00\x00\x00\x01\x67\x64\x00\x33" + trailer)
@@ -1154,6 +1160,66 @@ class TestAudioMuxDecision:
         assert bridge._aac_sample_rate == 32000
         await bridge.stop()
 
+    async def test_a_mono_frame_beats_a_stereo_count_from_the_codec_info_payload(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DSM declares what the camera negotiated, the frames carry what
+        it actually sends, and ffmpeg accepts either labelling in silence
+        -- so a frame that names a layout has to win. Synology's own
+        decoder resolves the same disagreement the same way."""
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(stderr=b"")
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_aac_codec_frame_with_config(channels=2, sample_rate=32000)]
+        frames += [_aac_audio_frame(first_frame_byte=0x00) for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._aac_channels == 1  # the frames say single_channel_element
+        assert bridge._aac_sample_rate == 32000  # the rate still comes from the payload
+        await bridge.stop()
+
+    async def test_a_rejected_framing_does_not_supply_the_channel_fallback(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_aac_frames_look_valid runs once per framing model, and the
+        first model here reconstructs frames that read as stereo before
+        ffmpeg throws them out. What that rejected reconstruction claimed
+        must not become the fallback for the model that is kept: the
+        camera declared mono and no surviving frame names a layout."""
+        validations = 0
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            nonlocal validations
+            if "null" in args:
+                validations += 1
+                stderr = b"" if validations > 1 else b"[aac] Reserved bit set.\n"
+                return _FakeValidationProc(stderr=stderr)
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_aac_codec_frame_with_config(channels=1, sample_rate=32000)]
+        # Stripped of its 3-byte prefix each payload opens on a
+        # channel_pair_element; put back behind the header tail, which is
+        # what the kept model does, it opens on nothing that names a layout.
+        frames += [_aac_audio_frame(first_frame_byte=0x20) for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert validations == 2
+        assert bridge._aac_use_header_prepend is True
+        assert bridge._aac_channels == 1  # what DSM declared, not the rejected model
+        await bridge.stop()
+
 
 class TestAudioConfigFromHeader:
     """_setup_pipes' own decision to trust (or not) the codec-info
@@ -1167,7 +1233,7 @@ class TestAudioConfigFromHeader:
         trailer = b"1|32000|\x14\x08"
         await bridge._setup_pipes("H264", "MPEG4-GENERIC", str(len(trailer)), b"\x00" * 4 + trailer)
         assert bridge._aac_config_from_header is True
-        assert bridge._aac_channels == 1
+        assert bridge._aac_declared_channels == 1
         assert bridge._aac_sample_rate == 32000
         # Still true: the trailer says nothing about how a raw frame is
         # split across payload/header, so that still has to be detected.
@@ -1177,7 +1243,7 @@ class TestAudioConfigFromHeader:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge._setup_pipes("H264", "MPEG4-GENERIC", "", b"")
         assert bridge._aac_config_from_header is False
-        assert bridge._aac_channels == 2  # untouched stereo default
+        assert bridge._aac_declared_channels == 2  # untouched stereo default
         assert bridge._aac_detecting is True
 
 

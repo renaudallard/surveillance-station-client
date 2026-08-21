@@ -154,7 +154,7 @@ def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
     return None
 
 
-def detect_channel_count(frames: Sequence[bytes]) -> int:
+def detect_channel_count(frames: Sequence[bytes], declared: int = 2) -> int:
     """Work out how many channels the camera's AAC carries, from a
     handful of already-reconstructed frames.
 
@@ -168,15 +168,21 @@ def detect_channel_count(frames: Sequence[bytes]) -> int:
     that says the least. Settling it once, from the first frame that
     does name a layout, avoids both.
 
-    Falls back to stereo when no frame names one, which is what this
-    code assumed unconditionally before.
+    Falls back to *declared* when no frame names one: the count DSM put
+    in the codec-info trailer where it sent one (see parse_audio_config),
+    stereo where it did not, which is what this code assumed
+    unconditionally before either source existed. Reading the frame in
+    preference to the declaration is Synology's own order, not a guess:
+    its decoder takes the declared count and then overrides it from this
+    same id_syn_ele (AACHelper::ParseChannelCount in libplayerlib.so,
+    NativeAACDecoder.getChannelCount in the DS cam APK).
     """
     for frame in frames:
         if frame:
             channels = _AAC_ELEMENT_CHANNELS.get(frame[0] >> 5)
             if channels is not None:
                 return channels
-    return 2
+    return declared
 
 
 def nearest_sample_rate(interval_seconds: float) -> int:

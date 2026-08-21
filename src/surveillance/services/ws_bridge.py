@@ -287,9 +287,10 @@ class WebSocketBridge:
         # timing reveals it, and only then does ffmpeg start.
         self._aac_sample_rate = 16000
         # Set by _setup_pipes when parse_audio_config (see aac.py) reads
-        # the real sample rate and channel count straight off the wire,
-        # so _finish_aac_detection/_aac_frames_look_valid know not to
-        # overwrite them with a runtime guess that can only be worse.
+        # the real sample rate straight off the wire, so
+        # _finish_aac_detection knows not to overwrite it with a timing
+        # guess. Only the rate: the channel count that arrives with it is
+        # a starting value, not a verdict -- see _aac_frames_look_valid.
         self._aac_config_from_header = False
         # Overwritten by detect_frame_prefix_len() in _finish_aac_detection
         # before any real frame is ever stripped.
@@ -300,11 +301,18 @@ class WebSocketBridge:
         # _finish_aac_detection flips this once the payload-only prefix
         # model fails to validate -- see _reconstruct_aac_frame.
         self._aac_use_header_prepend = False
-        # Settled once, either from the codec-info payload (see
-        # _aac_config_from_header) or, failing that, from a reconstructed
-        # frame in _aac_frames_look_valid, since only a reconstructed
-        # frame says what the layout is. Stereo until then, which is what
-        # every camera got before either source existed.
+        # What the codec-info payload declared, if it declared anything.
+        # Kept apart from _aac_channels because _aac_frames_look_valid
+        # runs once per framing model: reading the fallback back out of
+        # the settled value would feed the rejected model's answer to the
+        # second attempt in place of DSM's.
+        self._aac_declared_channels = 2
+        # Settled once in _aac_frames_look_valid, from a reconstructed
+        # frame where one names a layout at all, since that is the stream
+        # actually being muxed. _aac_declared_channels stands only where
+        # none of them do, and stereo where there was no declaration
+        # either, which is what every camera got before either source
+        # existed.
         self._aac_channels = 2
         # Whether any framing check ran out of time rather than reaching a
         # verdict, so the two are not reported as one.
@@ -402,13 +410,13 @@ class WebSocketBridge:
             self._aac_detection_deadline = time.monotonic() + _AAC_DETECTION_TIMEOUT
             config = parse_audio_config(payload, audio_extra)
             if config is not None:
-                self._aac_channels, self._aac_sample_rate = config
+                self._aac_declared_channels, self._aac_sample_rate = config
                 self._aac_config_from_header = True
                 log.debug(
                     "WebSocket bridge for %s: %dHz, %d channel(s) from codec-info payload",
                     self._label,
                     self._aac_sample_rate,
-                    self._aac_channels,
+                    self._aac_declared_channels,
                 )
             else:
                 log.debug(
@@ -760,13 +768,17 @@ class WebSocketBridge:
         session, so an unsupported camera falls back to video-only
         instead of a broken one.
 
-        Settles _aac_channels on the way through unless _setup_pipes
-        already read it off the codec-info payload (_aac_config_from_header
-        -- see parse_audio_config in aac.py), since otherwise the channel
-        count can only be read off a reconstructed frame and this is
-        where the frames get reconstructed. That also means the stream
-        being validated is exactly the one the session will go on to
-        send, rather than one labelling being checked and another sent.
+        Settles _aac_channels on the way through, since the channel count
+        can only be read off a reconstructed frame and this is where the
+        frames get reconstructed. What _setup_pipes read off the
+        codec-info payload (_aac_declared_channels) is passed in as the
+        fallback, so a declaration
+        only decides it where no frame names a layout: DSM declares what
+        the camera negotiated, the frames carry what it actually sends,
+        and ffmpeg cannot tell the two apart (see adts_header in aac.py).
+        That also means the stream being validated is exactly the one the
+        session will go on to send, rather than one labelling being
+        checked and another sent.
 
         Raises ValueError if the reconstruction produces something too
         long to be one frame, which is its own kind of "not ours" -- see
@@ -776,8 +788,7 @@ class WebSocketBridge:
             self._reconstruct_aac_frame(header_tail, raw)
             for header_tail, raw in self._aac_audio_buffer
         ]
-        if not self._aac_config_from_header:
-            self._aac_channels = detect_channel_count(frames)
+        self._aac_channels = detect_channel_count(frames, self._aac_declared_channels)
         buf = bytearray()
         for frame in frames:
             buf += adts_header(len(frame), self._aac_sample_rate, self._aac_channels) + frame

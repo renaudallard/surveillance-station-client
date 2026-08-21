@@ -116,6 +116,20 @@ class TestDetectChannelCount:
         assert detect_channel_count([b"", _raw_block(20, _FIL)]) == 2
         assert detect_channel_count([]) == 2
 
+    def test_falls_back_to_the_declared_count_when_there_is_one(self) -> None:
+        """A camera that sent a codec-info trailer has said something
+        about its layout even when no frame does, and that beats the
+        blind stereo default."""
+        assert detect_channel_count([b"", _raw_block(20, _FIL)], 1) == 1
+        assert detect_channel_count([], 1) == 1
+
+    def test_a_frame_that_names_a_layout_beats_the_declared_count(self) -> None:
+        """DSM declares what the camera negotiated; the frames carry what
+        it actually sends. Synology's own decoder resolves a disagreement
+        the same way, overriding the declaration from id_syn_ele."""
+        assert detect_channel_count([_raw_block(413, _SCE)], 2) == 1
+        assert detect_channel_count([_raw_block(413, _CPE)], 1) == 2
+
 
 class TestNearestSampleRate:
     def test_snaps_to_known_rates(self) -> None:

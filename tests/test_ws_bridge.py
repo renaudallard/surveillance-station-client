@@ -720,6 +720,15 @@ def _video_frame() -> bytes:
     return _frame(b"mediaType=1", b"\x00" * 10)
 
 
+def _aac_codec_frame_with_config(channels: int, sample_rate: int) -> bytes:
+    """A codec-info frame whose payload carries the audio-config trailer
+    a camera confirmed to send this puts after its video config -- see
+    parse_audio_config in aac.py."""
+    trailer = f"{channels}|{sample_rate}|".encode() + b"\x14\x08"
+    header = f"vdoCodec=H264&adoCodec=MPEG4-GENERIC&adoExtra={len(trailer)}".encode()
+    return _frame(header, b"\x00\x00\x00\x01\x67\x64\x00\x33" + trailer)
+
+
 async def _spawn_fake_mux_holder(**kwargs: Any) -> Any:
     """Stand-in for the real ffmpeg mux spawn in tests that write
     buffered frames afterward (AAC detection's flush) -- a plain fake
@@ -1115,6 +1124,61 @@ class TestAudioMuxDecision:
         assert subprocess_calls == 0
         assert transform_attempts == 1
         await bridge.stop()
+
+    async def test_uses_channels_and_sample_rate_from_the_codec_info_payload(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A camera confirmed to send the audio-config trailer (see
+        parse_audio_config in aac.py) must end up muxed with those exact
+        values, not whatever runtime detection would have guessed --
+        _aac_audio_frame's frames read as stereo under detect_channel_count
+        (no frame names a layout, so it falls back to its stereo default),
+        so a mono result here can only have come from the header."""
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(stderr=b"")  # transform "decodes" cleanly
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_aac_codec_frame_with_config(channels=1, sample_rate=32000)]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._aac_config_from_header is True
+        assert bridge._aac_channels == 1
+        assert bridge._aac_sample_rate == 32000
+        await bridge.stop()
+
+
+class TestAudioConfigFromHeader:
+    """_setup_pipes' own decision to trust (or not) the codec-info
+    payload's audio-config trailer, isolated from the rest of AAC
+    detection -- see TestAudioMuxDecision for the full pipeline."""
+
+    async def test_reads_channels_and_sample_rate_immediately(self) -> None:
+        """Available before a single audio frame has arrived, unlike
+        every value runtime detection produces."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        trailer = b"1|32000|\x14\x08"
+        await bridge._setup_pipes("H264", "MPEG4-GENERIC", str(len(trailer)), b"\x00" * 4 + trailer)
+        assert bridge._aac_config_from_header is True
+        assert bridge._aac_channels == 1
+        assert bridge._aac_sample_rate == 32000
+        # Still true: the trailer says nothing about how a raw frame is
+        # split across payload/header, so that still has to be detected.
+        assert bridge._aac_detecting is True
+
+    async def test_falls_back_to_detection_without_a_recognized_trailer(self) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge._setup_pipes("H264", "MPEG4-GENERIC", "", b"")
+        assert bridge._aac_config_from_header is False
+        assert bridge._aac_channels == 2  # untouched stereo default
+        assert bridge._aac_detecting is True
 
 
 class TestAacFrameReconstruction:

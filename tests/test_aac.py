@@ -34,6 +34,7 @@ from surveillance.services.aac import (
     detect_channel_count,
     detect_frame_prefix_len,
     nearest_sample_rate,
+    parse_audio_config,
     strip_frame_prefix,
 )
 
@@ -203,6 +204,60 @@ class TestDetectFramePrefixLen:
 
     def test_returns_none_for_no_frames(self) -> None:
         assert detect_frame_prefix_len([]) is None
+
+
+class TestParseAudioConfig:
+    """Real codec-info payload trailers captured live from DSM's own
+    Monitor Center web client (Chrome DevTools, WebSocket sniff) for
+    three cameras across two audio codecs -- the ASCII "<channels>|
+    <sampleRate>|" trailer, plus a raw 2-byte AAC AudioSpecificConfig
+    when the codec needs one, sized exactly by adoExtra."""
+
+    def test_real_capture_reolink_rlc823a_aac_mono_16khz(self) -> None:
+        trailer = b"1|16000|" + bytes.fromhex("1408")
+        payload = b"\x00\x00\x00\x01\x67\x64\x00\x33" + trailer  # SPS start, for realism
+        assert parse_audio_config(payload, "10") == (1, 16000)
+
+    def test_real_capture_dlink_dcs4622_aac_stereo_8khz(self) -> None:
+        trailer = b"2|8000|" + bytes.fromhex("1590")
+        payload = b"\x00\x00\x00\x01\x67\x4d\x00\x32" + trailer
+        assert parse_audio_config(payload, "9") == (2, 8000)
+
+    def test_real_capture_pcmu_camera_mono_8khz_no_raw_suffix(self) -> None:
+        """PCMU needs no out-of-band config, so the trailer ends at the
+        second "|" with nothing after it -- adoExtra=7 is exactly
+        len("1|8000|")."""
+        trailer = b"1|8000|"
+        payload = b"\x00\x00\x00\x01\x67\x4d\x00\x32" + trailer
+        assert parse_audio_config(payload, "7") == (1, 8000)
+
+    def test_missing_adoextra(self) -> None:
+        assert parse_audio_config(b"1|16000|" + bytes.fromhex("1408"), "") is None
+
+    def test_non_numeric_adoextra(self) -> None:
+        assert parse_audio_config(b"1|16000|" + bytes.fromhex("1408"), "ten") is None
+
+    def test_adoextra_longer_than_the_payload(self) -> None:
+        assert parse_audio_config(b"1|16000|", "999") is None
+
+    def test_zero_adoextra(self) -> None:
+        assert parse_audio_config(b"1|16000|" + bytes.fromhex("1408"), "0") is None
+
+    def test_trailer_without_a_separator_is_not_this_shape(self) -> None:
+        # A camera not confirmed to send this trailer: adoExtra measures
+        # something else DSM appends, so this must not be misread as a
+        # channel count and sample rate.
+        assert parse_audio_config(b"\xaa" * 10, "10") is None
+
+    def test_non_numeric_channel_or_rate_field(self) -> None:
+        assert parse_audio_config(b"one|16000|", "10") is None
+        assert parse_audio_config(b"1|sixteen|", "10") is None
+
+    def test_rate_outside_the_standard_aac_table_is_rejected(self) -> None:
+        # A byte string that happens to split on "|" into two numbers is
+        # not enough on its own -- a sample rate AAC-LC cannot use at all
+        # means this was never really the trailer.
+        assert parse_audio_config(b"1|99999|", "8") is None
 
 
 class TestSampleRateDetectionRobustness:

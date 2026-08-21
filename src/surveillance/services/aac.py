@@ -71,10 +71,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-# DSM doesn't expose the negotiated sample rate directly (adoExtra's
-# encoding isn't known), but every AAC-LC frame carries a fixed 1024
-# samples, so timing alone, measured from real frame arrivals, is enough
-# to determine the rate live, without a per-camera-model lookup table.
+# DSM does expose the negotiated sample rate and channel count, but not
+# in adoExtra itself -- adoExtra is just the byte length of a trailer
+# DSM appends to the codec-info frame's payload (see parse_audio_config
+# below), and not every camera has been confirmed to send one. Timing
+# stays the fallback: every AAC-LC frame carries a fixed 1024 samples,
+# so it alone is enough to determine the rate live for a camera whose
+# trailer doesn't parse, without a per-camera-model lookup table.
 _SAMPLES_PER_FRAME = 1024
 _STANDARD_SAMPLE_RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
 
@@ -183,6 +186,40 @@ def nearest_sample_rate(interval_seconds: float) -> int:
         return 16000
     measured = _SAMPLES_PER_FRAME / interval_seconds
     return min(_STANDARD_SAMPLE_RATES, key=lambda r: abs(r - measured))
+
+
+def parse_audio_config(payload: bytes, extra_len: str) -> tuple[int, int] | None:
+    """Decode the audio trailer DSM appends to the codec-info frame's
+    payload, after the video config (confirmed on three real cameras,
+    two AAC and one PCMU): the last *extra_len* bytes -- adoExtra,
+    still a string here since it comes straight from the parsed header
+    -- hold ASCII "<channels>|<sampleRate>|", optionally followed by a
+    codec-specific blob (a raw 2-byte AAC AudioSpecificConfig; PCMU's
+    trailer ends at the second "|" with nothing after it).
+
+    Returns (channels, sample_rate), or None if adoExtra is missing or
+    not a plain number, the payload is shorter than it claims, or the
+    trailer isn't in this shape at all -- a camera that has not been
+    confirmed to send one. Callers fall back to runtime detection in
+    every such case, so this only ever adds information, never removes
+    a camera's audio.
+    """
+    if not extra_len.isdigit():
+        return None
+    n = int(extra_len)
+    if not 0 < n <= len(payload):
+        return None
+    parts = payload[-n:].split(b"|", 2)
+    if len(parts) < 2:
+        return None
+    try:
+        channels = int(parts[0])
+        sample_rate = int(parts[1])
+    except ValueError:
+        return None
+    if channels <= 0 or sample_rate not in _ADTS_FREQ_INDEX:
+        return None
+    return channels, sample_rate
 
 
 def adts_header(payload_length: int, sample_rate: int, channels: int) -> bytes:

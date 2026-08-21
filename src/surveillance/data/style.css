@@ -167,8 +167,9 @@
     transform: scaleX(-1);
 }
 
+/* Fixed rather than theme-derived to avoid visual clutter with video */
 .timeline {
-    background-color: @theme_bg_color;
+    background-color: #24292e;
     border-top: 1px solid @borders;
 }
 

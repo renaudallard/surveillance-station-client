@@ -36,6 +36,7 @@ event-jump buttons are still no-ops too.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -54,10 +55,22 @@ from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier
 _TICK_STEPS = [30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200]
 
 _MIN_LABEL_SPACING_PX = 70
-_RULER_HEIGHT = 28
+# Just enough for the label (default cairo font: 11 ascent + 3 descent,
+# starting 1px below ruler_y -- see the label baseline offset at the
+# draw site) plus the 6px tick line.
+_RULER_HEIGHT = 20
 _PRESENCE_HEIGHT = 22
-_EVENT_MARKER_HEIGHT = 8
-_CANVAS_HEIGHT = _RULER_HEIGHT + _PRESENCE_HEIGHT + _EVENT_MARKER_HEIGHT
+# Gap between the toolbar above and the ruler's own labels below --
+# deliberately smaller than the History-position bubble's own content
+# needs (see TimelineCanvas._draw_position_bubble): the bubble is drawn
+# at its own natural size regardless, and is expected to overlap the
+# ruler's label (and often its tick) directly beneath the marker, which
+# already show the same date/time the bubble does. Ticks/labels
+# elsewhere on the ruler, outside the bubble's own width, sit flush
+# against this gap same as they do in Live mode, when there is no
+# bubble at all.
+_BUBBLE_HEIGHT = 32
+_CANVAS_HEIGHT = _BUBBLE_HEIGHT + _RULER_HEIGHT + _PRESENCE_HEIGHT
 _NOW_MARKER_WIDTH = 3
 
 # Fraction of the visible window shrunk/grown per scroll tick or zoom
@@ -84,20 +97,32 @@ _TOOLBAR_ICON_SIZE = 16
 # crowds the buttons on either side.
 _MIN_BUTTON_GAP_PX = 36
 
-# Ruler ticks/labels' color while following "now" rather than showing a
-# History position (see TimelineCanvas._history_position) — matching
-# DSM's own web app, which shows its live clock in the same blue. Also
-# the toolbar's own real-time clock's color (see Timeline._build_toolbar
-# / style.css's .timeline-live-text), so every "this is live/current"
-# cue across the app reads as one consistent signal.
-_LIVE_TICK_COLOR = (0x35 / 255, 0x84 / 255, 0xE4 / 255)
+# Canvas background -- fixed rather than theme-derived, featuring
+# a dark color that takes less focus away from the video pictures.
+_CANVAS_BG_COLOR = (0x24 / 255, 0x29 / 255, 0x2E / 255)
+# Ruler tick/label color while showing a History position -- fixed
+# light grey rather than theme_fg_color since the canvas background
+# above is fixed dark too.
+_HISTORY_TICK_COLOR = (0.75, 0.75, 0.75)
 
-# Recording-presence bar's color while showing a History position
-# instead of "now" — plain grey rather than the accent blue it's drawn
-# in otherwise, distinguishing the strip at a glance rather than
-# relying on the ticks/labels' own (comparatively subtle) color change
-# alone.
+# Ruler ticks/labels' color while following "now".
+_LIVE_TICK_COLOR = (1.0, 1.0, 1.0)
+
+# Recording-presence bar's color while showing a History position.
 _HISTORY_PRESENCE_COLOR = (0.5, 0.5, 0.5)
+
+# The History-position bubble's own look (see
+# TimelineCanvas._draw_position_bubble) -- fixed colors rather than
+# theme-derived.
+_BUBBLE_BG_COLOR = (1.0, 1.0, 1.0)
+_BUBBLE_BORDER_COLOR = (0.0, 0.0, 0.0)
+_BUBBLE_DATE_COLOR = (0.4, 0.4, 0.4)
+_BUBBLE_TIME_COLOR = (0.05, 0.05, 0.05)
+_BUBBLE_CORNER_RADIUS = 6
+_BUBBLE_PAD_X = 12
+_BUBBLE_PAD_Y = 6
+_BUBBLE_FONT_SIZE = 12
+_BUBBLE_LINE_GAP = 2
 
 # History playback speed choices for _speed_btn's popover, and DSM's
 # own literal multiplier string for each -- confirmed to genuinely
@@ -391,33 +416,45 @@ class TimelineCanvas(Gtk.DrawingArea):
         end = self._view_end
         start = end - self._window_seconds
 
-        bg = self._theme_color("theme_bg_color", (0.15, 0.15, 0.15))
-        fg = self._theme_color("theme_fg_color", (0.8, 0.8, 0.8))
         accent = self._theme_color("accent_color", (0.3, 0.5, 0.9))
         warning = self._theme_color("warning_color", (0.9, 0.6, 0.1))
 
-        cr.set_source_rgb(*bg)
+        cr.set_source_rgb(*_CANVAS_BG_COLOR)
         cr.paint()
 
         def x_for(t: float) -> float:
             return (t - start) / self._window_seconds * width
 
-        # Placeholder event markers (deterministic pseudo-pattern, no
-        # real bookmark data yet).
-        cr.set_source_rgb(*warning)
-        bucket = 300  # 5 min
-        first_bucket = int(start // bucket) * bucket
-        b = first_bucket
-        while b <= end:
-            if (b // bucket) % 7 == 0:
-                bx = x_for(b)
-                cr.rectangle(bx, 0, 2, _EVENT_MARKER_HEIGHT)
-                cr.fill()
-            b += bucket
+        # Ruler labels + ticks — directly under the bubble strip.
+        # The tick itself hangs from the bottom of this band, right
+        # above the presence bar it marks a position in.
+        ruler_y = _BUBBLE_HEIGHT
+        tick_y = ruler_y + _RULER_HEIGHT - 6
+        cr.set_source_rgb(
+            *(_HISTORY_TICK_COLOR if self._history_position is not None else _LIVE_TICK_COLOR)
+        )
+        cr.set_line_width(1)
+        step = self._pick_tick_step(width)
+        first_tick = int(start // step) * step
+        t = first_tick
+        while t <= end:
+            tx = x_for(t)
+            cr.move_to(tx, tick_y)
+            cr.line_to(tx, tick_y + 6)
+            cr.stroke()
+            label = (
+                datetime.fromtimestamp(t, tz=timezone.utc)
+                .astimezone()
+                .strftime("%H:%M" if step < 86400 else "%m-%d")
+            )
+            extents = cr.text_extents(label)
+            cr.move_to(tx - extents.width / 2 - extents.x_bearing, ruler_y + 12)
+            cr.show_text(label)
+            t += step
 
         # Placeholder recording-presence bar — grey while showing a
         # History position instead of "now" (see _HISTORY_PRESENCE_COLOR).
-        presence_y = _EVENT_MARKER_HEIGHT
+        presence_y = _BUBBLE_HEIGHT + _RULER_HEIGHT
         presence_color = _HISTORY_PRESENCE_COLOR if self._history_position is not None else accent
         cr.set_source_rgba(*presence_color, 0.5)
         seg = 120  # 2 min segments
@@ -431,30 +468,20 @@ class TimelineCanvas(Gtk.DrawingArea):
                 cr.fill()
             s += seg
 
-        # Ruler ticks + labels — blue while following "now", the same
-        # signal the toolbar's own real-time clock and the "Live" label
-        # give (see _LIVE_TICK_COLOR); plain otherwise, while showing a
-        # History position instead.
-        ruler_y = _EVENT_MARKER_HEIGHT + _PRESENCE_HEIGHT
-        cr.set_source_rgb(*(fg if self._history_position is not None else _LIVE_TICK_COLOR))
-        cr.set_line_width(1)
-        step = self._pick_tick_step(width)
-        first_tick = int(start // step) * step
-        t = first_tick
-        while t <= end:
-            tx = x_for(t)
-            cr.move_to(tx, ruler_y)
-            cr.line_to(tx, ruler_y + 6)
-            cr.stroke()
-            label = (
-                datetime.fromtimestamp(t, tz=timezone.utc)
-                .astimezone()
-                .strftime("%H:%M" if step < 86400 else "%m-%d")
-            )
-            extents = cr.text_extents(label)
-            cr.move_to(tx - extents.width / 2 - extents.x_bearing, ruler_y + 18)
-            cr.show_text(label)
-            t += step
+        # Placeholder event markers (deterministic pseudo-pattern, no
+        # real bookmark data yet) -- drawn over the presence bar's own
+        # top half, anticipating where real event markers will eventually
+        # sit once wired to DSM's own bookmark data.
+        cr.set_source_rgb(*warning)
+        bucket = 300  # 5 min
+        first_bucket = int(start // bucket) * bucket
+        b = first_bucket
+        while b <= end:
+            if (b // bucket) % 7 == 0:
+                bx = x_for(b)
+                cr.rectangle(bx, presence_y, 2, _PRESENCE_HEIGHT / 2)
+                cr.fill()
+            b += bucket
 
         # Playback marker: the focus slot's History position when it has
         # one, otherwise "now" — the same blue line either way, since
@@ -481,9 +508,71 @@ class TimelineCanvas(Gtk.DrawingArea):
         if 0 <= marker_x <= width:
             cr.set_source_rgb(*accent)
             cr.set_line_width(_NOW_MARKER_WIDTH)
-            cr.move_to(marker_x, 0)
+            cr.move_to(marker_x, _BUBBLE_HEIGHT)
             cr.line_to(marker_x, height)
             cr.stroke()
+            if self._history_position is not None:
+                self._draw_position_bubble(cr, marker_x, width, self._history_position)
+
+    def _draw_position_bubble(
+        self, cr: cairo.Context, marker_x: float, width: int, timestamp: float
+    ) -> None:
+        """Rounded date/time tooltip above the marker, centered on it and
+        clamped to stay fully on-canvas near either edge -- matches DSM's
+        own Monitor Center bubble (date on one line, bold time on the
+        next, same size)."""
+        local = datetime.fromtimestamp(timestamp).astimezone()
+        date_text = local.strftime("%Y-%m-%d")
+        time_text = local.strftime("%H:%M:%S")
+
+        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(_BUBBLE_FONT_SIZE)
+        date_extents = cr.text_extents(date_text)
+        date_font = cr.font_extents()
+        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(_BUBBLE_FONT_SIZE)
+        time_extents = cr.text_extents(time_text)
+        time_font = cr.font_extents()
+
+        date_line_height = date_font[0] + date_font[1]  # ascent + descent
+        time_line_height = time_font[0] + time_font[1]
+        box_width = max(date_extents.width, time_extents.width) + 2 * _BUBBLE_PAD_X
+        box_height = date_line_height + _BUBBLE_LINE_GAP + time_line_height + 2 * _BUBBLE_PAD_Y
+        box_x = max(0.0, min(marker_x - box_width / 2, width - box_width))
+
+        self._rounded_rect(cr, box_x, 0, box_width, box_height, _BUBBLE_CORNER_RADIUS)
+        cr.set_source_rgb(*_BUBBLE_BG_COLOR)
+        cr.fill_preserve()
+        cr.set_source_rgb(*_BUBBLE_BORDER_COLOR)
+        cr.set_line_width(1)
+        cr.stroke()
+
+        center_x = box_x + box_width / 2
+        date_baseline = _BUBBLE_PAD_Y + date_font[0]
+        time_baseline = _BUBBLE_PAD_Y + date_line_height + _BUBBLE_LINE_GAP + time_font[0]
+
+        cr.set_source_rgb(*_BUBBLE_DATE_COLOR)
+        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(_BUBBLE_FONT_SIZE)
+        cr.move_to(center_x - date_extents.width / 2 - date_extents.x_bearing, date_baseline)
+        cr.show_text(date_text)
+
+        cr.set_source_rgb(*_BUBBLE_TIME_COLOR)
+        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(_BUBBLE_FONT_SIZE)
+        cr.move_to(center_x - time_extents.width / 2 - time_extents.x_bearing, time_baseline)
+        cr.show_text(time_text)
+
+    @staticmethod
+    def _rounded_rect(cr: cairo.Context, x: float, y: float, w: float, h: float, r: float) -> None:
+        """Trace a rounded-rectangle path -- Cairo has no built-in
+        primitive for one."""
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+        cr.close_path()
 
 
 class Timeline(Gtk.Box):

@@ -49,6 +49,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.ui.date_time_picker import DateTimePicker
+from surveillance.ui.event_type_filter import EventTypeFilterView
 from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier_zoom_icon
 
 # Candidate tick spacings (seconds); the smallest that still leaves each
@@ -714,10 +715,10 @@ class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
     The current-time label, the canvas ruler, the zoom buttons, and
-    click-to-seek/Live/+-10s/Pause/speed/event-jump/calendar (see
+    click-to-seek/Live/+-10s/Pause/speed/event-jump/calendar/filter (see
     canvas.set_seek_callback/live_btn/back_10s_btn/forward_10s_btn/
     pause_btn/set_speed_callback/prev_event_btn/next_event_btn/
-    set_jump_callback) are all live.
+    set_jump_callback/set_filter_apply_callback) are all live.
     """
 
     def __init__(self) -> None:
@@ -739,6 +740,12 @@ class Timeline(Gtk.Box):
         self._jump_callback: Callable[[datetime], None] | None = None
         self._calendar_initial_datetime_callback: Callable[[], datetime] | None = None
         self._calendar_month_changed_callback: Callable[[int, int], None] | None = None
+        # Filter-events popover's own callbacks -- see
+        # set_filter_popover_show_callback, set_filter_cancel_callback,
+        # and set_filter_apply_callback for what each does.
+        self._filter_popover_show_callback: Callable[[], None] | None = None
+        self._filter_cancel_callback: Callable[[], None] | None = None
+        self._filter_apply_callback: Callable[[set[str] | None, bool], None] | None = None
 
         self.canvas = TimelineCanvas()
         self.canvas.set_margin_start(8)
@@ -905,6 +912,88 @@ class Timeline(Gtk.Box):
         if self._jump_callback is not None:
             self._jump_callback(self._date_time_picker.get_datetime())
 
+    def set_filter_popover_show_callback(self, callback: Callable[[], None]) -> None:
+        """*callback* fires every time the Filter-events popover opens
+        -- LiveView answers by starting (or restarting) its per-camera
+        history scan, via show_filter_scanning/mark_filter_camera_scanned/
+        show_filter_options."""
+        self._filter_popover_show_callback = callback
+
+    def set_filter_cancel_callback(self, callback: Callable[[], None]) -> None:
+        """*callback* fires whenever the Filter-events popover closes
+        without an Apply -- Cancel, clicking outside, or Escape all
+        end up here (see the popover's own "closed" signal) -- so
+        LiveView can abandon its in-flight per-camera scan (bumping its
+        own generation counter) rather than letting it quietly keep
+        running and populating the cache in the background regardless
+        of how the popover was dismissed."""
+        self._filter_cancel_callback = callback
+
+    def set_filter_apply_callback(
+        self, callback: Callable[[set[str] | None, bool], None]
+    ) -> None:
+        """*callback* receives (selected_keys, match_all) from the
+        Filter-events popover's Apply button -- see
+        EventTypeFilterView.set_apply_callback for the exact contract."""
+        self._filter_apply_callback = callback
+
+    def show_filter_scanning(self, camera_names: list[str]) -> None:
+        """Forward to the view -- see EventTypeFilterView.show_scanning."""
+        self._event_type_filter.show_scanning(camera_names)
+
+    def mark_filter_camera_scanned(self, name: str) -> None:
+        """Forward to the view -- see EventTypeFilterView.mark_camera_scanned."""
+        self._event_type_filter.mark_camera_scanned(name)
+
+    def show_filter_options(
+        self, options: list[tuple[str, str, str]], selected_keys: set[str] | None, match_all: bool
+    ) -> None:
+        """Forward to the view -- see EventTypeFilterView.show_options."""
+        self._event_type_filter.show_options(options, selected_keys, match_all)
+
+    def _build_filter_popover(self) -> Gtk.Popover:
+        """EventTypeFilterView in a popover-on-a-MenuButton, same shape
+        as the calendar's own -- see EventTypeFilterView's own module
+        docstring for why its two (well, three, with the empty state)
+        pages live in their own widget rather than built inline here."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        self._event_type_filter = EventTypeFilterView()
+        self._event_type_filter.set_cancel_callback(self._on_filter_cancel_clicked)
+        self._event_type_filter.set_apply_callback(self._on_filter_apply_clicked)
+        box.append(self._event_type_filter)
+
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        popover.connect("show", self._on_filter_popover_show)
+        # "closed" rather than only Cancel's own click handler: a
+        # dismissal by clicking outside or pressing Escape needs the
+        # same in-flight scan abandoned as an explicit Cancel does, or
+        # it just keeps running and populating the cache in the
+        # background regardless of how the popover was closed.
+        popover.connect("closed", self._on_filter_popover_closed)
+        return popover
+
+    def _on_filter_popover_show(self, _popover: Gtk.Popover) -> None:
+        if self._filter_popover_show_callback is not None:
+            self._filter_popover_show_callback()
+
+    def _on_filter_popover_closed(self, _popover: Gtk.Popover) -> None:
+        if self._filter_cancel_callback is not None:
+            self._filter_cancel_callback()
+
+    def _on_filter_cancel_clicked(self) -> None:
+        self._filter_btn.popdown()
+
+    def _on_filter_apply_clicked(self, selected_keys: set[str] | None, match_all: bool) -> None:
+        self._filter_btn.popdown()
+        if self._filter_apply_callback is not None:
+            self._filter_apply_callback(selected_keys, match_all)
+
     def _build_speed_popover(self) -> Gtk.Popover:
         """Radio-button popover for _speed_btn -- same shape as
         HeaderBar's own theme popover, plus a Fwd/Rev button pair at
@@ -1001,10 +1090,11 @@ class Timeline(Gtk.Box):
 
         button_cluster = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-        filter_btn = Gtk.Button()
-        filter_btn.set_child(filter_icon(size=_TOOLBAR_ICON_SIZE))
-        filter_btn.set_tooltip_text("Filter events")
-        button_cluster.append(filter_btn)
+        self._filter_btn = Gtk.MenuButton()
+        self._filter_btn.set_child(filter_icon(size=_TOOLBAR_ICON_SIZE))
+        self._filter_btn.set_tooltip_text("Filter events")
+        self._filter_btn.set_popover(self._build_filter_popover())
+        button_cluster.append(self._filter_btn)
 
         download_btn = Gtk.Button()
         download_btn.set_icon_name("document-save-symbolic")

@@ -45,7 +45,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus, Event, PtzPatrol, PtzPreset, Recording
-from surveillance.config import save_config, save_config_now
+from surveillance.config import EventTypeHistory, save_config, save_config_now
 from surveillance.services import ptz
 from surveillance.services.event import (
     list_granular_events,
@@ -53,6 +53,7 @@ from surveillance.services.event import (
     list_recording_presence,
     merge_intervals,
 )
+from surveillance.services.event_bits import build_filter_options, event_matches_keys
 from surveillance.services.live import (
     AUDIO_PROTOCOLS,
     OFFLINE_PLACEHOLDER_URL,
@@ -126,6 +127,19 @@ _PRESENCE_LIVE_REFRESH_SEC = 5.0
 # expanding search: a click that finds nothing just logs and does
 # nothing (see LiveView._seek_to_nearest_event).
 _EVENT_NAV_WINDOW_SECONDS = 7 * 86400
+
+# A camera's first-ever event-type scan (see _scan_next_camera_for_
+# event_types) can't ask EnumInterval for literally its entire history
+# from epoch: confirmed live -- from_time=0 crashes DSM's backend with
+# an HTTP 502 (not a client-side timeout) rather than just being slow,
+# almost certainly because event_map's 5-second-bucket bookkeeping has
+# to cover the whole requested range regardless of how much of it
+# actually has data, and a multi-decade range is a few hundred million
+# buckets. This cap is comfortably past any real NAS's own storage-
+# limited retention without being unbounded -- not a substitute for
+# asking DSM what a camera's oldest recording actually is, just
+# cheaper than doing so.
+_EVENT_TYPE_SCAN_MAX_LOOKBACK_SECONDS = 2 * 365 * 86400
 
 
 class CameraSlot(Gtk.Box):
@@ -505,6 +519,19 @@ class LiveView(Gtk.Box):
         # navigation) can't apply stale marks to the now-different
         # month -- see _on_calendar_availability_fetched.
         self._calendar_generation: int = 0
+        # Bumped per Filter-events popover open so a slower/older
+        # per-camera history scan resolving after the popover was
+        # reopened or cancelled can't keep going or apply stale
+        # progress -- see _on_filter_popover_show/_scan_next_camera_
+        # for_event_types.
+        self._filter_scan_generation: int = 0
+        # Selected event-type filter keys (see services.event_bits) --
+        # None means "All Event Types", the same no-filtering
+        # convention AdvancedSearchDialog's own event-type filter uses.
+        # Session-only (not persisted): only the per-camera scan cache
+        # (AppConfig.event_type_history) survives a restart.
+        self._event_filter_keys: set[str] | None = None
+        self._event_filter_match_all: bool = False
         # Timeline Pause/Play's own state -- distinct from
         # _streams_paused below (that one's for navigating away from
         # Live View entirely, this one's a deliberate user action that
@@ -605,6 +632,9 @@ class LiveView(Gtk.Box):
         self.timeline.set_jump_callback(self._on_calendar_jump)
         self.timeline.set_calendar_initial_datetime_callback(self._calendar_initial_datetime)
         self.timeline.set_calendar_month_changed_callback(self._on_calendar_month_changed)
+        self.timeline.set_filter_popover_show_callback(self._on_filter_popover_show)
+        self.timeline.set_filter_cancel_callback(self._on_filter_cancel)
+        self.timeline.set_filter_apply_callback(self._on_filter_apply)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.grid)
@@ -968,7 +998,11 @@ class LiveView(Gtk.Box):
         self.timeline.canvas.set_presence_data(focus_spans, layout_spans)
 
         focus_events = (
-            [(ev.start_time, ev.stop_time) for ev in self._event_cache[focus_camera_id][2]]
+            [
+                (ev.start_time, ev.stop_time)
+                for ev in self._event_cache[focus_camera_id][2]
+                if self._event_passes_filter(ev)
+            ]
             if focus_camera_id is not None and focus_camera_id in self._event_cache
             else []
         )
@@ -976,8 +1010,29 @@ class LiveView(Gtk.Box):
             (ev.start_time, ev.stop_time)
             for cid in active_camera_ids
             for ev in self._event_cache.get(cid, (0.0, 0.0, []))[2]
+            if self._event_passes_filter(ev)
         ]
         self.timeline.canvas.set_event_markers(focus_events, layout_events)
+
+    def _camera_vendor(self, camera_id: int) -> str:
+        return next((c.vendor for c in self._cameras if c.id == camera_id), "")
+
+    def _event_passes_filter(self, ev: Event) -> bool:
+        """True unless the Filter-events popover has narrowed things
+        down and this event's decoded type isn't one of the selected
+        keys -- see services.event_bits and _on_filter_apply. Applies
+        equally to the presence bar's own markers and to Previous/Next
+        event navigation, so both always agree on what counts."""
+        if self._event_filter_keys is None:
+            return True
+        vendor = self._camera_vendor(ev.camera_id)
+        return event_matches_keys(
+            ev.event_type,
+            ev.reserved,
+            vendor,
+            self._event_filter_keys,
+            self._event_filter_match_all,
+        )
 
     def _on_timeline_prev_event(self, _btn: Gtk.Button) -> None:
         """Timeline's Previous event button -- always live (see
@@ -1068,6 +1123,7 @@ class LiveView(Gtk.Box):
             ev for ev in candidates if (ev.camera_id, ev.start_time) != self._last_event_nav_key
         ]
         candidates = [ev for ev in candidates if now - ev.start_time >= MIN_HISTORY_DELTA_SECONDS]
+        candidates = [ev for ev in candidates if self._event_passes_filter(ev)]
         if not candidates:
             log.info("No %s event found", "next" if forward else "previous")
             return
@@ -1156,6 +1212,154 @@ class LiveView(Gtk.Box):
                         days.add(day.day)
                     day += timedelta(days=1)
         self.timeline.set_calendar_month_availability(year, month, days, merge_intervals(all_spans))
+
+    # ------------------------------------------------------------------
+    # Event-type filter
+    # ------------------------------------------------------------------
+
+    def _on_filter_popover_show(self) -> None:
+        """Timeline.set_filter_popover_show_callback target -- start (or
+        restart) the per-camera history scan the Filter-events checklist
+        is built from. Reuses the exact same EnumInterval-based decode
+        as event markers do (list_granular_events), just scoped one
+        camera at a time and merged into a persisted cache
+        (AppConfig.event_type_history) rather than the presence bar's
+        own short-lived one, so it must never be redone for a camera
+        once known, only brought forward from wherever it was last
+        checked. See AppConfig.event_type_history's own comment for why
+        this is spread out one camera at a time
+        (_scan_next_camera_for_event_types) rather than combined into
+        one request.
+        """
+        if not self.app.api:
+            return
+        _, active_camera_ids = self._active_timeline_cameras()
+        self._filter_scan_generation += 1
+        generation = self._filter_scan_generation
+        if not active_camera_ids:
+            self.timeline.show_filter_options(
+                [], self._event_filter_keys, self._event_filter_match_all
+            )
+            return
+        names = [self._camera_name(cid) for cid in active_camera_ids]
+        self.timeline.show_filter_scanning(names)
+        self._scan_next_camera_for_event_types(generation, active_camera_ids, 0)
+
+    def _scan_next_camera_for_event_types(
+        self, generation: int, camera_ids: list[int], index: int
+    ) -> None:
+        """One EnumInterval request per camera, strictly sequential --
+        never combined into one multi-camera request, which is what
+        risks a timeout on a wide range (see services.event's own
+        _EVENT_MAP_REQUEST_TIMEOUT comment), not the per-camera cost
+        itself. A camera already in the cache only needs the gap since
+        its own checked_until brought forward, not a fresh full scan.
+        """
+        if generation != self._filter_scan_generation or not self.app.api:
+            return
+        if index >= len(camera_ids):
+            self._finish_event_type_scan(generation, camera_ids)
+            return
+        camera_id = camera_ids[index]
+        history = self.app.config.event_type_history.get(camera_id)
+        now = int(time.time())
+        from_time = (
+            history.checked_until
+            if history is not None
+            else now - _EVENT_TYPE_SCAN_MAX_LOOKBACK_SECONDS
+        )
+        camera_name = self._camera_name(camera_id)
+
+        def _on_scanned(events: list[Event]) -> None:
+            self._on_camera_event_types_scanned(
+                generation, camera_id, index, camera_ids, now, events
+            )
+
+        def _on_failed(exc: BaseException) -> None:
+            self._on_camera_event_type_scan_failed(generation, camera_id, index, camera_ids, exc)
+
+        run_async(
+            list_granular_events(
+                self.app.api, [camera_id], {camera_id: camera_name}, from_time, now
+            ),
+            callback=_on_scanned,
+            error_callback=_on_failed,
+        )
+
+    def _on_camera_event_types_scanned(
+        self,
+        generation: int,
+        camera_id: int,
+        index: int,
+        camera_ids: list[int],
+        cutoff: int,
+        events: list[Event],
+    ) -> None:
+        if generation != self._filter_scan_generation:
+            return  # popover closed/reopened since this camera's scan started
+        history = self.app.config.event_type_history.setdefault(camera_id, EventTypeHistory())
+        seen = set(history.types)
+        seen.update((ev.event_type, ev.reserved) for ev in events)
+        history.types = sorted(seen)
+        history.checked_until = cutoff
+        save_config(self.app.config)
+        self.timeline.mark_filter_camera_scanned(self._camera_name(camera_id))
+        self._scan_next_camera_for_event_types(generation, camera_ids, index + 1)
+
+    def _on_camera_event_type_scan_failed(
+        self,
+        generation: int,
+        camera_id: int,
+        index: int,
+        camera_ids: list[int],
+        exc: BaseException,
+    ) -> None:
+        if generation != self._filter_scan_generation:
+            return
+        log.debug("Event-type scan failed for %s: %s", self._camera_name(camera_id), exc)
+        # Skip it for this round -- its cache entry (if any) is left
+        # untouched, so the next popover open just retries from the
+        # same checked_until instead of the whole scan getting stuck.
+        self.timeline.mark_filter_camera_scanned(self._camera_name(camera_id))
+        self._scan_next_camera_for_event_types(generation, camera_ids, index + 1)
+
+    def _finish_event_type_scan(self, generation: int, camera_ids: list[int]) -> None:
+        if generation != self._filter_scan_generation:
+            return
+        occurrences: list[tuple[int, int, str]] = []
+        for cid in camera_ids:
+            history = self.app.config.event_type_history.get(cid)
+            if history is None:
+                continue
+            vendor = self._camera_vendor(cid)
+            occurrences.extend((flag, reserved, vendor) for flag, reserved in history.types)
+        options = build_filter_options(occurrences)
+        self.timeline.show_filter_options(
+            options, self._event_filter_keys, self._event_filter_match_all
+        )
+
+    def _on_filter_cancel(self) -> None:
+        """Timeline.set_filter_cancel_callback target -- fires on any
+        popover dismissal (Cancel click, click-outside, Escape; see
+        Timeline._on_filter_popover_closed). Bumping the generation is
+        enough: every in-flight scan step already checks it before
+        doing anything further (see _scan_next_camera_for_event_types
+        and friends), so the abandoned chain just stops on its own
+        rather than continuing to populate the cache in the
+        background."""
+        self._filter_scan_generation += 1
+
+    def _on_filter_apply(self, selected_keys: set[str] | None, match_all: bool) -> None:
+        """Timeline.set_filter_apply_callback target -- narrows the
+        presence bar's own event markers and Previous/Next event
+        navigation to the chosen types (see _event_passes_filter).
+        Reuses whatever's already cached rather than re-fetching: the
+        underlying Event data doesn't change just because the filter
+        did."""
+        self._event_filter_keys = selected_keys
+        self._event_filter_match_all = match_all
+        focus_camera_id, active_camera_ids = self._active_timeline_cameras()
+        self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
 
     def _on_timeline_seek(self, timestamp: float) -> None:
         """TimelineCanvas.set_seek_callback target — seeks every active

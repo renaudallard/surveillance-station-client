@@ -98,6 +98,25 @@ class ConnectionProfile:
 
 
 @dataclass
+class EventTypeHistory:
+    """One camera's event-type discovery cache for the Live View
+    timeline's Filter-events popover (see ui.event_type_filter) --
+    every distinct (event_type flag, reserved) pair ever decoded from
+    RecordingPicker::EnumInterval's event_map for this camera, and how
+    far forward that scan has been brought up to date.
+
+    checked_until alone is enough to resume correctly: a camera present
+    here at all has already had its full history scanned once (the
+    only kind of scan ever done for a camera with no existing entry),
+    so there is no separate "have we reached the beginning" flag to
+    track -- existence of the entry *is* that fact.
+    """
+
+    types: list[tuple[int, int]] = field(default_factory=list)
+    checked_until: int = 0
+
+
+@dataclass
 class AppConfig:
     """Application configuration."""
 
@@ -146,6 +165,13 @@ class AppConfig:
     snapshots_search_from_time: str = ""
     snapshots_search_to_time: str = ""
     snapshots_search_time_preset: str = ""  # same values as search_time_preset
+    # camera ID -> discovered event types + scan progress, see
+    # EventTypeHistory. Deliberately session/config-persisted rather
+    # than re-scanned every launch: a full-history scan costs real
+    # seconds per camera (~7s/camera, ~90s for a 20-camera NAS if done
+    # all at once), which is why it's never done all at once; see
+    # ui.event_type_filter.
+    event_type_history: dict[int, EventTypeHistory] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -244,6 +270,20 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         with contextlib.suppress(ValueError, TypeError):
             muted[int(cam_id_str)] = bool(val)
 
+    # event_type_history: maps camera ID (int) -> EventTypeHistory
+    event_type_history: dict[int, EventTypeHistory] = {}
+    for cam_id_str, entry in data.get("event_type_history", {}).items():
+        with contextlib.suppress(ValueError, TypeError):
+            cam_id = int(cam_id_str)
+            types = [
+                (int(pair[0]), int(pair[1]))
+                for pair in entry.get("types", [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ]
+            event_type_history[cam_id] = EventTypeHistory(
+                types=types, checked_until=int(entry.get("checked_until", 0))
+            )
+
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
@@ -262,6 +302,7 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         camera_protocols=protocols,
         camera_volume=volumes,
         camera_muted=muted,
+        event_type_history=event_type_history,
         search_camera_ids=session.get("search_camera_ids", []),
         search_from_time=session.get("search_from_time", ""),
         search_to_time=session.get("search_to_time", ""),
@@ -358,6 +399,13 @@ def _write_config(config: AppConfig) -> None:
         },
         "camera_volume": {str(cam_id): vol for cam_id, vol in config.camera_volume.items()},
         "camera_muted": {str(cam_id): val for cam_id, val in config.camera_muted.items()},
+        "event_type_history": {
+            str(cam_id): {
+                "types": [list(pair) for pair in hist.types],
+                "checked_until": hist.checked_until,
+            }
+            for cam_id, hist in config.event_type_history.items()
+        },
         "profiles": {},
     }
 

@@ -33,6 +33,7 @@ from surveillance.config import (
     MIN_POLL_INTERVAL,
     AppConfig,
     ConnectionProfile,
+    EventTypeHistory,
     _config_from_data,
     _write_config,
     add_profile,
@@ -119,6 +120,52 @@ class TestPollIntervals:
     def test_a_usable_value_is_left_alone(self) -> None:
         cfg = _config_from_data({"general": {"poll_interval_cameras": 120}})
         assert cfg.poll_interval_cameras == 120
+
+
+class TestEventTypeHistory:
+    def test_defaults_to_empty(self) -> None:
+        cfg = _config_from_data({})
+        assert cfg.event_type_history == {}
+
+    def test_loads_types_and_checked_until(self) -> None:
+        cfg = _config_from_data(
+            {
+                "event_type_history": {
+                    "63": {"types": [[513, 0], [257, 1]], "checked_until": 1700000000}
+                }
+            }
+        )
+        assert cfg.event_type_history[63] == EventTypeHistory(
+            types=[(513, 0), (257, 1)], checked_until=1700000000
+        )
+
+    def test_malformed_entry_is_dropped_not_fatal(self) -> None:
+        cfg = _config_from_data(
+            {
+                "event_type_history": {
+                    "not-a-number": {"types": [], "checked_until": 0},
+                    "63": {"types": [[513, 0]], "checked_until": 5},
+                }
+            }
+        )
+        assert list(cfg.event_type_history.keys()) == [63]
+
+    def test_round_trips_through_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
+        import surveillance.config as cfg
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(cfg, "CONFIG_FILE", config_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+
+        config = AppConfig()
+        config.event_type_history[63] = EventTypeHistory(
+            types=[(513, 0), (257, 1)], checked_until=1700000000
+        )
+        _write_config(config)
+        loaded = load_config()
+        assert loaded.event_type_history[63] == EventTypeHistory(
+            types=[(513, 0), (257, 1)], checked_until=1700000000
+        )
 
 
 class TestEventsSearchEventTypesMigration:

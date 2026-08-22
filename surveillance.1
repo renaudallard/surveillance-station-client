@@ -106,7 +106,15 @@ button greyed out until the exact date/time selected falls within a
 real recording; jumping there re-centers the timeline at its default
 zoom, while Back/Forward 10s and Previous/Next event instead just pan
 (at whatever zoom is already set) if their own target would otherwise
-land off-screen.
+land off-screen. A
+.B Filter events
+button narrows the presence bar's event markers and Previous/Next
+event navigation down to chosen event types (Any or All of a
+multi-select, decoded per camera brand). Opening it scans each layout
+camera's full recording history for the types it has ever produced (a
+persisted, incrementally-updated cache, so only the first scan and any
+time elapsed since the last one cost real seconds), showing a
+per-camera progress checklist meanwhile.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

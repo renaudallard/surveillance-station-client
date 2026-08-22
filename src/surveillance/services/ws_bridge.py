@@ -101,7 +101,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from surveillance.api.models import Recording
 
-from surveillance.services.aac import AacDetector, adts_header
+from surveillance.services.aac import AacDetector, adts_header, parse_audio_config
 
 log = logging.getLogger(__name__)
 
@@ -390,14 +390,17 @@ class WebSocketBridge:
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
-        # AAC's real sample rate isn't in the codec-info frame anywhere,
-        # but ffmpeg's Matroska muxer needs a correct, stable rate from
-        # its very first probe to write valid output -- a wrong initial
-        # guess that self-corrects a few frames in still poisons the
-        # muxer's extradata detection. So video+audio are buffered (see
-        # AacDetector) until real inter-frame timing reveals the rate,
-        # and only then does ffmpeg start. One instance per bridge,
-        # reused for its whole lifetime -- see aac.py's AacDetector.
+        # ffmpeg's Matroska muxer needs a correct, stable rate from its
+        # very first probe to write valid output -- a wrong initial guess
+        # that self-corrects a few frames in still poisons the muxer's
+        # extradata detection. Some cameras give the real rate up front,
+        # in the codec-info payload (see AacDetector.set_config_from_header);
+        # the rest need real inter-frame timing to reveal it. Either way
+        # video+audio are buffered (see AacDetector) until framing
+        # detection finishes, and only then does ffmpeg start: knowing
+        # the rate early does not let a camera skip that wait. One
+        # instance per bridge, reused for its whole lifetime -- see
+        # aac.py's AacDetector.
         self._aac = AacDetector()
         self._pending_video_codec: str = ""
         self._fd_lock = threading.Lock()
@@ -463,7 +466,9 @@ class WebSocketBridge:
         )
         return True
 
-    async def _setup_pipes(self, video_codec: str, audio_codec: str) -> None:
+    async def _setup_pipes(
+        self, video_codec: str, audio_codec: str, audio_extra: str, payload: bytes
+    ) -> None:
         """One-time setup on the first codec-info frame of the bridge's
         lifetime: decide whether DSM's audio track can be muxed in, and
         create whatever pipe(s) mpv will read from.
@@ -475,20 +480,35 @@ class WebSocketBridge:
         behavior change at all from before this feature existed.
 
         AAC is a third case: video+audio are buffered rather than piped
-        anywhere yet, until real frame timing reveals the sample rate
+        anywhere yet, until the sample rate and channel count are known
         (see AacDetector.feed_audio) — ffmpeg only starts once that's
         known, so `start()` (and mpv) stay blocked a little longer for
-        these cameras specifically. Bounded three ways: enough
-        intervals, AacDetector's own video-frame cap, or
-        _AAC_DETECTION_TIMEOUT.
+        these cameras specifically. Detection itself is still needed
+        regardless of whether parse_audio_config below holds: it decides
+        how a raw frame is reconstructed from what DSM sent (see
+        AacDetector.reconstruct_frame), which the payload here says
+        nothing about. Bounded three ways: enough intervals,
+        AacDetector's own video-frame cap, or _AAC_DETECTION_TIMEOUT.
         """
         self._audio_codec = audio_codec
         if video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _AAC_AUDIO_CODECS:
             self._pending_video_codec = video_codec
             self._aac.start(_AAC_DETECTION_TIMEOUT)
-            log.debug(
-                "WebSocket bridge for %s: detecting AAC sample rate before muxing", self._label
-            )
+            config = parse_audio_config(payload, audio_extra)
+            if config is not None:
+                declared_channels, sample_rate = config
+                self._aac.set_config_from_header(declared_channels, sample_rate)
+                log.debug(
+                    "WebSocket bridge for %s: %dHz, %d channel(s) from codec-info payload",
+                    self._label,
+                    sample_rate,
+                    declared_channels,
+                )
+            else:
+                log.debug(
+                    "WebSocket bridge for %s: detecting AAC sample rate before muxing",
+                    self._label,
+                )
             return
         muxable = video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _FFMPEG_AUDIO_ARGS
         if muxable:
@@ -741,15 +761,28 @@ class WebSocketBridge:
         log.warning("WebSocket bridge for %s: %s", self._label, self._error)
         self._pump_task.cancel()
 
-    async def _handle_control_frame(self, fields: dict[str, str], header: bytes) -> None:
+    async def _handle_control_frame(
+        self, fields: dict[str, str], header: bytes, payload: bytes
+    ) -> None:
         """Handle a close notice or codec-info frame (anything that isn't
         a video/audio payload) — pipe/ffmpeg setup happens here, once,
-        the first time codec info arrives for this bridge's lifetime."""
+        the first time codec info arrives for this bridge's lifetime.
+
+        *payload* is the codec-info frame's own payload (SPS/PPS NALs
+        and, on some cameras, an audio-config trailer sized by adoExtra
+        — see parse_audio_config in aac.py); every other control frame
+        (close notices) carries none, which _setup_pipes never looks at.
+        """
         if "close" in fields:
             log.debug("WebSocket stream close: %s", header.decode(errors="replace"))
             return
         if self._read_fd < 0 and not self._aac.detecting:
-            await self._setup_pipes(fields.get("vdoCodec", ""), fields.get("adoCodec", ""))
+            await self._setup_pipes(
+                fields.get("vdoCodec", ""),
+                fields.get("adoCodec", ""),
+                fields.get("adoExtra", ""),
+                payload,
+            )
 
     async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
         """Write a real PCMU audio payload to ffmpeg's audio input."""
@@ -978,7 +1011,7 @@ class WebSocketBridge:
             fields = _parse_header(header)
 
             if "close" in fields or "vdoCodec" in fields or "adoCodec" in fields:
-                await self._handle_control_frame(fields, header)
+                await self._handle_control_frame(fields, header, payload)
                 continue
 
             if (self._read_fd < 0 and not self._aac.detecting) or not payload:

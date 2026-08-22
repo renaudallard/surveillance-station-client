@@ -79,10 +79,13 @@ from statistics import median
 
 log = logging.getLogger(__name__)
 
-# DSM doesn't expose the negotiated sample rate directly (adoExtra's
-# encoding isn't known), but every AAC-LC frame carries a fixed 1024
-# samples, so timing alone, measured from real frame arrivals, is enough
-# to determine the rate live, without a per-camera-model lookup table.
+# DSM does expose the negotiated sample rate and channel count, but not
+# in adoExtra itself -- adoExtra is just the byte length of a trailer
+# DSM appends to the codec-info frame's payload (see parse_audio_config
+# below), and not every camera has been confirmed to send one. Timing
+# stays the fallback: every AAC-LC frame carries a fixed 1024 samples,
+# so it alone is enough to determine the rate live for a camera whose
+# trailer doesn't parse, without a per-camera-model lookup table.
 _SAMPLES_PER_FRAME = 1024
 _STANDARD_SAMPLE_RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
 
@@ -159,7 +162,7 @@ def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
     return None
 
 
-def detect_channel_count(frames: Sequence[bytes]) -> int:
+def detect_channel_count(frames: Sequence[bytes], declared: int = 2) -> int:
     """Work out how many channels the camera's AAC carries, from a
     handful of already-reconstructed frames.
 
@@ -173,15 +176,21 @@ def detect_channel_count(frames: Sequence[bytes]) -> int:
     that says the least. Settling it once, from the first frame that
     does name a layout, avoids both.
 
-    Falls back to stereo when no frame names one, which is what this
-    code assumed unconditionally before.
+    Falls back to *declared* when no frame names one: the count DSM put
+    in the codec-info trailer where it sent one (see parse_audio_config),
+    stereo where it did not, which is what this code assumed
+    unconditionally before either source existed. Reading the frame in
+    preference to the declaration is Synology's own order, not a guess:
+    its decoder takes the declared count and then overrides it from this
+    same id_syn_ele (AACHelper::ParseChannelCount in libplayerlib.so,
+    NativeAACDecoder.getChannelCount in the DS cam APK).
     """
     for frame in frames:
         if frame:
             channels = _AAC_ELEMENT_CHANNELS.get(frame[0] >> 5)
             if channels is not None:
                 return channels
-    return 2
+    return declared
 
 
 def nearest_sample_rate(interval_seconds: float) -> int:
@@ -191,6 +200,40 @@ def nearest_sample_rate(interval_seconds: float) -> int:
         return 16000
     measured = _SAMPLES_PER_FRAME / interval_seconds
     return min(_STANDARD_SAMPLE_RATES, key=lambda r: abs(r - measured))
+
+
+def parse_audio_config(payload: bytes, extra_len: str) -> tuple[int, int] | None:
+    """Decode the audio trailer DSM appends to the codec-info frame's
+    payload, after the video config (confirmed on three real cameras,
+    two AAC and one PCMU): the last *extra_len* bytes -- adoExtra,
+    still a string here since it comes straight from the parsed header
+    -- hold ASCII "<channels>|<sampleRate>|", optionally followed by a
+    codec-specific blob (a raw 2-byte AAC AudioSpecificConfig; PCMU's
+    trailer ends at the second "|" with nothing after it).
+
+    Returns (channels, sample_rate), or None if adoExtra is missing or
+    not a plain number, the payload is shorter than it claims, or the
+    trailer isn't in this shape at all -- a camera that has not been
+    confirmed to send one. Callers fall back to runtime detection in
+    every such case, so this only ever adds information, never removes
+    a camera's audio.
+    """
+    if not extra_len.isdigit():
+        return None
+    n = int(extra_len)
+    if not 0 < n <= len(payload):
+        return None
+    parts = payload[-n:].split(b"|", 2)
+    if len(parts) < 2:
+        return None
+    try:
+        channels = int(parts[0])
+        sample_rate = int(parts[1])
+    except ValueError:
+        return None
+    if channels <= 0 or sample_rate not in _ADTS_FREQ_INDEX:
+        return None
+    return channels, sample_rate
 
 
 def adts_header(payload_length: int, sample_rate: int, channels: int) -> bytes:
@@ -269,8 +312,24 @@ class AacDetector:
     def __init__(self) -> None:
         # Defaults match what every camera got before either of these
         # was detected -- see nearest_sample_rate/detect_channel_count.
+        # sample_rate may be overwritten immediately by
+        # set_config_from_header, before any frame has arrived at all;
+        # channels never is -- see declared_channels below.
         self.sample_rate = 16000
         self.channels = 2
+        # What the codec-info payload declared, if set_config_from_header
+        # was ever called. Kept apart from channels because
+        # frames_look_valid runs once per framing model: reading the
+        # fallback back out of the settled channels would feed the
+        # rejected model's answer to the second attempt in place of
+        # DSM's own declaration.
+        self.declared_channels = 2
+        # Set by set_config_from_header when parse_audio_config (see
+        # above) reads the real sample rate straight off the wire, so
+        # finish() knows not to overwrite it with a timing guess. Only
+        # the rate: the channel count that arrives with it is a starting
+        # value, not a verdict -- see frames_look_valid.
+        self.config_from_header = False
         # Some cameras don't put the whole frame, prefixed, in the
         # payload -- the payload is missing its own leading bytes, and
         # those are what DSM's per-message header ends in instead (see
@@ -301,6 +360,18 @@ class AacDetector:
     def expired(self) -> bool:
         """Is detection running, and out of time?"""
         return self.detecting and time.monotonic() >= self.deadline
+
+    def set_config_from_header(self, channels: int, sample_rate: int) -> None:
+        """Record what the caller decoded from the codec-info payload's
+        own audio trailer (see parse_audio_config), available before a
+        single audio frame has arrived -- unlike everything runtime
+        detection produces. Frame reconstruction (frame_prefix_len /
+        use_header_prepend) is untouched: the trailer says nothing
+        about that half of the problem, so it still has to be detected
+        regardless of whether this was ever called."""
+        self.declared_channels = channels
+        self.sample_rate = sample_rate
+        self.config_from_header = True
 
     def feed_video(self, nal: bytes) -> bool:
         """Buffer one video NAL. Returns True once the video-frame cap
@@ -358,9 +429,14 @@ class AacDetector:
 
         Settles channels on the way through, since the channel count
         can only be read off a reconstructed frame and this is where
-        the frames get reconstructed. That also means the stream being
-        validated is exactly the one the session will go on to send,
-        rather than one labelling being checked and another sent.
+        the frames get reconstructed. What set_config_from_header
+        recorded (declared_channels) is passed in as the fallback, so a
+        declaration only decides the layout where no frame names one:
+        DSM declares what the camera negotiated, the frames carry what
+        it actually sends, and ffmpeg cannot tell the two apart (see
+        adts_header). That also means the stream being validated is
+        exactly the one the session will go on to send, rather than one
+        labelling being checked and another sent.
 
         Raises ValueError if the reconstruction produces something too
         long to be one frame, which is its own kind of "not ours" --
@@ -371,7 +447,7 @@ class AacDetector:
         frames = [
             self.reconstruct_frame(header_tail, raw) for header_tail, raw in self.audio_buffer
         ]
-        self.channels = detect_channel_count(frames)
+        self.channels = detect_channel_count(frames, self.declared_channels)
         buf = bytearray()
         for frame in frames:
             buf += adts_header(len(frame), self.sample_rate, self.channels) + frame
@@ -428,8 +504,10 @@ class AacDetector:
         return not complaint
 
     async def finish(self, label: str) -> tuple[bool, str]:
-        """Lock in the detected (or, failing that, default) AAC sample
-        rate, work out how to reconstruct a real frame from what DSM
+        """Lock in the AAC sample rate, taken from set_config_from_header
+        where the caller found one and from the measured intervals
+        otherwise, falling back to the default when neither produced
+        one. Work out how to reconstruct a real frame from what DSM
         actually sent (see reconstruct_frame), and verify that
         reconstruction actually decodes for this camera -- everything
         buffered during detection is left in video_buffer/audio_buffer
@@ -439,7 +517,7 @@ class AacDetector:
         (video-only was the right call) and is meaningless otherwise.
         *label* identifies the camera in frames_look_valid's log lines.
         """
-        if self._intervals:
+        if self._intervals and not self.config_from_header:
             self.sample_rate = nearest_sample_rate(median(self._intervals))
         self.detecting = False
         # Detection is over either way. Left populated, these would make

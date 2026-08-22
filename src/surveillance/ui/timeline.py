@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import cairo
 import gi
@@ -55,6 +55,15 @@ from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier
 # Candidate tick spacings (seconds); the smallest that still leaves each
 # label enough room on screen is picked at draw time.
 _TICK_STEPS = [30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200]
+
+# Download popover's Custom Save entries -- plain text rather than a
+# widget, see _build_download_popover for why.
+_DOWNLOAD_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+_DOWNLOAD_DEFAULT_CLIP_SECONDS = 30
+
+# Download popover's Quick Save tab -- see quick_download_label/
+# quick_download_range for how each becomes a button label and a range.
+_DOWNLOAD_QUICK_MINUTES = [1, 2, 5]
 
 _MIN_LABEL_SPACING_PX = 70
 # Just enough for the label (default cairo font: 11 ascent + 3 descent,
@@ -181,6 +190,55 @@ def clamp_to_live(view_end: float, now: float) -> tuple[float, bool]:
     if view_end >= now:
         return now, True
     return view_end, False
+
+
+def quick_download_label(minutes: int, history_active: bool) -> str:
+    """Label for a Download popover Quick Save button.
+
+    Live: "Download last N min" -- there is no "after" to offer, since
+    live has no future to grab yet. History: "Download -N to +N min" --
+    both directions are already sitting there to look at once paused on
+    a moment of interest, so a range centered on it is more useful than
+    an arbitrary backward-only window (see quick_download_range).
+    """
+    if history_active:
+        return f"Download -{minutes} to +{minutes} min"
+    return f"Download last {minutes} min"
+
+
+def quick_download_range(
+    end: datetime, minutes: int, history_active: bool
+) -> tuple[datetime, datetime]:
+    """(start, end) for a Download popover Quick Save button.
+
+    Live: looks backward from *end* ("now", or the tracked slot's
+    current position) -- "something just happened, grab what led up to
+    it". History: centers on *end* instead -- the moment of interest is
+    already found and paused on, so what came right after it is
+    typically just as useful to grab as what led up to it, and both are
+    already available (see quick_download_label).
+    """
+    if history_active:
+        delta = timedelta(minutes=minutes)
+        return end - delta, end + delta
+    return end - timedelta(minutes=minutes), end
+
+
+def parse_custom_download_range(start_text: str, end_text: str) -> tuple[datetime, datetime]:
+    """Parse and validate the Custom Save tab's Start/End text fields.
+
+    Raises ValueError, with a message fit to show directly in the
+    popover's error label, on an unparseable format or a non-positive
+    range.
+    """
+    try:
+        start = datetime.strptime(start_text.strip(), _DOWNLOAD_DATETIME_FORMAT)
+        end = datetime.strptime(end_text.strip(), _DOWNLOAD_DATETIME_FORMAT)
+    except ValueError:
+        raise ValueError("Enter dates as YYYY-MM-DD HH:MM:SS") from None
+    if end <= start:
+        raise ValueError("End must be after start")
+    return start, end
 
 
 class TimelineCanvas(Gtk.DrawingArea):
@@ -715,10 +773,11 @@ class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
     The current-time label, the canvas ruler, the zoom buttons, and
-    click-to-seek/Live/+-10s/Pause/speed/event-jump/calendar/filter (see
-    canvas.set_seek_callback/live_btn/back_10s_btn/forward_10s_btn/
+    click-to-seek/Live/+-10s/Pause/speed/event-jump/calendar/filter/download
+    (see canvas.set_seek_callback/live_btn/back_10s_btn/forward_10s_btn/
     pause_btn/set_speed_callback/prev_event_btn/next_event_btn/
-    set_jump_callback/set_filter_apply_callback) are all live.
+    set_jump_callback/set_filter_apply_callback/set_download_callback) are
+    all live.
     """
 
     def __init__(self) -> None:
@@ -746,6 +805,19 @@ class Timeline(Gtk.Box):
         self._filter_popover_show_callback: Callable[[], None] | None = None
         self._filter_cancel_callback: Callable[[], None] | None = None
         self._filter_apply_callback: Callable[[set[str] | None, bool], None] | None = None
+        # Download popover's own callbacks -- see set_download_populate_callback,
+        # set_download_initial_datetime_callback, and set_download_callback.
+        self._download_populate_callback: Callable[[], list[tuple[int, str]]] | None = None
+        self._download_initial_datetime_callback: Callable[[], datetime] | None = None
+        self._download_callback: Callable[[int, datetime, datetime], None] | None = None
+        self._download_cameras: list[tuple[int, str]] = []
+        # Index-matched to each other, same convention as
+        # _download_cameras/the camera dropdown -- set_history_active
+        # relabels every button in place from these each time the mode
+        # changes, rather than rebuilding them.
+        self._download_quick_btns: list[Gtk.Button] = []
+        self._download_quick_minutes: list[int] = []
+        self._history_active = False
 
         self.canvas = TimelineCanvas()
         self.canvas.set_margin_start(8)
@@ -777,12 +849,23 @@ class Timeline(Gtk.Box):
         toolbar would shift each time this toggles. The "Live Stream"
         label swaps in for that same reason, rather than being shown
         alongside a hidden Live button.
+
+        Also relabels the Download popover's Quick Save buttons (see
+        quick_download_label) -- they stay built once, in
+        _build_quick_save_page, and are only ever relabeled here rather
+        than rebuilt, same division of responsibility as everything
+        else this method updates.
         """
+        self._history_active = active
         self._history_only_box.set_sensitive(active)
         self._history_only_box.set_opacity(1.0 if active else 0.0)
         self._live_stream_label.set_opacity(0.0 if active else 1.0)
         self._speed_btn.set_sensitive(active)
         self._speed_btn.set_opacity(1.0 if active else 0.0)
+        for btn, minutes in zip(
+            self._download_quick_btns, self._download_quick_minutes, strict=True
+        ):
+            btn.set_label(quick_download_label(minutes, active))
 
     def set_paused(self, paused: bool) -> None:
         """Swap pause_btn's icon/tooltip to reflect LiveView's own
@@ -994,6 +1077,190 @@ class Timeline(Gtk.Box):
         if self._filter_apply_callback is not None:
             self._filter_apply_callback(selected_keys, match_all)
 
+    def set_download_populate_callback(
+        self, callback: Callable[[], list[tuple[int, str]]]
+    ) -> None:
+        """*callback* returns (camera_id, camera_name) for every camera
+        currently assigned to a slot in the active layout -- pulled fresh
+        every time the Download popover opens (see _on_download_popover_show)
+        rather than kept in sync as slots change, so nothing here needs to
+        track the various places LiveView assigns/clears a slot's camera.
+        An empty result disables the popover's own Download button (not the
+        toolbar's, which stays clickable so the popover can always explain
+        why there's nothing to download).
+        """
+        self._download_populate_callback = callback
+
+    def set_download_initial_datetime_callback(self, callback: Callable[[], datetime]) -> None:
+        """*callback* supplies the datetime the Download popover treats as
+        "now" -- same contract as set_calendar_initial_datetime_callback
+        (LiveView answers with the focus slot's current position).
+        Custom Save's fields default to a short clip ending at this
+        point in both modes, on the theory that opening this popover
+        usually means "something just happened, grab what led up to it"
+        rather than "play forward from here". Quick Save's buttons
+        follow the same idea live, but center on this point in History
+        instead -- see quick_download_range for why."""
+        self._download_initial_datetime_callback = callback
+
+    def set_download_callback(self, callback: Callable[[int, datetime, datetime], None]) -> None:
+        """*callback* receives (camera_id, start, end) from the Download
+        popover's Download button -- LiveView owns resolving that into a
+        recording and streaming it to disk, the same division of
+        responsibility as the calendar popover's Jump."""
+        self._download_callback = callback
+
+    def _build_download_popover(self) -> Gtk.Popover:
+        """Camera dropdown shared above two tabs -- same Gtk.Stack-based
+        paging EventTypeFilterView already uses for its own popover, here
+        switching between Quick Save (one-click buttons for "something
+        just happened, grab what led up to it") and Custom Save (exact
+        Start/End entries for everything else). The dropdown lives above
+        the stack, not duplicated in both tabs, so switching tabs never
+        loses the camera choice.
+
+        Custom Save uses plain "YYYY-MM-DD HH:MM:SS" entries rather than a
+        second DateTimePicker: that widget's month calendar and day-level
+        recording-availability marking are built for picking one moment,
+        not a two-ended range, and two side-by-side calendars would make
+        for an oversized popover to little benefit.
+        """
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        self._download_camera_dropdown = Gtk.DropDown()
+        self._download_camera_dropdown.set_model(Gtk.StringList.new(["No cameras available"]))
+        self._download_camera_dropdown.set_sensitive(False)
+        box.append(self._download_camera_dropdown)
+
+        stack = Gtk.Stack()
+        stack.add_titled(self._build_quick_save_page(), "quick", "Quick Save")
+        stack.add_titled(self._build_custom_save_page(), "custom", "Custom Save")
+
+        switcher = Gtk.StackSwitcher()
+        switcher.set_stack(stack)
+        switcher.set_halign(Gtk.Align.CENTER)
+        box.append(switcher)
+        box.append(stack)
+
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        popover.connect("show", self._on_download_popover_show)
+        return popover
+
+    def _build_quick_save_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        for minutes in _DOWNLOAD_QUICK_MINUTES:
+            btn = Gtk.Button(label=quick_download_label(minutes, self._history_active))
+            btn.connect("clicked", self._on_download_quick_clicked, minutes)
+            box.append(btn)
+            self._download_quick_btns.append(btn)
+            self._download_quick_minutes.append(minutes)
+        return box
+
+    def _build_custom_save_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+
+        start_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        start_row.append(Gtk.Label(label="Start:"))
+        self._download_start_entry = Gtk.Entry()
+        self._download_start_entry.set_hexpand(True)
+        start_row.append(self._download_start_entry)
+        box.append(start_row)
+
+        end_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        end_row.append(Gtk.Label(label="End:"))
+        self._download_end_entry = Gtk.Entry()
+        self._download_end_entry.set_hexpand(True)
+        end_row.append(self._download_end_entry)
+        box.append(end_row)
+
+        self._download_error_label = Gtk.Label(xalign=0)
+        self._download_error_label.add_css_class("error")
+        self._download_error_label.set_visible(False)
+        box.append(self._download_error_label)
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_row.set_homogeneous(True)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", self._on_download_cancel_clicked)
+        button_row.append(cancel_btn)
+
+        self._download_submit_btn = Gtk.Button(label="Download")
+        self._download_submit_btn.add_css_class("suggested-action")
+        self._download_submit_btn.connect("clicked", self._on_download_submit_clicked)
+        button_row.append(self._download_submit_btn)
+
+        box.append(button_row)
+        return box
+
+    def _on_download_popover_show(self, _popover: Gtk.Popover) -> None:
+        callback = self._download_populate_callback
+        self._download_cameras = callback() if callback is not None else []
+        if self._download_cameras:
+            self._download_camera_dropdown.set_model(
+                Gtk.StringList.new([name for _id, name in self._download_cameras])
+            )
+            self._download_camera_dropdown.set_selected(0)
+            self._download_camera_dropdown.set_sensitive(True)
+        else:
+            self._download_camera_dropdown.set_model(
+                Gtk.StringList.new(["No cameras available"])
+            )
+            self._download_camera_dropdown.set_sensitive(False)
+        has_cameras = bool(self._download_cameras)
+        self._download_submit_btn.set_sensitive(has_cameras)
+        for btn in self._download_quick_btns:
+            btn.set_sensitive(has_cameras)
+        self._download_error_label.set_visible(False)
+
+        initial_callback = self._download_initial_datetime_callback
+        end = initial_callback() if initial_callback is not None else datetime.now()
+        start = end - timedelta(seconds=_DOWNLOAD_DEFAULT_CLIP_SECONDS)
+        self._download_start_entry.set_text(start.strftime(_DOWNLOAD_DATETIME_FORMAT))
+        self._download_end_entry.set_text(end.strftime(_DOWNLOAD_DATETIME_FORMAT))
+
+    def _on_download_cancel_clicked(self, _btn: Gtk.Button) -> None:
+        self._download_btn.popdown()
+
+    def _on_download_quick_clicked(self, _btn: Gtk.Button, minutes: int) -> None:
+        """A Quick Save button -- downloads immediately (no separate
+        confirm click) using whichever camera the shared dropdown has
+        selected; the OS save dialog LiveView opens in response is the
+        one unavoidable "did I mean to do this" checkpoint."""
+        if not self._download_cameras:
+            return
+        initial_callback = self._download_initial_datetime_callback
+        reference = initial_callback() if initial_callback is not None else datetime.now()
+        start, end = quick_download_range(reference, minutes, self._history_active)
+        camera_id, _name = self._download_cameras[self._download_camera_dropdown.get_selected()]
+        self._download_btn.popdown()
+        if self._download_callback is not None:
+            self._download_callback(camera_id, start, end)
+
+    def _on_download_submit_clicked(self, _btn: Gtk.Button) -> None:
+        if not self._download_cameras:
+            return
+        try:
+            start, end = parse_custom_download_range(
+                self._download_start_entry.get_text(), self._download_end_entry.get_text()
+            )
+        except ValueError as exc:
+            self._download_error_label.set_label(str(exc))
+            self._download_error_label.set_visible(True)
+            return
+
+        camera_id, _name = self._download_cameras[self._download_camera_dropdown.get_selected()]
+        self._download_btn.popdown()
+        if self._download_callback is not None:
+            self._download_callback(camera_id, start, end)
+
     def _build_speed_popover(self) -> Gtk.Popover:
         """Radio-button popover for _speed_btn -- same shape as
         HeaderBar's own theme popover, plus a Fwd/Rev button pair at
@@ -1096,10 +1363,11 @@ class Timeline(Gtk.Box):
         self._filter_btn.set_popover(self._build_filter_popover())
         button_cluster.append(self._filter_btn)
 
-        download_btn = Gtk.Button()
-        download_btn.set_icon_name("document-save-symbolic")
-        download_btn.set_tooltip_text("Download")
-        button_cluster.append(download_btn)
+        self._download_btn = Gtk.MenuButton()
+        self._download_btn.set_icon_name("document-save-symbolic")
+        self._download_btn.set_tooltip_text("Download")
+        self._download_btn.set_popover(self._build_download_popover())
+        button_cluster.append(self._download_btn)
 
         self._calendar_btn = Gtk.MenuButton()
         self._calendar_btn.set_icon_name("x-office-calendar-symbolic")

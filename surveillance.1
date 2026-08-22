@@ -114,7 +114,20 @@ multi-select, decoded per camera brand). Opening it scans each layout
 camera's full recording history for the types it has ever produced (a
 persisted, incrementally-updated cache, so only the first scan and any
 time elapsed since the last one cost real seconds), showing a
-per-camera progress checklist meanwhile.
+per-camera progress checklist meanwhile. A
+.B Download
+button opens a popup with a camera picker (only cameras currently
+assigned to a slot in the layout, since some may be empty, and
+defaulting to the tracked slot's own camera), above two tabs: Quick
+Save, whose three one-click buttons immediately prompt for a save
+location and download around the tracked slot's current position \(em
+.B "Download last 1/2/5 min"
+up to it in Live mode, or
+.B "Download \-1/2/5 to +1/2/5 min"
+centered on it in History mode, since both directions are already
+available once paused on a moment of interest \(em and Custom Save,
+with Start/End date-time fields (defaulting to a short clip ending at
+the same point) for an exact range.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

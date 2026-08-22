@@ -54,10 +54,12 @@ PRESET_LAST7D = "last7d"
 PRESET_LAST30D = "last30d"
 
 # Recording.Download by recording id needs version 6 or later. Version 5
-# returns a 400 "Execution failed" with no file. The official client uses
-# version 4 for its own download, but with a different, event-based param
-# set (eventId/mountId/archId), so version 4 does not apply to the id-based
-# call this client makes.
+# returns a 400 "Execution failed" with no file. The official web client
+# uses version 4 for its own downloads, but with a different, event-based
+# param set (eventId/mountId/archId/recEvtType/offsetTimeMs/playTimeMs --
+# confirmed by capturing its own traffic) for downloading an arbitrary
+# sub-range rather than a whole recording, so version 4 does not apply to
+# the id-based call this client makes. See download_recording_range.
 RECORDING_DOWNLOAD_VERSION = 6
 
 
@@ -256,6 +258,53 @@ async def download_recording(
         extra_params={"id": str(recording_id)},
     )
     return await stream_to_file(chunks, output_path, f"Recording {recording_id}")
+
+
+async def download_recording_range(
+    api: SurveillanceAPI,
+    rec: Recording,
+    start_unix: float,
+    end_unix: float,
+    output_path: Path,
+) -> Path:
+    """Download the [start_unix, end_unix) slice of *rec* to disk.
+
+    Uses the event-based version=4 download (see RECORDING_DOWNLOAD_VERSION's
+    comment) rather than the whole-file id-based download: offsetTimeMs/
+    playTimeMs let DSM cut an arbitrary sub-range out of the covering
+    recording without this client having to trim the file itself.
+
+    Raises:
+        ValueError: end_unix does not come after start_unix.
+        ApiError: Synology API error with numeric code.
+        OSError: File-system write failure (partial file is cleaned up).
+    """
+    offset_ms = max(0, round((start_unix - rec.start_time) * 1000))
+    play_ms = round((end_unix - start_unix) * 1000)
+    if play_ms <= 0:
+        raise ValueError("end time must be after start time")
+
+    log.debug(
+        "Downloading recording %d range (offset=%dms, play=%dms) to %s",
+        rec.id,
+        offset_ms,
+        play_ms,
+        output_path,
+    )
+    chunks = api.stream_download(
+        api="SYNO.SurveillanceStation.Recording",
+        method="Download",
+        version=4,
+        extra_params={
+            "eventId": str(rec.id),
+            "offsetTimeMs": str(offset_ms),
+            "playTimeMs": str(play_ms),
+            "mountId": str(rec.mount_id),
+            "archId": str(rec.arch_id),
+            "recEvtType": str(rec.event_type),
+        },
+    )
+    return await stream_to_file(chunks, output_path, f"Recording {rec.id} range")
 
 
 _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()

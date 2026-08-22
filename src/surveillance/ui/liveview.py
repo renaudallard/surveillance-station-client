@@ -61,7 +61,11 @@ from surveillance.services.live import (
     get_live_view_path,
 )
 from surveillance.services.ptt import PttOccupiedError, PttSession
-from surveillance.services.recording import fetch_camera_thumbnail_at, find_recording_at
+from surveillance.services.recording import (
+    download_recording_range,
+    fetch_camera_thumbnail_at,
+    find_recording_at,
+)
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import MIN_HISTORY_DELTA_SECONDS, WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
@@ -140,6 +144,25 @@ _EVENT_NAV_WINDOW_SECONDS = 7 * 86400
 # asking DSM what a camera's oldest recording actually is, just
 # cheaper than doing so.
 _EVENT_TYPE_SCAN_MAX_LOOKBACK_SECONDS = 2 * 365 * 86400
+
+
+def order_cameras_focus_first(
+    cameras: list[tuple[int, str]], focus_camera_id: int | None
+) -> list[tuple[int, str]]:
+    """Move the entry matching *focus_camera_id* to the front, preserving
+    relative order otherwise -- used by _download_available_cameras so the
+    Download popover's camera dropdown (which always defaults to position
+    0) opens on the camera the timeline is already tracking. A no-op if
+    focus_camera_id isn't None but also isn't in *cameras* (e.g. the
+    tracked slot is empty)."""
+    result = list(cameras)
+    if focus_camera_id is None:
+        return result
+    for i, (camera_id, _name) in enumerate(result):
+        if camera_id == focus_camera_id:
+            result.insert(0, result.pop(i))
+            break
+    return result
 
 
 class CameraSlot(Gtk.Box):
@@ -635,6 +658,9 @@ class LiveView(Gtk.Box):
         self.timeline.set_filter_popover_show_callback(self._on_filter_popover_show)
         self.timeline.set_filter_cancel_callback(self._on_filter_cancel)
         self.timeline.set_filter_apply_callback(self._on_filter_apply)
+        self.timeline.set_download_populate_callback(self._download_available_cameras)
+        self.timeline.set_download_initial_datetime_callback(self._calendar_initial_datetime)
+        self.timeline.set_download_callback(self._on_timeline_download)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.grid)
@@ -1212,6 +1238,82 @@ class LiveView(Gtk.Box):
                         days.add(day.day)
                     day += timedelta(days=1)
         self.timeline.set_calendar_month_availability(year, month, days, merge_intervals(all_spans))
+
+    # ------------------------------------------------------------------
+    # Download
+    # ------------------------------------------------------------------
+
+    def _download_available_cameras(self) -> list[tuple[int, str]]:
+        """Timeline.set_download_populate_callback target -- (camera_id,
+        name) for every camera actually assigned to a slot in the active
+        layout, pulled fresh each time the Download popover opens rather
+        than tracked as slots change (see the callback's own docstring).
+        The timeline's own tracked camera (see _timeline_focus_slot) comes
+        first, so the popover's dropdown -- which always defaults to
+        position 0 -- opens on the camera the timeline is already showing,
+        the same reference point as the calendar jump and Back/Forward 10s."""
+        cameras = list(
+            dict.fromkeys(
+                (slot.camera.id, slot.camera.name)
+                for i, slot in enumerate(self._slots)
+                if i in self._active and slot.camera
+            )
+        )
+        focus_camera = self._slots[self._timeline_focus_slot].camera
+        return order_cameras_focus_first(cameras, focus_camera.id if focus_camera else None)
+
+    def _on_timeline_download(self, camera_id: int, start: datetime, end: datetime) -> None:
+        """Timeline.set_download_callback target -- resolves the covering
+        recording for *camera_id* at *start* and streams the [start, end)
+        slice to a user-chosen file, mirroring RecordingsView._on_download's
+        FileDialog/status/error handling."""
+        api = self.app.api
+        if not api:
+            return
+        camera_name = next((c.name for c in self._cameras if c.id == camera_id), str(camera_id))
+
+        dialog = Gtk.FileDialog()
+        safe_name = re.sub(r'[/\\<>:"|?*]', "_", camera_name)
+        dialog.set_initial_name(f"{safe_name}_{start:%Y%m%d_%H%M%S}.mp4")
+
+        def _on_save(d: Gtk.FileDialog, result: object) -> None:
+            try:
+                gfile = d.save_finish(result)
+            except Exception:
+                return  # Cancelled
+            if gfile is None:
+                return
+            path = gfile.get_path()
+            if not path or self.app.api is None:
+                return
+
+            async def _do_download() -> Path:
+                rec = await find_recording_at(api, camera_id, int(start.timestamp()))
+                if rec is None:
+                    raise ValueError("No recording found for that camera/time range")
+                return await download_recording_range(
+                    api, rec, start.timestamp(), end.timestamp(), Path(path)
+                )
+
+            def _on_success(p: Path) -> None:
+                log.info("Downloaded %s [%s - %s] to %s", camera_name, start, end, p)
+                info = Gtk.AlertDialog()
+                info.set_message("Download complete")
+                info.set_detail(f"Saved to {p}")
+                info.set_buttons(["OK"])
+                info.show(self.window)
+
+            def _on_error(exc: Exception) -> None:
+                log.error("Download failed for %s [%s - %s]: %s", camera_name, start, end, exc)
+                err = Gtk.AlertDialog()
+                err.set_message("Download failed")
+                err.set_detail(f"Could not download from '{camera_name}'.\n\n{exc}")
+                err.set_buttons(["OK"])
+                err.show(self.window)
+
+            run_async(_do_download(), callback=_on_success, error_callback=_on_error)
+
+        dialog.save(self.window, None, _on_save)
 
     # ------------------------------------------------------------------
     # Event-type filter

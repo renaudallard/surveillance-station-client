@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
+from surveillance.api.models import Recording
 from surveillance.config import AppConfig, ConnectionProfile
 
 
@@ -373,6 +374,141 @@ class TestRecordingDownloadParams:
 
         assert isinstance(result, Path)
         assert result == output
+
+
+class TestRecordingDownloadRangeParams:
+    """download_recording_range: the version=4 event-based download used by
+    the Live View timeline's Download button (see Timeline.set_download_callback),
+    distinct from the whole-file id-based download above."""
+
+    def _rec(self, **overrides: object) -> Recording:
+        defaults: dict = dict(
+            id=4958476,
+            camera_id=63,
+            camera_name="CAM 63",
+            start_time=1000,
+            stop_time=2000,
+            mount_id=1,
+            arch_id=2,
+            event_type=3,
+        )
+        defaults.update(overrides)
+        return Recording(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_sends_correct_event_params(self, api: SurveillanceAPI, tmp_path: Path) -> None:
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec()
+
+        with patch.object(api, "stream_download", _stream_mock(b"video")) as mock:
+            result = await download_recording_range(api, rec, 1010.0, 1016.0, output)
+            params = mock.call_args[1]["extra_params"]
+            assert params == {
+                "eventId": "4958476",
+                "offsetTimeMs": "10000",
+                "playTimeMs": "6000",
+                "mountId": "1",
+                "archId": "2",
+                "recEvtType": "3",
+            }
+            assert mock.call_args[1]["api"] == "SYNO.SurveillanceStation.Recording"
+            assert mock.call_args[1]["method"] == "Download"
+            assert mock.call_args[1]["version"] == 4
+            assert result == output
+
+    @pytest.mark.asyncio
+    async def test_offset_clamped_to_zero_before_recording_start(
+        self, api: SurveillanceAPI, tmp_path: Path
+    ) -> None:
+        """A requested start before the recording's own start_time (e.g. a
+        rounding/clock-skew edge case) must not send a negative offset."""
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec(start_time=1000)
+
+        with patch.object(api, "stream_download", _stream_mock(b"x")) as mock:
+            await download_recording_range(api, rec, 990.0, 995.0, output)
+            assert mock.call_args[1]["extra_params"]["offsetTimeMs"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_end_before_start_raises(self, api: SurveillanceAPI, tmp_path: Path) -> None:
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec()
+
+        with pytest.raises(ValueError):
+            await download_recording_range(api, rec, 1010.0, 1005.0, output)
+
+    @pytest.mark.asyncio
+    async def test_end_equal_start_raises(self, api: SurveillanceAPI, tmp_path: Path) -> None:
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec()
+
+        with pytest.raises(ValueError):
+            await download_recording_range(api, rec, 1010.0, 1010.0, output)
+
+    @pytest.mark.asyncio
+    async def test_writes_file(self, api: SurveillanceAPI, tmp_path: Path) -> None:
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        content = b"\x00\x01clipdata"
+        rec = self._rec()
+
+        with patch.object(api, "stream_download", _stream_mock(content)):
+            await download_recording_range(api, rec, 1010.0, 1016.0, output)
+
+        assert output.read_bytes() == content
+
+
+class TestOrderCamerasFocusFirst:
+    """LiveView._download_available_cameras's ordering rule: the Download
+    popover's camera dropdown always defaults to position 0, so the
+    tracked slot's camera has to be moved there without disturbing the
+    rest -- pulled out as a pure function specifically so this doesn't
+    need a live CameraSlot/LiveView (GTK widgets segfault without a
+    display in this test environment)."""
+
+    def test_focus_camera_moved_to_front(self) -> None:
+        from surveillance.ui.liveview import order_cameras_focus_first
+
+        cameras = [(1, "CAM 1"), (2, "CAM 2"), (3, "CAM 3")]
+        assert order_cameras_focus_first(cameras, 2) == [
+            (2, "CAM 2"),
+            (1, "CAM 1"),
+            (3, "CAM 3"),
+        ]
+
+    def test_focus_camera_already_first_is_unchanged(self) -> None:
+        from surveillance.ui.liveview import order_cameras_focus_first
+
+        cameras = [(1, "CAM 1"), (2, "CAM 2")]
+        assert order_cameras_focus_first(cameras, 1) == cameras
+
+    def test_none_focus_id_leaves_order_unchanged(self) -> None:
+        from surveillance.ui.liveview import order_cameras_focus_first
+
+        cameras = [(1, "CAM 1"), (2, "CAM 2")]
+        assert order_cameras_focus_first(cameras, None) == cameras
+
+    def test_focus_id_not_in_list_leaves_order_unchanged(self) -> None:
+        """The tracked slot can be empty (no camera assigned) while other
+        slots aren't -- the dropdown just keeps its natural order then."""
+        from surveillance.ui.liveview import order_cameras_focus_first
+
+        cameras = [(1, "CAM 1"), (2, "CAM 2")]
+        assert order_cameras_focus_first(cameras, 99) == cameras
+
+    def test_empty_list(self) -> None:
+        from surveillance.ui.liveview import order_cameras_focus_first
+
+        assert order_cameras_focus_first([], 1) == []
 
 
 class TestRecordingFilterConfig:

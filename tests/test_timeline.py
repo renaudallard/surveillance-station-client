@@ -23,9 +23,14 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Tests for the Live View timeline's pan/zoom math (no GTK required)."""
+"""Tests for the Live View timeline's pan/zoom math and Download popover
+logic (no GTK required)."""
 
 from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
 
 from surveillance.ui.timeline import (
     _MAX_WINDOW_SECONDS,
@@ -33,6 +38,9 @@ from surveillance.ui.timeline import (
     clamp_to_live,
     compute_zoom,
     pan_view_end,
+    parse_custom_download_range,
+    quick_download_label,
+    quick_download_range,
 )
 
 
@@ -118,3 +126,80 @@ class TestClampToLive:
         view_end, following = clamp_to_live(view_end=500.0, now=1000.0)
         assert view_end == 500.0
         assert following is False
+
+
+class TestQuickDownloadRange:
+    def test_live_looks_backward_from_the_reference_point(self) -> None:
+        # Live's Quick Save is "grab what led up to now", not "play
+        # forward from here" -- a sign flip here would silently invert
+        # the feature, and there is no "after" to offer live anyway.
+        end = datetime(2026, 8, 22, 12, 0, 0)
+        start, returned_end = quick_download_range(end, minutes=5, history_active=False)
+        assert returned_end == end
+        assert start == datetime(2026, 8, 22, 11, 55, 0)
+
+    def test_live_one_minute(self) -> None:
+        end = datetime(2026, 8, 22, 12, 0, 0)
+        start, _end = quick_download_range(end, minutes=1, history_active=False)
+        assert start == datetime(2026, 8, 22, 11, 59, 0)
+
+    def test_history_centers_on_the_reference_point(self) -> None:
+        # History has both directions already available once paused on
+        # a moment of interest, so the range straddles it instead of
+        # only looking backward.
+        reference = datetime(2026, 8, 22, 12, 0, 0)
+        start, end = quick_download_range(reference, minutes=5, history_active=True)
+        assert start == datetime(2026, 8, 22, 11, 55, 0)
+        assert end == datetime(2026, 8, 22, 12, 5, 0)
+
+    def test_history_one_minute(self) -> None:
+        reference = datetime(2026, 8, 22, 12, 0, 0)
+        start, end = quick_download_range(reference, minutes=1, history_active=True)
+        assert start == datetime(2026, 8, 22, 11, 59, 0)
+        assert end == datetime(2026, 8, 22, 12, 1, 0)
+
+
+class TestQuickDownloadLabel:
+    def test_live_label(self) -> None:
+        assert quick_download_label(5, history_active=False) == "Download last 5 min"
+
+    def test_history_label(self) -> None:
+        assert quick_download_label(5, history_active=True) == "Download -5 to +5 min"
+
+    def test_labels_differ_for_every_configured_option(self) -> None:
+        # Guards against the two modes ever accidentally converging on
+        # the same wording for a given button.
+        for minutes in (1, 2, 5):
+            assert quick_download_label(minutes, False) != quick_download_label(minutes, True)
+
+
+class TestParseCustomDownloadRange:
+    def test_valid_range_round_trips(self) -> None:
+        start, end = parse_custom_download_range(
+            "2026-08-22 10:00:00", "2026-08-22 10:00:30"
+        )
+        assert start == datetime(2026, 8, 22, 10, 0, 0)
+        assert end == datetime(2026, 8, 22, 10, 0, 30)
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        start, end = parse_custom_download_range(
+            "  2026-08-22 10:00:00  ", "  2026-08-22 10:00:30  "
+        )
+        assert start == datetime(2026, 8, 22, 10, 0, 0)
+        assert end == datetime(2026, 8, 22, 10, 0, 30)
+
+    def test_unparseable_start_raises_with_format_hint(self) -> None:
+        with pytest.raises(ValueError, match="YYYY-MM-DD HH:MM:SS"):
+            parse_custom_download_range("not a date", "2026-08-22 10:00:30")
+
+    def test_unparseable_end_raises_with_format_hint(self) -> None:
+        with pytest.raises(ValueError, match="YYYY-MM-DD HH:MM:SS"):
+            parse_custom_download_range("2026-08-22 10:00:00", "not a date")
+
+    def test_end_before_start_raises(self) -> None:
+        with pytest.raises(ValueError, match="End must be after start"):
+            parse_custom_download_range("2026-08-22 10:00:30", "2026-08-22 10:00:00")
+
+    def test_end_equal_start_raises(self) -> None:
+        with pytest.raises(ValueError, match="End must be after start"):
+            parse_custom_download_range("2026-08-22 10:00:00", "2026-08-22 10:00:00")

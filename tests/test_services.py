@@ -461,6 +461,62 @@ class TestEventService:
         assert events == []
         mock_request.assert_not_called()
 
+    def test_merge_intervals_merges_overlapping_and_adjacent_spans(self) -> None:
+        from surveillance.services.event import merge_intervals
+
+        assert merge_intervals([(10, 20), (15, 25), (30, 40), (5, 8)]) == [
+            (5, 8),
+            (10, 25),
+            (30, 40),
+        ]
+
+    def test_merge_intervals_empty(self) -> None:
+        from surveillance.services.event import merge_intervals
+
+        assert merge_intervals([]) == []
+
+    @pytest.mark.asyncio
+    async def test_list_recording_presence_reads_the_event_list(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """list_recording_presence reads EnumInterval's own per-file `event`
+        list directly -- unlike list_granular_events, it never touches
+        event_map at all."""
+        from surveillance.services.event import list_recording_presence
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 1,
+                        "event": [
+                            {"id": 1, "start": from_time, "stop": from_time + 100},
+                            # Overlapping with the entry above -- must merge.
+                            {"id": 2, "start": from_time + 50, "stop": from_time + 200},
+                        ],
+                        "event_map": [[1, 1, 0]],
+                    },
+                    {"camera_id": 2, "event": []},
+                ]
+            ]
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            presence = await list_recording_presence(api, [1, 2], from_time, from_time + 200)
+
+        assert presence == {1: [(from_time, from_time + 200)]}
+
+    @pytest.mark.asyncio
+    async def test_list_recording_presence_no_cameras(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import list_recording_presence
+
+        with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
+            presence = await list_recording_presence(api, [], 1700000000, 1700000100)
+
+        assert presence == {}
+        mock_request.assert_not_called()
+
 
 class TestLicenseService:
     @pytest.mark.asyncio

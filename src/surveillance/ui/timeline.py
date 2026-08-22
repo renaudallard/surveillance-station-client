@@ -28,9 +28,9 @@
 Visual scaffold, in progress: the ruler is live (a live-updating time
 scale, pan, zoom, and click-to-seek all work), and so are the Live,
 +-10s, Pause/Play, and speed-dropdown buttons. The recording-presence
-bar is a static placeholder with no real data behind it yet -- wiring
-it to DSM's real EnumInterval/ListBookmark data is deliberately a
-separate piece of work from History mode itself, not yet started. The
+bar shows real data (see set_presence_data), split into the focus-slot
+and layout-accumulated rows LiveView feeds it; event markers over that
+bar are a deliberately separate next step, not yet started. The
 event-jump buttons are still no-ops too.
 """
 
@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 import cairo
@@ -182,7 +182,7 @@ def clamp_to_live(view_end: float, now: float) -> tuple[float, bool]:
 
 
 class TimelineCanvas(Gtk.DrawingArea):
-    """Draws the time ruler plus placeholder presence/event rows.
+    """Draws the time ruler plus the two recording-presence rows.
 
     Shows a trailing window that follows "now" by default, matching
     Monitor Center's live behavior. Dragging pans and scrolling (or the
@@ -221,11 +221,57 @@ class TimelineCanvas(Gtk.DrawingArea):
         # tick it from) and re-syncing it when the focus slot changes.
         self._history_position: float | None = None
 
+        # Recording-presence spans (start, stop) for the two rows — see
+        # set_presence_data. LiveView owns fetching these; the canvas
+        # only knows how to paint whatever it was last given.
+        self._focus_presence: Sequence[tuple[float, float]] = []
+        self._layout_presence: Sequence[tuple[float, float]] = []
+        self._view_changed_callback: Callable[[float, float, bool], None] | None = None
+
     def set_history_position(self, timestamp: float | None) -> None:
         """Set (or, for None, clear) the focus slot's History playback
         position — see the field's own comment in __init__."""
         self._history_position = timestamp
         self.queue_draw()
+
+    def set_presence_data(
+        self,
+        focus_spans: Sequence[tuple[float, float]],
+        layout_spans: Sequence[tuple[float, float]],
+    ) -> None:
+        """Set the recording-presence spans for the two rows: the focus
+        slot's own camera, and the plain-OR union across every camera in
+        the active layout (see LiveView._apply_presence_to_canvas).
+        Spans are (start, stop) unix timestamps, need not be sorted or
+        pre-clipped to the visible window -- _draw only paints what's
+        currently on screen.
+        """
+        self._focus_presence = focus_spans
+        self._layout_presence = layout_spans
+        self.queue_draw()
+
+    def set_view_changed_callback(
+        self, callback: Callable[[float, float, bool], None]
+    ) -> None:
+        """Set the callback notified of every view change (pan, zoom,
+        reset, and each tick while following "now") — receives
+        (view_start, view_end, following). LiveView uses this to keep
+        the presence bar's data current: debounced on a settled pan/zoom,
+        throttled to an occasional refresh while following (see
+        LiveView._on_timeline_view_changed) rather than re-fetching on
+        every one-second tick.
+        """
+        self._view_changed_callback = callback
+
+    def get_view_range(self) -> tuple[float, float]:
+        """Current (view_start, view_end) unix timestamps."""
+        return self._view_end - self._window_seconds, self._view_end
+
+    def _notify_view_changed(self) -> None:
+        if self._view_changed_callback is None:
+            return
+        start, end = self.get_view_range()
+        self._view_changed_callback(start, end, self._following)
 
     def reset_view(self) -> None:
         """Zoom back out to the default window and pan back to "now",
@@ -236,6 +282,7 @@ class TimelineCanvas(Gtk.DrawingArea):
         self._window_seconds = _DEFAULT_WINDOW_SECONDS
         self._view_end = time.time()
         self._following = True
+        self._notify_view_changed()
         self.queue_draw()
 
     def set_seek_callback(self, callback: Callable[[float], None]) -> None:
@@ -269,6 +316,7 @@ class TimelineCanvas(Gtk.DrawingArea):
             drag_last["x"] = offset_x
             self._view_end = pan_view_end(self._view_end, dx, self._window_seconds, width)
             self._clamp_to_live()
+            self._notify_view_changed()
             self.queue_draw()
 
         def on_drag_end(_gesture: Gtk.GestureDrag, offset_x: float, offset_y: float) -> None:
@@ -373,6 +421,7 @@ class TimelineCanvas(Gtk.DrawingArea):
         self._window_seconds = new_window
         self._view_end = new_view_end
         self._clamp_to_live()
+        self._notify_view_changed()
         self.queue_draw()
 
     def _clamp_to_live(self) -> None:
@@ -393,6 +442,7 @@ class TimelineCanvas(Gtk.DrawingArea):
     def _on_tick(self) -> bool:
         if self._following:
             self._view_end = time.time()
+            self._notify_view_changed()
         self.queue_draw()
         return True  # continue ticking
 
@@ -417,7 +467,6 @@ class TimelineCanvas(Gtk.DrawingArea):
         start = end - self._window_seconds
 
         accent = self._theme_color("accent_color", (0.3, 0.5, 0.9))
-        warning = self._theme_color("warning_color", (0.9, 0.6, 0.1))
 
         cr.set_source_rgb(*_CANVAS_BG_COLOR)
         cr.paint()
@@ -452,36 +501,27 @@ class TimelineCanvas(Gtk.DrawingArea):
             cr.show_text(label)
             t += step
 
-        # Placeholder recording-presence bar — grey while showing a
-        # History position instead of "now" (see _HISTORY_PRESENCE_COLOR).
+        # Recording-presence bar: focus-slot row on top, layout-
+        # accumulated (plain OR across every camera in the active
+        # layout) row below it — grey while showing a History position
+        # instead of "now" (see _HISTORY_PRESENCE_COLOR). Event markers
+        # (item 11.l) will eventually overlay this, not yet implemented.
         presence_y = _BUBBLE_HEIGHT + _RULER_HEIGHT
+        row_height = _PRESENCE_HEIGHT / 2
         presence_color = _HISTORY_PRESENCE_COLOR if self._history_position is not None else accent
         cr.set_source_rgba(*presence_color, 0.5)
-        seg = 120  # 2 min segments
-        first_seg = int(start // seg) * seg
-        s = first_seg
-        while s <= end:
-            if (s * 2654435761) % 100 < 85:  # ~85% filled, stable pattern
-                sx0 = x_for(s)
-                sx1 = x_for(s + seg)
-                cr.rectangle(sx0, presence_y, max(1.0, sx1 - sx0), _PRESENCE_HEIGHT)
-                cr.fill()
-            s += seg
-
-        # Placeholder event markers (deterministic pseudo-pattern, no
-        # real bookmark data yet) -- drawn over the presence bar's own
-        # top half, anticipating where real event markers will eventually
-        # sit once wired to DSM's own bookmark data.
-        cr.set_source_rgb(*warning)
-        bucket = 300  # 5 min
-        first_bucket = int(start // bucket) * bucket
-        b = first_bucket
-        while b <= end:
-            if (b // bucket) % 7 == 0:
-                bx = x_for(b)
-                cr.rectangle(bx, presence_y, 2, _PRESENCE_HEIGHT / 2)
-                cr.fill()
-            b += bucket
+        for spans, row_y in (
+            (self._focus_presence, presence_y),
+            (self._layout_presence, presence_y + row_height),
+        ):
+            for span_start, span_stop in spans:
+                if span_stop < start or span_start > end:
+                    continue
+                sx0 = max(0.0, x_for(span_start))
+                sx1 = min(float(width), x_for(span_stop))
+                if sx1 > sx0:
+                    cr.rectangle(sx0, row_y, sx1 - sx0, row_height)
+                    cr.fill()
 
         # Playback marker: the focus slot's History position when it has
         # one, otherwise "now" — the same blue line either way, since

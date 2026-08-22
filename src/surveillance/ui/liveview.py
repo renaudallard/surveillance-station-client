@@ -46,6 +46,7 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-
 from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset, Recording
 from surveillance.config import save_config, save_config_now
 from surveillance.services import ptz
+from surveillance.services.event import list_recording_presence, merge_intervals
 from surveillance.services.live import (
     AUDIO_PROTOCOLS,
     OFFLINE_PLACEHOLDER_URL,
@@ -100,6 +101,18 @@ _TIMELINE_NUDGE_SECONDS = 10  # Back 10s / Forward 10s's step size
 # still-accumulating burst of clicks gets flushed a little sooner
 # rather than fully coalesced -- never incorrect, just less batched.
 _NUDGE_RESOLVE_TIMEOUT_SECONDS = 10
+
+# How long a pan/zoom must settle before the presence bar refetches --
+# same technique and rough magnitude as the hover-thumbnail debounce
+# (see timeline._THUMBNAIL_DEBOUNCE_MS), just slower since a presence
+# fetch covers a whole camera list rather than one hover point.
+_PRESENCE_DEBOUNCE_MS = 200
+
+# While following "now" the view changes every tick by design (see
+# TimelineCanvas._on_tick), which would otherwise mean a presence
+# fetch every second; this caps it to an occasional trailing-edge
+# refresh instead.
+_PRESENCE_LIVE_REFRESH_SEC = 5.0
 
 
 class CameraSlot(Gtk.Box):
@@ -477,6 +490,26 @@ class LiveView(Gtk.Box):
         # _timeline_speed (see WebSocketBridge.set_reverse).
         self._timeline_reverse: bool = False
         self._active: list[int] = []  # physical indices of visible slots
+        # Recording-presence cache: camera_id -> (covered_start,
+        # covered_end, spans). A view fully within [covered_start,
+        # covered_end] is served from cache; anything else triggers a
+        # fetch of the view padded by one window's width on each side,
+        # which replaces the entry (see _presence_covers/_refresh_presence)
+        # -- not a general interval-coverage set, just enough to avoid
+        # re-fetching on the small pans/zooms this bar is actually used for.
+        # Deliberately NOT consulted at all while following "now" (see
+        # _on_timeline_view_changed's force=True) -- a live fetch's own
+        # padding reaches past "now" into a future with no recordings
+        # yet, so treating that as durable coverage would freeze the
+        # trailing edge at whatever was true the first time it was ever
+        # fetched, for every camera sharing that cache entry.
+        self._presence_cache: dict[int, tuple[float, float, list[tuple[int, int]]]] = {}
+        self._presence_debounce_id = 0
+        # Bumped per fetch batch so a slower-landing fetch superseded by
+        # a newer view change never overwrites the cache with stale data
+        # -- same technique as _seek_generation/_timeline_thumbnail_generation.
+        self._presence_generation = 0
+        self._presence_last_live_fetch = 0.0
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
         self._streams_paused = False  # true while another page is shown
@@ -526,6 +559,7 @@ class LiveView(Gtk.Box):
         self.timeline.canvas.set_hover_callback(self._on_timeline_hover)
         self.timeline.canvas.set_hover_leave_callback(self._on_timeline_hover_leave)
         self.timeline.canvas.set_seek_callback(self._on_timeline_seek)
+        self.timeline.canvas.set_view_changed_callback(self._on_timeline_view_changed)
         self.timeline.live_btn.connect("clicked", self._on_timeline_live_clicked)
         self.timeline.back_10s_btn.connect("clicked", self._on_timeline_back_10s)
         self.timeline.forward_10s_btn.connect("clicked", self._on_timeline_forward_10s)
@@ -675,6 +709,8 @@ class LiveView(Gtk.Box):
             # has to resync it to the new slot's own position, History
             # or not, rather than leaving the previous slot's marker up.
             self.timeline.canvas.set_history_position(self._slots[slot_idx]._history_position)
+            # The presence bar's own focus row follows the same switch.
+            self._request_presence_refresh()
         self.register_timeline_activity()
 
     def _tick_history_positions(self) -> bool:
@@ -737,6 +773,148 @@ class LiveView(Gtk.Box):
     def _on_timeline_hover_leave(self) -> None:
         self._timeline_thumbnail_generation += 1  # orphan any fetch already in flight
         self._thumbnail_frame.set_visible(False)
+
+    # ------------------------------------------------------------------
+    # Recording presence
+    # ------------------------------------------------------------------
+
+    def _on_timeline_view_changed(self, start: float, end: float, following: bool) -> None:
+        """TimelineCanvas.set_view_changed_callback target.
+
+        Two very different cadences share this one callback: a settled
+        pan/zoom (following=False) is debounced like the hover thumbnail,
+        but following=True fires on every one-second tick by design (see
+        TimelineCanvas._on_tick) and would mean a fetch a second if
+        treated the same way -- throttled instead to an occasional
+        trailing-edge refresh.
+        """
+        if following:
+            if time.time() - self._presence_last_live_fetch < _PRESENCE_LIVE_REFRESH_SEC:
+                return
+            self._presence_last_live_fetch = time.time()
+            # force=True: see _presence_cache's own comment for why the
+            # live-follow path can't rely on the coverage cache.
+            self._refresh_presence(start, end, force=True)
+            return
+        if self._presence_debounce_id:
+            GLib.source_remove(self._presence_debounce_id)
+        self._presence_debounce_id = GLib.timeout_add(
+            _PRESENCE_DEBOUNCE_MS, self._on_presence_debounce_fire, start, end
+        )
+
+    def _on_presence_debounce_fire(self, start: float, end: float) -> bool:
+        self._presence_debounce_id = 0
+        self._refresh_presence(start, end)
+        return False  # one-shot timeout, don't repeat
+
+    def _request_presence_refresh(self) -> None:
+        """Re-derive presence for whatever the timeline's current view
+        covers, for a change to which cameras are active/focused rather
+        than to the view itself -- see the call sites in
+        _set_timeline_focus_slot, _save_session, and
+        _restore_layout_cameras.
+        """
+        if not hasattr(self, "timeline"):
+            return  # still constructing -- _apply_layout runs before self.timeline exists
+        start, end = self.timeline.canvas.get_view_range()
+        self._refresh_presence(start, end)
+
+    def _active_presence_cameras(self) -> tuple[int | None, list[int]]:
+        """(focus_camera_id, active_camera_ids) for the current layout --
+        an empty slot contributes nothing to either."""
+        active_ids = []
+        seen: set[int] = set()
+        for i in self._active:
+            camera = self._slots[i].camera
+            if camera is not None and camera.id not in seen:
+                seen.add(camera.id)
+                active_ids.append(camera.id)
+        focus_camera = self._slots[self._timeline_focus_slot].camera
+        return (focus_camera.id if focus_camera else None), active_ids
+
+    def _presence_covers(self, camera_id: int, start: float, end: float) -> bool:
+        cached = self._presence_cache.get(camera_id)
+        return cached is not None and cached[0] <= start and cached[1] >= end
+
+    def _refresh_presence(self, start: float, end: float, force: bool = False) -> None:
+        """Fetch/update presence for whatever cameras are focused/active,
+        for the [start, end] view range. *force* skips the cache-coverage
+        check (see _presence_cache's own comment for why the live-follow
+        path needs this) -- callers other than the live-follow path leave
+        it False so a settled pan/zoom over already-covered territory
+        stays a cache hit."""
+        if not self.app.api:
+            return
+        focus_camera_id, active_camera_ids = self._active_presence_cameras()
+        focus_id_list = [focus_camera_id] if focus_camera_id is not None else []
+        all_ids = list(dict.fromkeys([*active_camera_ids, *focus_id_list]))
+        if not all_ids:
+            self.timeline.canvas.set_presence_data([], [])
+            return
+
+        if force:
+            needed = all_ids
+        else:
+            needed = [cid for cid in all_ids if not self._presence_covers(cid, start, end)]
+        if not needed:
+            self._apply_presence_to_canvas(focus_camera_id, active_camera_ids)
+            return
+
+        # Padded by one window's width on each side so re-panning by up
+        # to a screen's worth in either direction stays a cache hit
+        # instead of a network round trip -- see _presence_cache's own
+        # comment for what this caching scheme deliberately doesn't do.
+        pad = end - start
+        fetch_start, fetch_end = start - pad, end + pad
+
+        self._presence_generation += 1
+        generation = self._presence_generation
+        run_async(
+            list_recording_presence(self.app.api, needed, int(fetch_start), int(fetch_end)),
+            callback=lambda result: self._on_presence_fetched(
+                generation,
+                needed,
+                fetch_start,
+                fetch_end,
+                result,
+                focus_camera_id,
+                active_camera_ids,
+            ),
+            error_callback=lambda exc: log.debug("Presence fetch failed: %s", exc),
+        )
+
+    def _on_presence_fetched(
+        self,
+        generation: int,
+        requested_ids: list[int],
+        fetch_start: float,
+        fetch_end: float,
+        result: dict[int, list[tuple[int, int]]],
+        focus_camera_id: int | None,
+        active_camera_ids: list[int],
+    ) -> None:
+        if generation != self._presence_generation:
+            return  # superseded by a newer view change
+        for cid in requested_ids:
+            self._presence_cache[cid] = (fetch_start, fetch_end, result.get(cid, []))
+        self._apply_presence_to_canvas(focus_camera_id, active_camera_ids)
+
+    def _apply_presence_to_canvas(
+        self, focus_camera_id: int | None, active_camera_ids: list[int]
+    ) -> None:
+        focus_spans = (
+            self._presence_cache[focus_camera_id][2]
+            if focus_camera_id is not None and focus_camera_id in self._presence_cache
+            else []
+        )
+        layout_spans = merge_intervals(
+            [
+                span
+                for cid in active_camera_ids
+                for span in self._presence_cache.get(cid, (0.0, 0.0, []))[2]
+            ]
+        )
+        self.timeline.canvas.set_presence_data(focus_spans, layout_spans)
 
     def _on_timeline_seek(self, timestamp: float) -> None:
         """TimelineCanvas.set_seek_callback target — seeks every active
@@ -1222,6 +1400,8 @@ class LiveView(Gtk.Box):
                 # so clear it explicitly: hidden slots from other layouts keep
                 # their camera in memory rather than resetting it.
                 self._slots[phys].clear()
+        # The layout-accumulated row's own camera set just changed.
+        self._request_presence_refresh()
 
     # ------------------------------------------------------------------
     # User interactions
@@ -1871,6 +2051,9 @@ class LiveView(Gtk.Box):
         self.app.config.layout_cameras[self._current_layout] = cam_ids
         log.debug("layout_cameras session save: [%s] = %s", self._current_layout, cam_ids)
         save_config_now(self.app.config)
+        # Session changes (assign/clear a slot's camera) can change the
+        # layout-accumulated row's own camera set.
+        self._request_presence_refresh()
 
     def restore_session(self, cameras: list[Camera]) -> None:
         """Restore camera assignments from config."""

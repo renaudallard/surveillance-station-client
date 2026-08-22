@@ -89,23 +89,13 @@ def _advance_to_parent(
     return None, idx
 
 
-async def list_granular_events(
-    api: SurveillanceAPI,
-    camera_ids: list[int],
-    camera_names: dict[int, str],
-    from_time: int,
-    to_time: int,
-) -> list[Event]:
-    """List real, short-duration events decoded from event_map.
-
-    Unlike list_events() (SYNO.SurveillanceStation.Event::List), which only
-    exposes coarse ~30-minute recording-file segments, this decodes
-    RecordingPicker::EnumInterval's event_map to recover the actual
-    irregular motion/alarm windows shown in DSM's own Monitor Center
-    timeline. Returns every event within [from_time, to_time], newest first —
-    deliberately uncapped, since silently dropping older-but-in-range events
-    would make the time-range filter (Today/Yesterday/Last 7 days/...) lie
-    about what it's actually showing.
+async def _fetch_enum_interval(
+    api: SurveillanceAPI, camera_ids: list[int], from_time: int, to_time: int
+) -> list[dict[str, Any]]:
+    """Shared RecordingPicker::EnumInterval request behind both
+    list_granular_events (event_map) and list_recording_presence (the
+    same response's own per-file `event` list) -- one call, two
+    different fields of the same per-camera result.
     """
     if not camera_ids:
         return []
@@ -127,47 +117,120 @@ async def list_granular_events(
         },
         timeout=_EVENT_MAP_REQUEST_TIMEOUT,
     )
+    cameras: list[dict[str, Any]] = []
+    for entry in data.get("cameras", []):
+        cameras.extend(entry)
+    return cameras
+
+
+def merge_intervals(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort *spans* and merge every overlapping/adjacent pair.
+
+    Shared by list_recording_presence's per-camera merge and the Live
+    View timeline's own cross-camera OR union (see
+    LiveView._apply_presence_to_canvas) -- same operation either way.
+    """
+    merged: list[tuple[int, int]] = []
+    for start, stop in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], stop))
+        else:
+            merged.append((start, stop))
+    return merged
+
+
+async def list_recording_presence(
+    api: SurveillanceAPI, camera_ids: list[int], from_time: int, to_time: int
+) -> dict[int, list[tuple[int, int]]]:
+    """Per-camera recording-presence spans for the Live View timeline's
+    presence bar, read from RecordingPicker::EnumInterval's own per-file
+    `event` list -- the same underlying recording-file segments
+    list_granular_events uses to resolve a flag's parent file, used
+    directly here instead: each entry's start/stop already marks
+    exactly where a recording exists, with no need to go through
+    event_map's bitmap at all.
+
+    Returns {camera_id: [(start, stop), ...]}, merged and sorted; a
+    camera with nothing recorded in range is simply absent from the
+    result.
+    """
+    cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
+    result: dict[int, list[tuple[int, int]]] = {}
+    for cam in cameras:
+        camera_id = cam.get("camera_id", 0)
+        spans = [
+            (rec["start"], rec["stop"])
+            for rec in cam.get("event", [])
+            if "start" in rec and "stop" in rec
+        ]
+        merged = merge_intervals(spans)
+        if merged:
+            result[camera_id] = merged
+    return result
+
+
+async def list_granular_events(
+    api: SurveillanceAPI,
+    camera_ids: list[int],
+    camera_names: dict[int, str],
+    from_time: int,
+    to_time: int,
+) -> list[Event]:
+    """List real, short-duration events decoded from event_map.
+
+    Unlike list_events() (SYNO.SurveillanceStation.Event::List), which only
+    exposes coarse ~30-minute recording-file segments, this decodes
+    RecordingPicker::EnumInterval's event_map to recover the actual
+    irregular motion/alarm windows shown in DSM's own Monitor Center
+    timeline. Returns every event within [from_time, to_time], newest first —
+    deliberately uncapped, since silently dropping older-but-in-range events
+    would make the time-range filter (Today/Yesterday/Last 7 days/...) lie
+    about what it's actually showing.
+    """
+    if not camera_ids:
+        return []
+
+    cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
 
     events: list[Event] = []
-    for entry in data.get("cameras", []):
-        for cam in entry:
-            camera_id = cam.get("camera_id", 0)
-            camera_name = camera_names.get(camera_id, str(camera_id))
-            recordings = cam.get("event", [])
+    for cam in cameras:
+        camera_id = cam.get("camera_id", 0)
+        camera_name = camera_names.get(camera_id, str(camera_id))
+        recordings = cam.get("event", [])
 
-            t = from_time
-            parent_idx = 0
-            for value, flag, reserved in cam.get("event_map", []):
-                duration = value * _EVENT_MAP_INTERVAL_SEC
-                run_start, run_stop = t, t + duration
-                t = run_stop
-                # A flag of 0/1 alone means "nothing happened" — but not if
-                # `reserved` is set: that's Object Removal Detection firing
-                # via overflow with nothing else in this bucket (see
-                # EVENT_BITMASK.md), a real event that must not be dropped.
-                if flag in _EVENT_MAP_NON_EVENT_FLAGS and not reserved:
-                    continue
+        t = from_time
+        parent_idx = 0
+        for value, flag, reserved in cam.get("event_map", []):
+            duration = value * _EVENT_MAP_INTERVAL_SEC
+            run_start, run_stop = t, t + duration
+            t = run_stop
+            # A flag of 0/1 alone means "nothing happened" — but not if
+            # `reserved` is set: that's Object Removal Detection firing
+            # via overflow with nothing else in this bucket (see
+            # EVENT_BITMASK.md), a real event that must not be dropped.
+            if flag in _EVENT_MAP_NON_EVENT_FLAGS and not reserved:
+                continue
 
-                parent, parent_idx = _advance_to_parent(recordings, parent_idx, run_start)
-                if parent is None:
-                    continue
+            parent, parent_idx = _advance_to_parent(recordings, parent_idx, run_start)
+            if parent is None:
+                continue
 
-                events.append(
-                    Event(
-                        id=parent.get("id", 0),
-                        camera_id=camera_id,
-                        camera_name=camera_name,
-                        event_type=flag,
-                        start_time=run_start,
-                        stop_time=run_stop,
-                        # mountId/archId sit on the camera object, not the
-                        # individual event entry, so they must come from cam.
-                        mount_id=cam.get("mountId", 0),
-                        arch_id=cam.get("archId", 0),
-                        seek_offset=max(0, run_start - parent.get("start", run_start)),
-                        reserved=reserved,
-                    )
+            events.append(
+                Event(
+                    id=parent.get("id", 0),
+                    camera_id=camera_id,
+                    camera_name=camera_name,
+                    event_type=flag,
+                    start_time=run_start,
+                    stop_time=run_stop,
+                    # mountId/archId sit on the camera object, not the
+                    # individual event entry, so they must come from cam.
+                    mount_id=cam.get("mountId", 0),
+                    arch_id=cam.get("archId", 0),
+                    seek_offset=max(0, run_start - parent.get("start", run_start)),
+                    reserved=reserved,
                 )
+            )
 
     events.sort(key=lambda e: e.start_time, reverse=True)
     return events

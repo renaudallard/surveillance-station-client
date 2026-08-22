@@ -959,6 +959,57 @@ class TestRecordingService:
             )
 
     @pytest.mark.asyncio
+    async def test_find_covering_recording_at_returns_the_covering_recording(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.recording import find_covering_recording_at
+
+        mock_data = {
+            "events": [
+                {"id": 100, "cameraId": 21, "startTime": 1700000000, "stopTime": 1700001800},
+                {"id": 101, "cameraId": 21, "startTime": 1700001800, "stopTime": 1700003600},
+            ],
+            "total": 2,
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            rec = await find_covering_recording_at(api, camera_id=21, target_unix=1700002000)
+            assert rec is not None
+            assert rec.id == 101
+
+    @pytest.mark.asyncio
+    async def test_find_covering_recording_at_returns_none_in_a_gap(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """Unlike find_recording_at, a target in a genuine gap between
+        recordings (e.g. the camera was down for a while) must come back
+        None rather than snapping to whichever recording is nearest --
+        see WebSocketBridge._refresh_history_recording_if_stale's own
+        contract for why (LiveView._enter_history_mode's resolve())."""
+        from surveillance.services.recording import find_covering_recording_at
+
+        mock_data = {
+            "events": [
+                {"id": 100, "cameraId": 21, "startTime": 1700000000, "stopTime": 1700000100},
+                {"id": 101, "cameraId": 21, "startTime": 1700005000, "stopTime": 1700005100},
+            ],
+            "total": 2,
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            rec = await find_covering_recording_at(api, camera_id=21, target_unix=1700000200)
+            assert rec is None
+
+    @pytest.mark.asyncio
+    async def test_find_covering_recording_at_returns_none_when_nothing_recorded(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.recording import find_covering_recording_at
+
+        mock_data = {"events": [], "total": 0}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            rec = await find_covering_recording_at(api, camera_id=21, target_unix=1700000000)
+            assert rec is None
+
+    @pytest.mark.asyncio
     async def test_fetch_recording_thumbnail_decodes_and_caches(self, api: SurveillanceAPI) -> None:
         from surveillance.services.recording import clear_snapshot_cache, fetch_recording_thumbnail
 

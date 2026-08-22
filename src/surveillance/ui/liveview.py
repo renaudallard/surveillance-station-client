@@ -31,7 +31,7 @@ import calendar
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -64,6 +64,7 @@ from surveillance.services.ptt import PttOccupiedError, PttSession
 from surveillance.services.recording import (
     download_recording_range,
     fetch_camera_thumbnail_at,
+    find_covering_recording_at,
     find_recording_at,
 )
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
@@ -163,6 +164,82 @@ def order_cameras_focus_first(
             result.insert(0, result.pop(i))
             break
     return result
+
+
+def compute_focus_marker_update(
+    current_position: float | None,
+    last_set_position: float | None,
+    active_ticks: Sequence[int | None],
+    gap_started_at: float | None,
+    gap_reference_position: float,
+    now: float,
+    speed: str,
+    reverse: bool,
+) -> tuple[float | None, float | None, float]:
+    """Pure decision core of LiveView._advance_focus_history_position --
+    see that method's own docstring for the full rationale: the shared
+    timeline marker takes whichever active camera actually has real
+    data this tick, and only extrapolates from wall clock/speed once
+    none of them did.
+
+    Returns (new_position, new_gap_started_at, new_gap_reference_position)
+    for the caller to apply to both the marker and its own state.
+    new_position is None only when there's genuinely nothing to show yet
+    (no real tick has ever arrived and there's no prior position to
+    extrapolate from, e.g. History mode was just entered).
+
+    *current_position* != *last_set_position* means something other than
+    this function moved the focus slot's position since the last call --
+    a seek, a fresh entry into History, or a focus switch onto a slot at
+    a different point -- so any extrapolation in progress is measured
+    from a now-irrelevant point and must restart from here instead of
+    resuming as if a gap had been running since that earlier point.
+
+    While a gap is in progress (gap_started_at is not None), a real tick
+    is only trusted if it's at-or-after gap_reference_position -- the
+    marker's own position at the moment the gap began. A tick at or
+    before that point can only be a stale replay of whatever recording
+    just stopped covering the target (e.g. a reconnect that -- absent
+    find_covering_recording_at -- resolved back onto it instead of
+    finding nothing): this is what actually produces the periodic
+    backward jump, even after the extrapolation fallback below already
+    handles the general case. Anything at or
+    after gap_reference_position is genuine new data -- whether it's the
+    actual resuming recording or something in between -- and wins over
+    the extrapolated guess even if it lands a little behind where that
+    guess had gotten to, same as real data always taking priority once
+    it resumes. Outside of an active gap this check is skipped: ordinary
+    playback ticks are already naturally increasing on their own.
+    """
+    if current_position != last_set_position:
+        gap_started_at = None
+
+    best_tick = (
+        min((t for t in active_ticks if t is not None), default=None)
+        if reverse
+        else max((t for t in active_ticks if t is not None), default=None)
+    )
+    if best_tick is not None and gap_started_at is not None:
+        stale = (
+            best_tick >= gap_reference_position
+            if reverse
+            else best_tick <= gap_reference_position
+        )
+        if stale:
+            best_tick = None
+
+    if best_tick is not None:
+        return float(best_tick), None, gap_reference_position
+
+    if current_position is None:
+        return None, gap_started_at, gap_reference_position
+
+    if gap_started_at is None:
+        gap_started_at = now
+        gap_reference_position = current_position
+    elapsed = now - gap_started_at
+    speed_signed = (-1.0 if reverse else 1.0) * float(speed)
+    return gap_reference_position + elapsed * speed_signed, gap_started_at, gap_reference_position
 
 
 class CameraSlot(Gtk.Box):
@@ -569,6 +646,35 @@ class LiveView(Gtk.Box):
         # Timeline Fwd/Rev toggle's own state -- same scope/reset as
         # _timeline_speed (see WebSocketBridge.set_reverse).
         self._timeline_reverse: bool = False
+        # _advance_focus_history_position's own state, for extrapolating
+        # the shared marker from wall clock/speed when no active camera
+        # has delivered a real frame in the last tick: a recording gap
+        # or outage covering every active camera at once).
+        # None whenever the marker is currently tracking real data.
+        # _history_gap_started_at is when that extrapolation began (wall
+        # clock, for computing elapsed time each tick, not accumulated
+        # tick-by-tick so a delayed GLib tick can't drift it);
+        # _history_gap_reference_position is the marker's own position at
+        # that moment, the base the extrapolation adds elapsed*speed to;
+        # _history_gap_last_set_position is whatever this method itself
+        # last wrote, so the next tick can tell a seek/focus-switch moved
+        # the focus slot's position out from under it (see the method's
+        # own docstring for why that has to restart the extrapolation).
+        self._history_gap_started_at: float | None = None
+        self._history_gap_reference_position: float = 0.0
+        self._history_gap_last_set_position: float | None = None
+        # Slots _return_all_to_live has told to leave History, whose old
+        # bridge object may still be alive and delivering real ticks until
+        # its own staggered restart actually replaces it (that replacement
+        # is what clears a slot from this set again -- see _start_bridge).
+        # _tick_history_positions/_advance_focus_history_position both skip
+        # any slot listed here, since is_history alone can't tell a bridge
+        # that is genuinely still in History apart from one that is on its
+        # way out but has not been superseded yet -- without this, a real
+        # tick from that stale bridge can resurrect a _history_position
+        # (and the shared canvas marker, if it lands on the focus slot's
+        # tick-collection pass) moments after the return-to-live reset.
+        self._leaving_history_slots: set[int] = set()
         self._active: list[int] = []  # physical indices of visible slots
         # Recording-presence cache: camera_id -> (covered_start,
         # covered_end, spans). A view fully within [covered_start,
@@ -809,8 +915,8 @@ class LiveView(Gtk.Box):
         self.register_timeline_activity()
 
     def _tick_history_positions(self) -> bool:
-        """Refresh every slot's History playback position from its own
-        bridge's actual last-received frame (see
+        """Refresh every non-focus slot's History playback position from
+        its own bridge's actual last-received frame (see
         WebSocketBridge.current_history_position) rather than assuming
         forward progress ourselves -- a theoretical wall-clock-based
         estimate drifts from real playback at any speed but 1x, since
@@ -818,15 +924,78 @@ class LiveView(Gtk.Box):
         rate rather than changing it instantly, and stays wrong
         afterwards for as long as the estimate's own assumptions don't
         match what's actually playing. Skipped for a paused slot: its
-        position is frozen by WebSocketBridge.pause() itself."""
+        position is frozen by WebSocketBridge.pause() itself.
+
+        The focus slot -- the one the shared timeline marker actually
+        shows -- is handled separately, by _advance_focus_history_position:
+        a real recording gap in that one camera alone must not freeze
+        the shared marker while every other active camera keeps playing,
+        so it can't just trust this slot's own bridge the same way the
+        others here do. Both skip a slot in _leaving_history_slots
+        (see that field's own comment).
+        """
         for slot_idx in self._active:
+            if slot_idx == self._timeline_focus_slot or slot_idx in self._leaving_history_slots:
+                continue
             slot = self._slots[slot_idx]
             if slot._ws_bridge is None or slot._ws_bridge.is_paused:
                 continue
             position = slot._ws_bridge.current_history_position
             if position is not None:
                 self._set_history_position(slot, position)
+        self._advance_focus_history_position()
         return True  # continue ticking
+
+    def _advance_focus_history_position(self) -> None:
+        """Update the focus slot's own position (and, via
+        _set_history_position, the shared canvas marker) from whichever
+        active camera actually delivered real data in the last tick --
+        it doesn't matter which one, since every active slot is playing
+        toward the same target -- falling back to a wall-clock/speed
+        estimate only once every active camera has gone quiet at once:
+        a real recording gap in just the focus camera is masked for
+        free as long as any other active camera keeps delivering, which
+        is the common case and needs no estimation at all, only a
+        genuine gap or outage covering the whole layout at
+        the same instant ever reaches the fallback below.
+
+        See WebSocketBridge.consume_last_real_tick for why this is safe
+        to call once a second across every active bridge without missing
+        real data: each one accumulates its own highest tick between
+        calls, this just drains and compares them. The actual decision
+        is pulled out into compute_focus_marker_update so it's testable
+        without a live CameraSlot/WebSocketBridge (GTK widgets segfault
+        without a display in this test environment).
+        """
+        focus_slot = self._slots[self._timeline_focus_slot]
+        if focus_slot._ws_bridge is None or focus_slot._ws_bridge.is_paused:
+            return
+
+        ticks: list[int | None] = []
+        for i in self._active:
+            if i in self._leaving_history_slots:
+                continue
+            bridge = self._slots[i]._ws_bridge
+            if bridge is None:
+                continue
+            ticks.append(bridge.consume_last_real_tick())
+
+        new_position, self._history_gap_started_at, self._history_gap_reference_position = (
+            compute_focus_marker_update(
+                focus_slot._history_position,
+                self._history_gap_last_set_position,
+                ticks,
+                self._history_gap_started_at,
+                self._history_gap_reference_position,
+                time.time(),
+                self._timeline_speed,
+                self._timeline_reverse,
+            )
+        )
+        if new_position is None:
+            return  # nothing to extrapolate from yet
+        self._set_history_position(focus_slot, new_position)
+        self._history_gap_last_set_position = new_position
 
     def _on_timeline_hover(self, local_x: float, timestamp: float) -> None:
         """TimelineCanvas.set_hover_callback target.
@@ -1840,6 +2009,7 @@ class LiveView(Gtk.Box):
             slot = self._slots[slot_idx]
             if slot.camera and slot._ws_bridge is not None and slot._ws_bridge.is_history:
                 self._set_history_position(slot, None)
+                self._leaving_history_slots.add(slot_idx)
                 actions.append(partial(self._start_stream, slot_idx, slot.camera))
         self._run_staggered(actions)
         if hasattr(self, "timeline"):
@@ -2438,9 +2608,16 @@ class LiveView(Gtk.Box):
         async def resolve(target: int) -> Recording | None:
             """Bound to camera_id, not to slot.camera -- this outlives
             whatever the slot is showing by the time a stale reconnect
-            calls it (see WebSocketBridge's own history_resolver)."""
+            calls it (see WebSocketBridge's own history_resolver).
+
+            find_covering_recording_at, not find_recording_at: a stale
+            reconnect asking "does anything cover the target now" needs
+            None for a genuine gap (e.g. the camera was down for a
+            while), not the nearest recording on either side of it --
+            see find_covering_recording_at's own docstring for what
+            goes wrong otherwise."""
             api = self.app.api
-            return await find_recording_at(api, camera_id, target) if api else None
+            return await find_covering_recording_at(api, camera_id, target) if api else None
 
         bridge = WebSocketBridge(
             url,
@@ -2463,6 +2640,10 @@ class LiveView(Gtk.Box):
         permanent give-up the same way regardless of which mode started
         it (see _start_ws_bridge / _enter_history_mode)."""
         slot._ws_bridge = bridge
+        # *bridge* is now the authoritative one for this slot either way
+        # -- clears the stale-tick guard _return_all_to_live armed, if
+        # any (see _leaving_history_slots's own comment).
+        self._leaving_history_slots.discard(slot.index)
         # Ghosts/restores the camera-motor controls immediately, before
         # the pipe is even ready -- a slot mid-History-connect has no
         # live camera under it any more than one already playing does.

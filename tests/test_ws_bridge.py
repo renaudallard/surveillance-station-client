@@ -2183,3 +2183,99 @@ class TestHistoryActualPosition:
         assert fields["speed"] == "1"
         assert fields["start"] == "750"  # actual position reached, not back near 100
         await bridge.stop()
+
+
+class TestConsumeLastRealTick:
+    """WebSocketBridge.consume_last_real_tick -- the real-tick-only
+    signal LiveView's shared timeline marker uses to detect "no active
+    camera delivered real data this second" (ToDo r). Unlike
+    current_history_position, this must never silently fall back to a
+    wall-clock estimate -- None has to mean "nothing real arrived",
+    or the marker could never tell a genuine gap/outage apart from
+    ordinary playback."""
+
+    async def test_none_before_any_frame_arrives(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
+    async def test_returns_the_absolute_position_of_the_last_real_frame(
+        self, connect: Any
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        assert bridge.consume_last_real_tick() == rec.start_time + 240
+        await bridge.stop()
+
+    async def test_clears_after_being_consumed(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        bridge.consume_last_real_tick()
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
+    async def test_live_bridge_never_reports_a_real_tick(self, connect: Any) -> None:
+        """No history_recording at all -- there's nothing to anchor an
+        absolute position to, same reason current_history_position is
+        already None for a Live bridge."""
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await asyncio.sleep(0.05)
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
+    async def test_only_updates_on_a_larger_tick(self, connect: Any) -> None:
+        """A guard against an out-of-order or duplicate frame quietly
+        moving the marker backward."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        fake._messages.append(_frame(b"mediaType=1&msec=100000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 100)
+        assert bridge.consume_last_real_tick() == rec.start_time + 240
+        await bridge.stop()

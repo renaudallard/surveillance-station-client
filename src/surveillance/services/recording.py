@@ -163,20 +163,20 @@ async def find_recording_at(
     History-mode click-to-seek (see ws_bridge.py's module docstring for
     the wire protocol this feeds).
 
-    A fresh List call per click rather than a locally-cached lookup --
-    DSM's own web client instead resolves clicks against recording data
-    it already has cached from painting the presence bars, but those
-    bars are still a placeholder here (see timeline.py) with nothing
-    cached to search yet. Good enough to prove the seek mechanism
-    works; revisit once real presence data exists to search locally
-    instead of a network round trip per click.
+    A fresh List call per lookup rather than reusing LiveView's own
+    presence-bar cache (LiveView._presence_cache): that cache lives in
+    the UI layer, keyed by whatever range the timeline currently has
+    fetched, while this service-layer function has no access to it and
+    only ever needs a cheap, narrow window around one point -- a fresh
+    call per lookup is simpler than threading that cache down here.
 
     Returns the containing recording if *target_unix* falls within one,
     otherwise the nearest recording in the fetched window (a click
     landing in a gap between recordings -- motion-only recording
     routinely leaves them -- should still seek to *something* nearby
     rather than refuse), or None if nothing was recorded anywhere near
-    *target_unix*.
+    *target_unix*. See find_covering_recording_at for a strict variant
+    that returns None instead of the nearest match.
     """
     recordings, _total = await list_recordings(
         api,
@@ -194,6 +194,33 @@ async def find_recording_at(
         recordings,
         key=lambda r: min(abs(r.start_time - target_unix), abs(r.stop_time - target_unix)),
     )
+
+
+async def find_covering_recording_at(
+    api: SurveillanceAPI, camera_id: int, target_unix: int
+) -> Recording | None:
+    """Like find_recording_at, but None instead of the nearest recording
+    when *target_unix* falls in a genuine gap -- for a continuous-
+    playback resolver (WebSocketBridge._refresh_history_recording_if_stale,
+    wired up via LiveView._enter_history_mode's own resolve()) rather
+    than click-to-seek.
+
+    The two callers need opposite answers to the same gap: a click
+    landing in one should still seek to *something* nearby rather than
+    refuse (find_recording_at's own nearest-fallback), but a resolver
+    checking whether playback has drifted past its loaded recording
+    must be able to tell "nothing covers this yet" apart from "found a
+    real one" -- otherwise it keeps swapping in whichever of the
+    recordings on either side of the gap happens to be nearest as the
+    target creeps forward, re-clamping the play offset to a different
+    one of their edges each time. That bounces the position between two
+    different boundaries instead of holding it steady until a recording
+    that actually covers the target shows up.
+    """
+    rec = await find_recording_at(api, camera_id, target_unix)
+    if rec is not None and rec.start_time <= target_unix <= rec.stop_time:
+        return rec
+    return None
 
 
 def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:

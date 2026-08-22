@@ -361,6 +361,16 @@ class WebSocketBridge:
         # recording swap, or a resume from pause), all of which reset
         # it so a stale value from before that point is never reused.
         self._last_video_msec: int | None = None
+        # Highest real (frame-derived) absolute position seen since the
+        # last consume_last_real_tick() call -- for LiveView's shared
+        # timeline marker, which cares about "did any active camera
+        # actually deliver real data in the last second" across every
+        # slot in the layout, not just this bridge's own position (see
+        # consume_last_real_tick's own docstring). Deliberately separate
+        # from self._last_video_msec, which this bridge keeps resetting
+        # to None on its own reconnects/seeks for its own purposes --
+        # this one only ever moves forward, and only LiveView clears it.
+        self._last_real_tick: int | None = None
         # The currently connected socket, for seek() to send on from
         # outside _pump's own scope -- None whenever no connection is up
         # (including between reconnect attempts), so seek() knows to fold
@@ -1039,6 +1049,10 @@ class WebSocketBridge:
                 msec = _parse_header(header).get("msec")
                 if msec is not None:
                     self._last_video_msec = int(msec)
+                    if self._history_recording is not None:
+                        tick = self._history_recording.start_time + self._last_video_msec // 1000
+                        if self._last_real_tick is None or tick > self._last_real_tick:
+                            self._last_real_tick = tick
             # The payload arrives without the Annex B start code, so
             # prepend it and mpv/ffmpeg can find NAL boundaries. Where
             # DSM leaves it has never been checked here; the constant
@@ -1258,6 +1272,29 @@ class WebSocketBridge:
         position. A thin public wrapper around
         _current_history_target() for callers outside this class."""
         return self._current_history_target() if self.is_history else None
+
+    def consume_last_real_tick(self) -> int | None:
+        """Return the highest real (frame-derived) absolute position seen
+        since the last call, clearing it back to None.
+
+        Unlike current_history_position, this never falls back to a
+        wall-clock estimate -- None means "no real data from this camera
+        since the last check", which is the point: LiveView's shared
+        timeline marker takes the max of this across every active slot
+        once a second, and only estimates its own position from wall
+        clock/speed when every active camera comes back None, whatever
+        the reason (a real recording gap in the focused camera alone is
+        masked for free by any other active camera still delivering
+        real ticks; only a gap or outage affecting the whole layout at
+        once ever reaches that fallback). No lock around the write in
+        _dispatch_media_frame (a different thread, see the module's
+        asyncio/GTK split) -- losing an update to a race here just means
+        this reports one frame later than it could have, same tolerance
+        already accepted for self._last_video_msec's own cross-thread read.
+        """
+        tick = self._last_real_tick
+        self._last_real_tick = None
+        return tick
 
     async def _refresh_history_recording_if_stale(self) -> None:
         """Swap in a fresh recording via self._history_resolver if the

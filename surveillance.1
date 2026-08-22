@@ -88,7 +88,17 @@ as long as it stays paused; resuming a History slot paused for under
 the edge. A playback-speed dropdown (History mode only) offers 1/8x
 through 100x plus a Fwd/Rev direction toggle, applied to every active
 History slot at once; it resets to 1x/Fwd whenever a slot returns to
-Live or the layout switches. Event markers are still in progress.
+Live or the layout switches. Real motion/alarm events are overlaid on
+the same two presence rows as orange markers.
+.B Previous event
+and
+.B Next event
+jump to the nearest one on either side of the current position, across
+every camera in the layout; Previous stays available in Live mode
+(dropping into History first, like Back 10s), while Next is
+History-only, like Forward 10s. Events within 10 seconds of wall clock
+are skipped, since a seek that close would just be clamped back to the
+live edge anyway.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

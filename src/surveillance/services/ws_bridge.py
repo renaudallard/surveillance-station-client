@@ -145,7 +145,7 @@ _WRITE_TIMEOUT = 5.0  # seconds
 # asking (see _set_history_delta, the single place this is enforced).
 # A delta this small is inside the near-live window this bridge/DSM
 # can't reliably serve yet.
-_MIN_HISTORY_DELTA_SECONDS = 10.0
+MIN_HISTORY_DELTA_SECONDS = 10.0
 
 # How long a muxed camera may deliver no audio at all before its audio
 # stream is ended to stop it holding up the video (see _watch_audio_gap).
@@ -321,7 +321,7 @@ class WebSocketBridge:
         # _current_history_target/_build_history_play_message). Set via
         # _set_history_delta, not assigned directly, even here in the
         # constructor -- entering History mode by clicking within
-        # _MIN_HISTORY_DELTA_SECONDS of live must clamp exactly like a
+        # MIN_HISTORY_DELTA_SECONDS of live must clamp exactly like a
         # seek()/resume() landing there does.
         self._history_delta_seconds: float = 0.0
         self._set_history_delta(history_target)
@@ -1138,7 +1138,7 @@ class WebSocketBridge:
     def _set_history_delta(self, target_unix: float) -> int:
         """Store *target_unix* as self._history_delta_seconds, clamped
         so the resulting delta is never less than
-        _MIN_HISTORY_DELTA_SECONDS behind wall clock -- a delta that
+        MIN_HISTORY_DELTA_SECONDS behind wall clock -- a delta that
         small is inside the near-live window this bridge/DSM can't
         reliably serve yet.
 
@@ -1153,7 +1153,7 @@ class WebSocketBridge:
         than assuming the requested target_unix was used as-is.
         """
         now = time.time()
-        clamped = min(target_unix, now - _MIN_HISTORY_DELTA_SECONDS)
+        clamped = min(target_unix, now - MIN_HISTORY_DELTA_SECONDS)
         self._history_delta_seconds = now - clamped
         return int(clamped)
 
@@ -1207,7 +1207,7 @@ class WebSocketBridge:
 
     async def resume(self) -> int | None:
         """Undo pause(). History clamps the resume point to at least
-        _MIN_HISTORY_DELTA_SECONDS behind wall clock -- a pause
+        MIN_HISTORY_DELTA_SECONDS behind wall clock -- a pause
         shorter than that would otherwise resume closer to live than
         this bridge/DSM can reliably serve (see that constant). Live
         forces a fresh reconnect on the same pipe rather than just
@@ -1473,7 +1473,7 @@ class WebSocketBridge:
 
         Either way, self._history_delta_seconds is updated too, via
         _set_history_delta rather than directly -- target_unix within
-        _MIN_HISTORY_DELTA_SECONDS of wall clock (a click right near
+        MIN_HISTORY_DELTA_SECONDS of wall clock (a click right near
         the live edge of the ruler) must clamp exactly like resume()
         landing there does, never asking DSM to play that close to
         live. A *later* reconnect -- caller-requested, or _pump's own

@@ -43,10 +43,14 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-untyped]
 
-from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset, Recording
+from surveillance.api.models import Camera, CameraStatus, Event, PtzPatrol, PtzPreset, Recording
 from surveillance.config import save_config, save_config_now
 from surveillance.services import ptz
-from surveillance.services.event import list_recording_presence, merge_intervals
+from surveillance.services.event import (
+    list_granular_events,
+    list_presence_and_events,
+    merge_intervals,
+)
 from surveillance.services.live import (
     AUDIO_PROTOCOLS,
     OFFLINE_PLACEHOLDER_URL,
@@ -56,7 +60,7 @@ from surveillance.services.live import (
 from surveillance.services.ptt import PttOccupiedError, PttSession
 from surveillance.services.recording import fetch_camera_thumbnail_at, find_recording_at
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
-from surveillance.services.ws_bridge import WebSocketBridge
+from surveillance.services.ws_bridge import MIN_HISTORY_DELTA_SECONDS, WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
 from surveillance.ui.rtsp_health import RtspHealthMonitor
@@ -113,6 +117,13 @@ _PRESENCE_DEBOUNCE_MS = 200
 # fetch every second; this caps it to an occasional trailing-edge
 # refresh instead.
 _PRESENCE_LIVE_REFRESH_SEC = 5.0
+
+# Fixed window Previous/Next event searches on either side of the
+# reference position -- same "cheap enough to call fresh per click"
+# precedent as recording.py's own _HISTORY_SEEK_WINDOW, rather than an
+# expanding search: a click that finds nothing just logs and does
+# nothing (see LiveView._seek_to_nearest_event).
+_EVENT_NAV_WINDOW_SECONDS = 7 * 86400
 
 
 class CameraSlot(Gtk.Box):
@@ -475,6 +486,18 @@ class LiveView(Gtk.Box):
         # newer seek -- landing late, after that newer one already
         # applied -- from one still worth acting on.
         self._seek_generation: int = 0
+        # Bumped per Previous/Next event click so a slower/older lookup
+        # resolving after a newer one (rapid repeated clicking is
+        # exactly what _last_event_nav_key below exists to make
+        # unnecessary) can't undo it -- see _on_event_nav_resolved.
+        self._event_nav_generation: int = 0
+        # (camera_id, start_time) of the event a Previous/Next click
+        # last landed on -- excluded from the next search in either
+        # direction so a seek's landed position sitting a little past
+        # that event (see _on_event_nav_resolved) doesn't just re-find
+        # it, while leaving every other close-by-but-distinct event
+        # still reachable one click at a time.
+        self._last_event_nav_key: tuple[int, int] | None = None
         # Timeline Pause/Play's own state -- distinct from
         # _streams_paused below (that one's for navigating away from
         # Live View entirely, this one's a deliberate user action that
@@ -494,7 +517,7 @@ class LiveView(Gtk.Box):
         # covered_end, spans). A view fully within [covered_start,
         # covered_end] is served from cache; anything else triggers a
         # fetch of the view padded by one window's width on each side,
-        # which replaces the entry (see _presence_covers/_refresh_presence)
+        # which replaces the entry (see _presence_covers/_refresh_timeline_data)
         # -- not a general interval-coverage set, just enough to avoid
         # re-fetching on the small pans/zooms this bar is actually used for.
         # Deliberately NOT consulted at all while following "now" (see
@@ -504,11 +527,15 @@ class LiveView(Gtk.Box):
         # trailing edge at whatever was true the first time it was ever
         # fetched, for every camera sharing that cache entry.
         self._presence_cache: dict[int, tuple[float, float, list[tuple[int, int]]]] = {}
+        # Event-marker cache, same shape/coverage rules as the presence
+        # cache above -- populated together from the same EnumInterval
+        # fetch (see _on_timeline_data_fetched), never independently.
+        self._event_cache: dict[int, tuple[float, float, list[Event]]] = {}
         self._presence_debounce_id = 0
         # Bumped per fetch batch so a slower-landing fetch superseded by
         # a newer view change never overwrites the cache with stale data
         # -- same technique as _seek_generation/_timeline_thumbnail_generation.
-        self._presence_generation = 0
+        self._timeline_data_generation = 0
         self._presence_last_live_fetch = 0.0
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
@@ -563,6 +590,8 @@ class LiveView(Gtk.Box):
         self.timeline.live_btn.connect("clicked", self._on_timeline_live_clicked)
         self.timeline.back_10s_btn.connect("clicked", self._on_timeline_back_10s)
         self.timeline.forward_10s_btn.connect("clicked", self._on_timeline_forward_10s)
+        self.timeline.prev_event_btn.connect("clicked", self._on_timeline_prev_event)
+        self.timeline.next_event_btn.connect("clicked", self._on_timeline_next_event)
         self.timeline.pause_btn.connect("clicked", self._on_timeline_pause_play)
         self.timeline.set_speed_callback(self._on_timeline_speed_selected)
         self.timeline.set_reverse_callback(self._on_timeline_reverse_selected)
@@ -775,7 +804,7 @@ class LiveView(Gtk.Box):
         self._thumbnail_frame.set_visible(False)
 
     # ------------------------------------------------------------------
-    # Recording presence
+    # Recording presence and event markers
     # ------------------------------------------------------------------
 
     def _on_timeline_view_changed(self, start: float, end: float, following: bool) -> None:
@@ -794,7 +823,7 @@ class LiveView(Gtk.Box):
             self._presence_last_live_fetch = time.time()
             # force=True: see _presence_cache's own comment for why the
             # live-follow path can't rely on the coverage cache.
-            self._refresh_presence(start, end, force=True)
+            self._refresh_timeline_data(start, end, force=True)
             return
         if self._presence_debounce_id:
             GLib.source_remove(self._presence_debounce_id)
@@ -804,22 +833,22 @@ class LiveView(Gtk.Box):
 
     def _on_presence_debounce_fire(self, start: float, end: float) -> bool:
         self._presence_debounce_id = 0
-        self._refresh_presence(start, end)
+        self._refresh_timeline_data(start, end)
         return False  # one-shot timeout, don't repeat
 
     def _request_presence_refresh(self) -> None:
-        """Re-derive presence for whatever the timeline's current view
-        covers, for a change to which cameras are active/focused rather
-        than to the view itself -- see the call sites in
+        """Re-derive presence/events for whatever the timeline's current
+        view covers, for a change to which cameras are active/focused
+        rather than to the view itself -- see the call sites in
         _set_timeline_focus_slot, _save_session, and
         _restore_layout_cameras.
         """
         if not hasattr(self, "timeline"):
             return  # still constructing -- _apply_layout runs before self.timeline exists
         start, end = self.timeline.canvas.get_view_range()
-        self._refresh_presence(start, end)
+        self._refresh_timeline_data(start, end)
 
-    def _active_presence_cameras(self) -> tuple[int | None, list[int]]:
+    def _active_timeline_cameras(self) -> tuple[int | None, list[int]]:
         """(focus_camera_id, active_camera_ids) for the current layout --
         an empty slot contributes nothing to either."""
         active_ids = []
@@ -836,20 +865,21 @@ class LiveView(Gtk.Box):
         cached = self._presence_cache.get(camera_id)
         return cached is not None and cached[0] <= start and cached[1] >= end
 
-    def _refresh_presence(self, start: float, end: float, force: bool = False) -> None:
-        """Fetch/update presence for whatever cameras are focused/active,
-        for the [start, end] view range. *force* skips the cache-coverage
-        check (see _presence_cache's own comment for why the live-follow
-        path needs this) -- callers other than the live-follow path leave
-        it False so a settled pan/zoom over already-covered territory
-        stays a cache hit."""
+    def _refresh_timeline_data(self, start: float, end: float, force: bool = False) -> None:
+        """Fetch/update presence and event markers for whatever cameras
+        are focused/active, for the [start, end] view range. *force*
+        skips the cache-coverage check (see _presence_cache's own
+        comment for why the live-follow path needs this) -- callers
+        other than the live-follow path leave it False so a settled
+        pan/zoom over already-covered territory stays a cache hit."""
         if not self.app.api:
             return
-        focus_camera_id, active_camera_ids = self._active_presence_cameras()
+        focus_camera_id, active_camera_ids = self._active_timeline_cameras()
         focus_id_list = [focus_camera_id] if focus_camera_id is not None else []
         all_ids = list(dict.fromkeys([*active_camera_ids, *focus_id_list]))
         if not all_ids:
             self.timeline.canvas.set_presence_data([], [])
+            self.timeline.canvas.set_event_markers([], [])
             return
 
         if force:
@@ -857,7 +887,7 @@ class LiveView(Gtk.Box):
         else:
             needed = [cid for cid in all_ids if not self._presence_covers(cid, start, end)]
         if not needed:
-            self._apply_presence_to_canvas(focus_camera_id, active_camera_ids)
+            self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
             return
 
         # Padded by one window's width on each side so re-panning by up
@@ -866,12 +896,15 @@ class LiveView(Gtk.Box):
         # comment for what this caching scheme deliberately doesn't do.
         pad = end - start
         fetch_start, fetch_end = start - pad, end + pad
+        camera_names = {cid: self._camera_name(cid) for cid in needed}
 
-        self._presence_generation += 1
-        generation = self._presence_generation
+        self._timeline_data_generation += 1
+        generation = self._timeline_data_generation
         run_async(
-            list_recording_presence(self.app.api, needed, int(fetch_start), int(fetch_end)),
-            callback=lambda result: self._on_presence_fetched(
+            list_presence_and_events(
+                self.app.api, needed, camera_names, int(fetch_start), int(fetch_end)
+            ),
+            callback=lambda result: self._on_timeline_data_fetched(
                 generation,
                 needed,
                 fetch_start,
@@ -880,26 +913,34 @@ class LiveView(Gtk.Box):
                 focus_camera_id,
                 active_camera_ids,
             ),
-            error_callback=lambda exc: log.debug("Presence fetch failed: %s", exc),
+            error_callback=lambda exc: log.debug("Timeline data fetch failed: %s", exc),
         )
 
-    def _on_presence_fetched(
+    def _camera_name(self, camera_id: int) -> str:
+        return next((c.name for c in self._cameras if c.id == camera_id), str(camera_id))
+
+    def _on_timeline_data_fetched(
         self,
         generation: int,
         requested_ids: list[int],
         fetch_start: float,
         fetch_end: float,
-        result: dict[int, list[tuple[int, int]]],
+        result: tuple[dict[int, list[tuple[int, int]]], list[Event]],
         focus_camera_id: int | None,
         active_camera_ids: list[int],
     ) -> None:
-        if generation != self._presence_generation:
+        if generation != self._timeline_data_generation:
             return  # superseded by a newer view change
+        presence, events = result
+        events_by_camera: dict[int, list[Event]] = {}
+        for ev in events:
+            events_by_camera.setdefault(ev.camera_id, []).append(ev)
         for cid in requested_ids:
-            self._presence_cache[cid] = (fetch_start, fetch_end, result.get(cid, []))
-        self._apply_presence_to_canvas(focus_camera_id, active_camera_ids)
+            self._presence_cache[cid] = (fetch_start, fetch_end, presence.get(cid, []))
+            self._event_cache[cid] = (fetch_start, fetch_end, events_by_camera.get(cid, []))
+        self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
 
-    def _apply_presence_to_canvas(
+    def _apply_timeline_data_to_canvas(
         self, focus_camera_id: int | None, active_camera_ids: list[int]
     ) -> None:
         focus_spans = (
@@ -915,6 +956,114 @@ class LiveView(Gtk.Box):
             ]
         )
         self.timeline.canvas.set_presence_data(focus_spans, layout_spans)
+
+        focus_events = (
+            [(ev.start_time, ev.stop_time) for ev in self._event_cache[focus_camera_id][2]]
+            if focus_camera_id is not None and focus_camera_id in self._event_cache
+            else []
+        )
+        layout_events = [
+            (ev.start_time, ev.stop_time)
+            for cid in active_camera_ids
+            for ev in self._event_cache.get(cid, (0.0, 0.0, []))[2]
+        ]
+        self.timeline.canvas.set_event_markers(focus_events, layout_events)
+
+    def _on_timeline_prev_event(self, _btn: Gtk.Button) -> None:
+        """Timeline's Previous event button -- always live (see
+        Timeline._build_toolbar), so a click while on Live drops the
+        whole layout into History mode first, the same as Back 10s."""
+        self._seek_to_nearest_event(forward=False)
+
+    def _on_timeline_next_event(self, _btn: Gtk.Button) -> None:
+        """Timeline's Next event button -- only reachable in History
+        mode (see Timeline.set_history_active), so there's always a
+        History position to search forward from."""
+        self._seek_to_nearest_event(forward=True)
+
+    def _seek_to_nearest_event(self, forward: bool) -> None:
+        """Find the nearest real event before/after the focus slot's
+        current position (or "now" if it's on Live), across every
+        camera in the active layout -- same scope as the presence bar's
+        own layout-accumulated row -- and seek the whole layout there
+        the same way a ruler click does, including dropping Live into
+        History.
+
+        A fixed search window rather than an expanding one, same
+        precedent as recording.py's own _HISTORY_SEEK_WINDOW: cheap
+        enough to call fresh per click, and a click with genuinely
+        nothing found just logs and does nothing rather than growing
+        the window indefinitely looking for a needle that isn't there.
+
+        Candidates within MIN_HISTORY_DELTA_SECONDS of wall clock are
+        skipped even when found -- WebSocketBridge would just clamp a
+        seek that close back to its own near-live floor anyway (see
+        _set_history_delta there), which for Next event could otherwise
+        mean landing back on the same clamped position repeatedly.
+        """
+        if not self.app.api or not self._active:
+            return
+        _, active_camera_ids = self._active_timeline_cameras()
+        if not active_camera_ids:
+            return
+        camera_names = {cid: self._camera_name(cid) for cid in active_camera_ids}
+        reference = self._focus_reference_time()
+        if forward:
+            from_time, to_time = int(reference), int(reference + _EVENT_NAV_WINDOW_SECONDS)
+        else:
+            from_time, to_time = int(reference - _EVENT_NAV_WINDOW_SECONDS), int(reference)
+
+        self._event_nav_generation += 1
+        generation = self._event_nav_generation
+        run_async(
+            list_granular_events(self.app.api, active_camera_ids, camera_names, from_time, to_time),
+            callback=lambda events, gen=generation, ref=reference: self._on_event_nav_resolved(
+                forward, gen, ref, events
+            ),
+            error_callback=lambda exc: log.error("Event lookup failed: %s", exc),
+        )
+
+    def _on_event_nav_resolved(
+        self, forward: bool, generation: int, reference: float, events: list[Event]
+    ) -> None:
+        """list_granular_events' result for one Previous/Next click.
+
+        Discarded if a newer click has fired since this lookup started
+        (see _event_nav_generation) -- rapid repeated clicking, exactly
+        the workaround _last_event_nav_key exists to make unnecessary,
+        would otherwise risk a slower/older lookup resolving after a
+        newer one and undoing its progress.
+        """
+        if generation != self._event_nav_generation:
+            return
+        now = time.time()
+        if forward:
+            candidates = [ev for ev in events if ev.start_time > reference]
+        else:
+            candidates = [ev for ev in events if ev.start_time < reference]
+        # A seek lands at-or-after the requested target (DSM rounds
+        # forward onto the next servable frame, never back), so a
+        # backward click's own landed position can sit a little past the
+        # event it just found -- close enough that it still passes the
+        # plain `<` filter above and would otherwise get re-selected as
+        # "nearest" on every subsequent Previous click, needing rapid
+        # repeated clicks to actually get past it. Excluding only that
+        # exact (camera, start_time) rather than a time window keeps
+        # other genuinely distinct events sitting close by still
+        # reachable one at a time. Matched on (camera_id, start_time),
+        # not Event.id -- that field is the *parent recording file's*
+        # id (see services.event._decode_camera_events), shared by every
+        # granular event decoded from the same file.
+        candidates = [
+            ev for ev in candidates if (ev.camera_id, ev.start_time) != self._last_event_nav_key
+        ]
+        candidates = [ev for ev in candidates if now - ev.start_time >= MIN_HISTORY_DELTA_SECONDS]
+        if not candidates:
+            log.info("No %s event found", "next" if forward else "previous")
+            return
+        nearest = min(candidates, key=lambda ev: abs(ev.start_time - reference))
+        self._last_event_nav_key = (nearest.camera_id, nearest.start_time)
+        self._on_timeline_seek(nearest.start_time)
 
     def _on_timeline_seek(self, timestamp: float) -> None:
         """TimelineCanvas.set_seek_callback target — seeks every active
@@ -1084,6 +1233,14 @@ class LiveView(Gtk.Box):
         if slot.index == self._timeline_focus_slot:
             self.timeline.canvas.set_history_position(position)
 
+    def _focus_reference_time(self) -> float:
+        """The focus slot's current History position, or wall-clock
+        "now" if it's on Live -- shared reference point for Back/Forward
+        10s (_flush_timeline_nudge) and Previous/Next event
+        (_seek_to_nearest_event)."""
+        position = self._slots[self._timeline_focus_slot]._history_position
+        return position if position is not None else time.time()
+
     def _on_timeline_live_clicked(self, _btn: Gtk.Button) -> None:
         """Timeline's Live button — return every slot currently playing
         recorded video back to its normal live stream."""
@@ -1128,9 +1285,7 @@ class LiveView(Gtk.Box):
         delta, self._pending_nudge_seconds = self._pending_nudge_seconds, 0.0
         if delta == 0 or not self._active:
             return
-        focus = self._slots[self._timeline_focus_slot]
-        reference = focus._history_position if focus._history_position is not None else time.time()
-        target = reference + delta
+        target = self._focus_reference_time() + delta
         self._nudge_seek_in_flight = True
         GLib.timeout_add_seconds(_NUDGE_RESOLVE_TIMEOUT_SECONDS, self._on_nudge_resolve_timeout)
         self._on_timeline_seek(target)

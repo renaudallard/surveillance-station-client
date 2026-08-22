@@ -1453,7 +1453,7 @@ class TestHistoryMode:
         # _current_history_target) and recomputes it from that on every
         # connect -- frozen here so this asserts the same exact value
         # regardless of how much real time construction-to-connect takes.
-        # Comfortably past _MIN_HISTORY_DELTA_SECONDS ahead of target,
+        # Comfortably past MIN_HISTORY_DELTA_SECONDS ahead of target,
         # or _set_history_delta's own floor would clamp it -- that
         # clamp has its own tests in TestPauseResume.
         monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
@@ -1742,7 +1742,7 @@ class TestPauseResume:
     async def test_entering_history_close_to_live_clamps_to_the_minimum_delta(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Entering History mode within _MIN_HISTORY_DELTA_SECONDS of
+        """Entering History mode within MIN_HISTORY_DELTA_SECONDS of
         wall clock -- a ruler click right near the live edge -- must
         clamp rather than ask DSM to play that close to live, the same
         floor seek()/resume() enforce (see _set_history_delta, the
@@ -1760,7 +1760,7 @@ class TestPauseResume:
         )
         await bridge.start()
 
-        expected = now - int(ws_bridge._MIN_HISTORY_DELTA_SECONDS)
+        expected = now - int(ws_bridge.MIN_HISTORY_DELTA_SECONDS)
         fields = dict(parse_qsl(fake.sent[0]))
         assert fields["start"] == str(expected - rec.start_time)
         await bridge.stop()
@@ -1791,7 +1791,7 @@ class TestPauseResume:
         clock[0] += 20
         near_live = int(clock[0]) - 3  # only 3s behind wall clock -- inside the floor
         clamped = await bridge.seek(rec, near_live)
-        assert clamped == int(clock[0]) - int(ws_bridge._MIN_HISTORY_DELTA_SECONDS)
+        assert clamped == int(clock[0]) - int(ws_bridge.MIN_HISTORY_DELTA_SECONDS)
 
         duration_ms = (rec.stop_time - rec.start_time) * 1000
         expected_offset_ms = min(duration_ms, (clamped - rec.start_time) * 1000)

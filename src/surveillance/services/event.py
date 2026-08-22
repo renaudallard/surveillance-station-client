@@ -126,9 +126,9 @@ async def _fetch_enum_interval(
 def merge_intervals(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Sort *spans* and merge every overlapping/adjacent pair.
 
-    Shared by list_recording_presence's per-camera merge and the Live
+    Shared by _decode_camera_presence's per-camera merge and the Live
     View timeline's own cross-camera OR union (see
-    LiveView._apply_presence_to_canvas) -- same operation either way.
+    LiveView._apply_timeline_data_to_canvas) -- same operation either way.
     """
     merged: list[tuple[int, int]] = []
     for start, stop in sorted(spans):
@@ -137,6 +137,60 @@ def merge_intervals(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
         else:
             merged.append((start, stop))
     return merged
+
+
+def _decode_camera_presence(cam: dict[str, Any]) -> list[tuple[int, int]]:
+    """One camera's recording-presence spans, from EnumInterval's own
+    per-file `event` list -- see list_recording_presence."""
+    spans = [
+        (rec["start"], rec["stop"])
+        for rec in cam.get("event", [])
+        if "start" in rec and "stop" in rec
+    ]
+    return merge_intervals(spans)
+
+
+def _decode_camera_events(
+    cam: dict[str, Any], camera_id: int, camera_name: str, from_time: int
+) -> list[Event]:
+    """One camera's real, short-duration events, decoded from
+    EnumInterval's event_map -- see list_granular_events."""
+    recordings = cam.get("event", [])
+    events: list[Event] = []
+    t = from_time
+    parent_idx = 0
+    for value, flag, reserved in cam.get("event_map", []):
+        duration = value * _EVENT_MAP_INTERVAL_SEC
+        run_start, run_stop = t, t + duration
+        t = run_stop
+        # A flag of 0/1 alone means "nothing happened" — but not if
+        # `reserved` is set: that's Object Removal Detection firing
+        # via overflow with nothing else in this bucket (see
+        # EVENT_BITMASK.md), a real event that must not be dropped.
+        if flag in _EVENT_MAP_NON_EVENT_FLAGS and not reserved:
+            continue
+
+        parent, parent_idx = _advance_to_parent(recordings, parent_idx, run_start)
+        if parent is None:
+            continue
+
+        events.append(
+            Event(
+                id=parent.get("id", 0),
+                camera_id=camera_id,
+                camera_name=camera_name,
+                event_type=flag,
+                start_time=run_start,
+                stop_time=run_stop,
+                # mountId/archId sit on the camera object, not the
+                # individual event entry, so they must come from cam.
+                mount_id=cam.get("mountId", 0),
+                arch_id=cam.get("archId", 0),
+                seek_offset=max(0, run_start - parent.get("start", run_start)),
+                reserved=reserved,
+            )
+        )
+    return events
 
 
 async def list_recording_presence(
@@ -157,15 +211,9 @@ async def list_recording_presence(
     cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
     result: dict[int, list[tuple[int, int]]] = {}
     for cam in cameras:
-        camera_id = cam.get("camera_id", 0)
-        spans = [
-            (rec["start"], rec["stop"])
-            for rec in cam.get("event", [])
-            if "start" in rec and "stop" in rec
-        ]
-        merged = merge_intervals(spans)
-        if merged:
-            result[camera_id] = merged
+        spans = _decode_camera_presence(cam)
+        if spans:
+            result[cam.get("camera_id", 0)] = spans
     return result
 
 
@@ -196,44 +244,45 @@ async def list_granular_events(
     for cam in cameras:
         camera_id = cam.get("camera_id", 0)
         camera_name = camera_names.get(camera_id, str(camera_id))
-        recordings = cam.get("event", [])
-
-        t = from_time
-        parent_idx = 0
-        for value, flag, reserved in cam.get("event_map", []):
-            duration = value * _EVENT_MAP_INTERVAL_SEC
-            run_start, run_stop = t, t + duration
-            t = run_stop
-            # A flag of 0/1 alone means "nothing happened" — but not if
-            # `reserved` is set: that's Object Removal Detection firing
-            # via overflow with nothing else in this bucket (see
-            # EVENT_BITMASK.md), a real event that must not be dropped.
-            if flag in _EVENT_MAP_NON_EVENT_FLAGS and not reserved:
-                continue
-
-            parent, parent_idx = _advance_to_parent(recordings, parent_idx, run_start)
-            if parent is None:
-                continue
-
-            events.append(
-                Event(
-                    id=parent.get("id", 0),
-                    camera_id=camera_id,
-                    camera_name=camera_name,
-                    event_type=flag,
-                    start_time=run_start,
-                    stop_time=run_stop,
-                    # mountId/archId sit on the camera object, not the
-                    # individual event entry, so they must come from cam.
-                    mount_id=cam.get("mountId", 0),
-                    arch_id=cam.get("archId", 0),
-                    seek_offset=max(0, run_start - parent.get("start", run_start)),
-                    reserved=reserved,
-                )
-            )
+        events.extend(_decode_camera_events(cam, camera_id, camera_name, from_time))
 
     events.sort(key=lambda e: e.start_time, reverse=True)
     return events
+
+
+async def list_presence_and_events(
+    api: SurveillanceAPI,
+    camera_ids: list[int],
+    camera_names: dict[int, str],
+    from_time: int,
+    to_time: int,
+) -> tuple[dict[int, list[tuple[int, int]]], list[Event]]:
+    """list_recording_presence and list_granular_events together, off a
+    single EnumInterval call -- for a caller needing both (the Live
+    View timeline, which shows presence and event markers on the same
+    bar and refreshes them on the same pan/zoom/live-tick cadence),
+    fetching this same per-camera data twice would double the request
+    rate for no benefit.
+
+    Returns (presence, events) exactly as the two functions would
+    individually.
+    """
+    if not camera_ids:
+        return {}, []
+
+    cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
+    presence: dict[int, list[tuple[int, int]]] = {}
+    events: list[Event] = []
+    for cam in cameras:
+        camera_id = cam.get("camera_id", 0)
+        spans = _decode_camera_presence(cam)
+        if spans:
+            presence[camera_id] = spans
+        camera_name = camera_names.get(camera_id, str(camera_id))
+        events.extend(_decode_camera_events(cam, camera_id, camera_name, from_time))
+
+    events.sort(key=lambda e: e.start_time, reverse=True)
+    return presence, events
 
 
 async def list_events(

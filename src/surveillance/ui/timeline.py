@@ -25,13 +25,13 @@
 
 """Shared Live View timeline.
 
-Visual scaffold, in progress: the ruler is live (a live-updating time
-scale, pan, zoom, and click-to-seek all work), and so are the Live,
-+-10s, Pause/Play, and speed-dropdown buttons. The recording-presence
-bar shows real data (see set_presence_data), split into the focus-slot
-and layout-accumulated rows LiveView feeds it; event markers over that
-bar are a deliberately separate next step, not yet started. The
-event-jump buttons are still no-ops too.
+The ruler is live (a live-updating time scale, pan, zoom, and
+click-to-seek all work), and so are the Live, +-10s, Pause/Play, and
+speed-dropdown buttons. The recording-presence bar shows real data
+(see set_presence_data), split into the focus-slot and
+layout-accumulated rows LiveView feeds it, with real event markers
+(see set_event_markers) overlaid on each. prev_event_btn/next_event_btn
+jump to the nearest event on either side of the current position.
 """
 
 from __future__ import annotations
@@ -226,6 +226,12 @@ class TimelineCanvas(Gtk.DrawingArea):
         # only knows how to paint whatever it was last given.
         self._focus_presence: Sequence[tuple[float, float]] = []
         self._layout_presence: Sequence[tuple[float, float]] = []
+        # Event-marker spans (start, stop) overlaid on the same two rows
+        # -- see set_event_markers. Same focus/layout split and same
+        # data ownership (LiveView fetches, canvas only paints) as the
+        # presence spans above.
+        self._focus_events: Sequence[tuple[float, float]] = []
+        self._layout_events: Sequence[tuple[float, float]] = []
         self._view_changed_callback: Callable[[float, float, bool], None] | None = None
 
     def set_history_position(self, timestamp: float | None) -> None:
@@ -248,6 +254,22 @@ class TimelineCanvas(Gtk.DrawingArea):
         """
         self._focus_presence = focus_spans
         self._layout_presence = layout_spans
+        self.queue_draw()
+
+    def set_event_markers(
+        self,
+        focus_events: Sequence[tuple[float, float]],
+        layout_events: Sequence[tuple[float, float]],
+    ) -> None:
+        """Set the event-marker spans overlaid on the same two rows
+        set_presence_data fills: real motion/alarm events for the focus
+        slot's own camera, and the plain union across every camera in
+        the active layout (see LiveView._apply_timeline_data_to_canvas).
+        Same (start, stop)-unix-timestamp, unsorted/unclipped shape as
+        set_presence_data.
+        """
+        self._focus_events = focus_events
+        self._layout_events = layout_events
         self.queue_draw()
 
     def set_view_changed_callback(
@@ -504,8 +526,10 @@ class TimelineCanvas(Gtk.DrawingArea):
         # Recording-presence bar: focus-slot row on top, layout-
         # accumulated (plain OR across every camera in the active
         # layout) row below it — grey while showing a History position
-        # instead of "now" (see _HISTORY_PRESENCE_COLOR). Event markers
-        # (item 11.l) will eventually overlay this, not yet implemented.
+        # instead of "now" (see _HISTORY_PRESENCE_COLOR). Real event
+        # markers (see set_event_markers) overlay the same two rows,
+        # drawn next in the layout's own warning color so they stand
+        # out against the presence fill beneath them.
         presence_y = _BUBBLE_HEIGHT + _RULER_HEIGHT
         row_height = _PRESENCE_HEIGHT / 2
         presence_color = _HISTORY_PRESENCE_COLOR if self._history_position is not None else accent
@@ -514,14 +538,18 @@ class TimelineCanvas(Gtk.DrawingArea):
             (self._focus_presence, presence_y),
             (self._layout_presence, presence_y + row_height),
         ):
-            for span_start, span_stop in spans:
-                if span_stop < start or span_start > end:
-                    continue
-                sx0 = max(0.0, x_for(span_start))
-                sx1 = min(float(width), x_for(span_stop))
-                if sx1 > sx0:
-                    cr.rectangle(sx0, row_y, sx1 - sx0, row_height)
-                    cr.fill()
+            self._draw_spans(cr, spans, row_y, row_height, start, end, x_for, width)
+
+        # A real motion/alarm event is often only a few seconds long --
+        # a min_width floor keeps it visible rather than rounding away
+        # to sub-pixel width at a wide zoom.
+        warning = self._theme_color("warning_color", (0.9, 0.6, 0.1))
+        cr.set_source_rgb(*warning)
+        for events, row_y in (
+            (self._focus_events, presence_y),
+            (self._layout_events, presence_y + row_height),
+        ):
+            self._draw_spans(cr, events, row_y, row_height, start, end, x_for, width, min_width=2.0)
 
         # Playback marker: the focus slot's History position when it has
         # one, otherwise "now" — the same blue line either way, since
@@ -602,6 +630,35 @@ class TimelineCanvas(Gtk.DrawingArea):
         cr.set_font_size(_BUBBLE_FONT_SIZE)
         cr.move_to(center_x - time_extents.width / 2 - time_extents.x_bearing, time_baseline)
         cr.show_text(time_text)
+
+    @staticmethod
+    def _draw_spans(
+        cr: cairo.Context,
+        spans: Sequence[tuple[float, float]],
+        row_y: float,
+        row_height: float,
+        view_start: float,
+        view_end: float,
+        x_for: Callable[[float], float],
+        width: int,
+        min_width: float = 0.0,
+    ) -> None:
+        """Fill one row with whichever of *spans* are visible, clipped to
+        the canvas edges -- shared by the presence and event-marker rows
+        in _draw, which differ only in color and (for events) a
+        min_width floor so a short-duration event stays visible rather
+        than rounding away to sub-pixel width at a wide zoom. Assumes
+        cr's source color is already set by the caller.
+        """
+        for span_start, span_stop in spans:
+            if span_stop < view_start or span_start > view_end:
+                continue
+            sx0 = max(0.0, x_for(span_start))
+            sx1 = min(float(width), x_for(span_stop))
+            w = max(min_width, sx1 - sx0)
+            if w > 0:
+                cr.rectangle(sx0, row_y, w, row_height)
+                cr.fill()
 
     @staticmethod
     def _rounded_rect(cr: cairo.Context, x: float, y: float, w: float, h: float, r: float) -> None:
@@ -887,10 +944,12 @@ class Timeline(Gtk.Box):
         self.back_10s_btn.set_tooltip_text("Back 10s")
         transport.append(self.back_10s_btn)
 
-        prev_event_btn = Gtk.Button()
-        prev_event_btn.set_icon_name("go-previous-symbolic")
-        prev_event_btn.set_tooltip_text("Previous event")
-        transport.append(prev_event_btn)
+        # Public (like back_10s_btn): stays live in both modes -- a
+        # click while Live drops into History first, same as Back 10s.
+        self.prev_event_btn = Gtk.Button()
+        self.prev_event_btn.set_icon_name("go-previous-symbolic")
+        self.prev_event_btn.set_tooltip_text("Previous event")
+        transport.append(self.prev_event_btn)
 
         # Public (like back_10s_btn/live_btn): LiveView owns what
         # pausing/resuming means for each slot, the same division of
@@ -907,10 +966,12 @@ class Timeline(Gtk.Box):
         # box so set_history_active can toggle all three as one unit.
         self._history_only_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        next_event_btn = Gtk.Button()
-        next_event_btn.set_icon_name("go-next-symbolic")
-        next_event_btn.set_tooltip_text("Next event")
-        self._history_only_box.append(next_event_btn)
+        # Public (like forward_10s_btn/live_btn): only reachable in
+        # History mode, same as Forward 10s -- nothing is "ahead" of live.
+        self.next_event_btn = Gtk.Button()
+        self.next_event_btn.set_icon_name("go-next-symbolic")
+        self.next_event_btn.set_tooltip_text("Next event")
+        self._history_only_box.append(self.next_event_btn)
 
         self.forward_10s_btn = Gtk.Button()
         self.forward_10s_btn.set_icon_name("media-seek-forward-symbolic")

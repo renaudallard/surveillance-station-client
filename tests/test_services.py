@@ -517,6 +517,57 @@ class TestEventService:
         assert presence == {}
         mock_request.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_list_presence_and_events_matches_the_separate_calls(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """list_presence_and_events must decode the exact same presence
+        and events a caller would get from list_recording_presence and
+        list_granular_events separately -- it exists only to avoid a
+        second round trip for the same EnumInterval data, not to change
+        what either half returns."""
+        from surveillance.services.event import list_granular_events, list_presence_and_events
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 1,
+                        "mountId": 7,
+                        "archId": 3,
+                        "event": [{"id": 555, "start": from_time, "stop": from_time + 100}],
+                        "event_map": [
+                            [2, 1, 0],  # 10s baseline
+                            [3, 513, 0],  # 15s real event
+                        ],
+                    }
+                ]
+            ]
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            presence, events = await list_presence_and_events(
+                api, [1], {1: "Front Door"}, from_time, from_time + 100
+            )
+            expected_events = await list_granular_events(
+                api, [1], {1: "Front Door"}, from_time, from_time + 100
+            )
+
+        assert presence == {1: [(from_time, from_time + 100)]}
+        assert events == expected_events
+
+    @pytest.mark.asyncio
+    async def test_list_presence_and_events_no_cameras(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import list_presence_and_events
+
+        with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
+            presence, events = await list_presence_and_events(api, [], {}, 1700000000, 1700000100)
+
+        assert presence == {}
+        assert events == []
+        mock_request.assert_not_called()
+
 
 class TestLicenseService:
     @pytest.mark.asyncio

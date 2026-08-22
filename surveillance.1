@@ -98,7 +98,15 @@ every camera in the layout; Previous stays available in Live mode
 (dropping into History first, like Back 10s), while Next is
 History-only, like Forward 10s. Events within 10 seconds of wall clock
 are skipped, since a seek that close would just be clamped back to the
-live edge anyway.
+live edge anyway. A calendar button opens a date/time picker, its own
+days marked and any day without a recording (across the current
+layout) refused, and its
+.B Jump
+button greyed out until the exact date/time selected falls within a
+real recording; jumping there re-centers the timeline at its default
+zoom, while Back/Forward 10s and Previous/Next event instead just pan
+(at whatever zoom is already set) if their own target would otherwise
+land off-screen.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.

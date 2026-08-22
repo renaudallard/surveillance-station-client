@@ -27,11 +27,12 @@
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -49,6 +50,7 @@ from surveillance.services import ptz
 from surveillance.services.event import (
     list_granular_events,
     list_presence_and_events,
+    list_recording_presence,
     merge_intervals,
 )
 from surveillance.services.live import (
@@ -498,6 +500,11 @@ class LiveView(Gtk.Box):
         # it, while leaving every other close-by-but-distinct event
         # still reachable one click at a time.
         self._last_event_nav_key: tuple[int, int] | None = None
+        # Bumped per calendar-popover month view so a slower/older
+        # availability fetch resolving after a newer one (fast month
+        # navigation) can't apply stale marks to the now-different
+        # month -- see _on_calendar_availability_fetched.
+        self._calendar_generation: int = 0
         # Timeline Pause/Play's own state -- distinct from
         # _streams_paused below (that one's for navigating away from
         # Live View entirely, this one's a deliberate user action that
@@ -595,6 +602,9 @@ class LiveView(Gtk.Box):
         self.timeline.pause_btn.connect("clicked", self._on_timeline_pause_play)
         self.timeline.set_speed_callback(self._on_timeline_speed_selected)
         self.timeline.set_reverse_callback(self._on_timeline_reverse_selected)
+        self.timeline.set_jump_callback(self._on_calendar_jump)
+        self.timeline.set_calendar_initial_datetime_callback(self._calendar_initial_datetime)
+        self.timeline.set_calendar_month_changed_callback(self._on_calendar_month_changed)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.grid)
@@ -1065,6 +1075,88 @@ class LiveView(Gtk.Box):
         self._last_event_nav_key = (nearest.camera_id, nearest.start_time)
         self._on_timeline_seek(nearest.start_time)
 
+    # ------------------------------------------------------------------
+    # Calendar jump
+    # ------------------------------------------------------------------
+
+    def _calendar_initial_datetime(self) -> datetime:
+        """Timeline.set_calendar_initial_datetime_callback target -- the
+        popover opens to wherever the focus slot currently is, same
+        reference point as Back/Forward 10s and Previous/Next event."""
+        return datetime.fromtimestamp(self._focus_reference_time())
+
+    def _on_calendar_jump(self, dt: datetime) -> None:
+        """Timeline.set_jump_callback target -- seeks the whole layout
+        there the same way a ruler click does, including dropping Live
+        into History. No day-existence re-check here: the picker itself
+        already refused any day without a layout-accumulated recording
+        (see _on_calendar_month_changed), and a specific time of day
+        within an available day is deliberately never checked (a click
+        landing in a same-day gap is exactly what a ruler click already
+        handles -- nearest recording, or nothing found).
+
+        Unlike a ruler click, this can land far outside whatever the
+        timeline currently shows -- normalizes zoom and centers the
+        view on the target first (see TimelineCanvas.center_on) so the
+        jump doesn't leave the marker off-screen, or inherit whatever
+        zoom/pan the timeline happened to be left at.
+        """
+        self.timeline.canvas.center_on(dt.timestamp())
+        self._on_timeline_seek(dt.timestamp())
+
+    def _on_calendar_month_changed(self, year: int, month: int) -> None:
+        """Timeline.set_calendar_month_changed_callback target -- fetch
+        which days of (year, month) have any recording, and the merged
+        recording spans themselves, across every camera in the active
+        layout, for the picker's own day-existence marking/refusal and
+        exact-time Jump validation (see DateTimePicker.
+        set_month_availability)."""
+        if not self.app.api:
+            return
+        _, active_camera_ids = self._active_timeline_cameras()
+        if not active_camera_ids:
+            return
+        month_start = datetime(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        month_end = datetime(year, month, last_day, 23, 59, 59)
+
+        self._calendar_generation += 1
+        generation = self._calendar_generation
+        run_async(
+            list_recording_presence(
+                self.app.api,
+                active_camera_ids,
+                int(month_start.timestamp()),
+                int(month_end.timestamp()),
+            ),
+            callback=lambda result, gen=generation: self._on_calendar_availability_fetched(
+                gen, year, month, result
+            ),
+            error_callback=lambda exc: log.debug("Calendar availability fetch failed: %s", exc),
+        )
+
+    def _on_calendar_availability_fetched(
+        self,
+        generation: int,
+        year: int,
+        month: int,
+        result: dict[int, list[tuple[int, int]]],
+    ) -> None:
+        if generation != self._calendar_generation:
+            return  # superseded by a newer month view
+        days: set[int] = set()
+        all_spans: list[tuple[int, int]] = []
+        for spans in result.values():
+            all_spans.extend(spans)
+            for span_start, span_stop in spans:
+                day = datetime.fromtimestamp(span_start).date()
+                end_day = datetime.fromtimestamp(span_stop).date()
+                while day <= end_day:
+                    if day.year == year and day.month == month:
+                        days.add(day.day)
+                    day += timedelta(days=1)
+        self.timeline.set_calendar_month_availability(year, month, days, merge_intervals(all_spans))
+
     def _on_timeline_seek(self, timestamp: float) -> None:
         """TimelineCanvas.set_seek_callback target — seeks every active
         slot with a camera into History mode at *timestamp*, each
@@ -1082,12 +1174,21 @@ class LiveView(Gtk.Box):
         does at its own level: a seek is "go here and play", so leaving
         the toolbar showing Play (and every slot's own player still
         locally paused) after this would read as still paused when it
-        isn't."""
+        isn't.
+
+        Pans (without changing zoom) to keep the target visible -- see
+        TimelineCanvas.ensure_visible -- so Back/Forward 10s and
+        Previous/Next event, which can each land outside whatever the
+        timeline currently shows, never leave the marker off-screen. A
+        no-op for a ruler click, which can only ever target something
+        already visible.
+        """
         if self._timeline_paused:
             self._timeline_paused = False
             self.timeline.set_paused(False)
             for slot_idx in self._active:
                 self._slots[slot_idx].player.set_paused(False)
+        self.timeline.canvas.ensure_visible(timestamp)
         target_unix = int(timestamp)
         self._seek_generation += 1
         generation = self._seek_generation

@@ -48,6 +48,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
+from surveillance.ui.date_time_picker import DateTimePicker
 from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier_zoom_icon
 
 # Candidate tick spacings (seconds); the smallest that still leaves each
@@ -304,6 +305,43 @@ class TimelineCanvas(Gtk.DrawingArea):
         self._window_seconds = _DEFAULT_WINDOW_SECONDS
         self._view_end = time.time()
         self._following = True
+        self._notify_view_changed()
+        self.queue_draw()
+
+    def center_on(self, timestamp: float) -> None:
+        """Reset to the default zoom and pan so *timestamp* sits in the
+        middle of the view -- used by the calendar Jump button so a
+        jump to some other day doesn't inherit whatever zoom/pan level
+        the timeline happened to be left at. Clamped to "now" like any
+        other pan/zoom (see _clamp_to_live): a target too close to live
+        for centering to fit without showing time past "now" just pins
+        to the live edge instead, the same as panning there by hand
+        would.
+        """
+        self._window_seconds = _DEFAULT_WINDOW_SECONDS
+        self._view_end = timestamp + _DEFAULT_WINDOW_SECONDS / 2
+        self._clamp_to_live()
+        self._notify_view_changed()
+        self.queue_draw()
+
+    def ensure_visible(self, timestamp: float) -> None:
+        """Pan, at the current zoom level, so *timestamp* is visible --
+        a no-op if it already is. Unlike center_on (the calendar Jump's
+        own always-recenter-and-reset-zoom), this leaves window_seconds
+        untouched: Back/Forward 10s and Previous/Next event are a small
+        nudge from wherever the user already zoomed/panned to, and
+        resetting the zoom on every one of those clicks would be
+        surprising in a way it isn't for a jump to a whole other day.
+        Called unconditionally from every seek (see LiveView.
+        _on_timeline_seek), including a ruler click -- always a no-op
+        there, since a click can only ever land somewhere already on
+        screen. Clamped to "now" like any other pan (see _clamp_to_live).
+        """
+        start, end = self.get_view_range()
+        if start <= timestamp <= end:
+            return
+        self._view_end = timestamp + self._window_seconds / 2
+        self._clamp_to_live()
         self._notify_view_changed()
         self.queue_draw()
 
@@ -676,10 +714,10 @@ class Timeline(Gtk.Box):
     """Shared timeline strip mounted below the Live View grid.
 
     The current-time label, the canvas ruler, the zoom buttons, and
-    click-to-seek/Live/+-10s/Pause/speed (see canvas.set_seek_callback/
-    live_btn/back_10s_btn/forward_10s_btn/pause_btn/set_speed_callback)
-    are live; the event-jump buttons are still placeholders with no
-    behavior wired up yet.
+    click-to-seek/Live/+-10s/Pause/speed/event-jump/calendar (see
+    canvas.set_seek_callback/live_btn/back_10s_btn/forward_10s_btn/
+    pause_btn/set_speed_callback/prev_event_btn/next_event_btn/
+    set_jump_callback) are all live.
     """
 
     def __init__(self) -> None:
@@ -695,6 +733,12 @@ class Timeline(Gtk.Box):
         # re-invokes _speed_callback/_reverse_callback for a change
         # LiveView already knows about.
         self._suppress_playback_callback = False
+        # Calendar popover's own callbacks -- see set_jump_callback,
+        # set_calendar_initial_datetime_callback, and
+        # set_calendar_month_changed_callback for what each does.
+        self._jump_callback: Callable[[datetime], None] | None = None
+        self._calendar_initial_datetime_callback: Callable[[], datetime] | None = None
+        self._calendar_month_changed_callback: Callable[[int, int], None] | None = None
 
         self.canvas = TimelineCanvas()
         self.canvas.set_margin_start(8)
@@ -775,6 +819,91 @@ class Timeline(Gtk.Box):
         self._suppress_playback_callback = True
         target.set_active(True)
         self._suppress_playback_callback = False
+
+    def set_jump_callback(self, callback: Callable[[datetime], None]) -> None:
+        """*callback* receives the datetime chosen in the calendar
+        popover's Jump button -- LiveView owns turning that into a seek,
+        the same division of responsibility as the seek/hover callbacks.
+        """
+        self._jump_callback = callback
+
+    def set_calendar_initial_datetime_callback(self, callback: Callable[[], datetime]) -> None:
+        """*callback* supplies the datetime the calendar popover opens
+        to -- LiveView answers with the focus slot's current position
+        (or "now" if it's on Live), the canvas has no notion of either.
+        """
+        self._calendar_initial_datetime_callback = callback
+
+    def set_calendar_month_changed_callback(self, callback: Callable[[int, int], None]) -> None:
+        """*callback* receives (year, month) [1-12] whenever the
+        calendar popover's displayed month changes -- LiveView answers
+        with that month's own recording-presence days via
+        set_calendar_month_availability.
+        """
+        self._calendar_month_changed_callback = callback
+
+    def set_calendar_month_availability(
+        self, year: int, month: int, days: set[int], intervals: list[tuple[int, int]]
+    ) -> None:
+        """Forward to the picker -- see DateTimePicker.set_month_availability."""
+        self._date_time_picker.set_month_availability(year, month, days, intervals)
+
+    def _build_calendar_popover(self) -> Gtk.Popover:
+        """DateTimePicker plus Cancel/Jump buttons -- same popover-on-a-
+        MenuButton shape as _build_speed_popover, just for a single
+        point in time instead of a radio-button list. Jump starts
+        (and stays) insensitive until the picker's own exact-time
+        validity check passes (see DateTimePicker.
+        set_validity_changed_callback) -- there's nothing useful to
+        jump to otherwise, and closing the popover on a Jump click that
+        silently did nothing read as "it jumped to wherever it was
+        already at" rather than "that selection had no recording"."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        self._date_time_picker = DateTimePicker()
+        self._date_time_picker.set_month_changed_callback(self._on_calendar_month_changed)
+        box.append(self._date_time_picker)
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_row.set_homogeneous(True)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", self._on_calendar_cancel_clicked)
+        button_row.append(cancel_btn)
+
+        self._jump_btn = Gtk.Button(label="Jump")
+        self._jump_btn.add_css_class("suggested-action")
+        self._jump_btn.connect("clicked", self._on_calendar_jump_clicked)
+        button_row.append(self._jump_btn)
+
+        self._date_time_picker.set_validity_changed_callback(self._jump_btn.set_sensitive)
+
+        box.append(button_row)
+
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        popover.connect("show", self._on_calendar_popover_show)
+        return popover
+
+    def _on_calendar_popover_show(self, _popover: Gtk.Popover) -> None:
+        if self._calendar_initial_datetime_callback is not None:
+            self._date_time_picker.set_datetime(self._calendar_initial_datetime_callback())
+
+    def _on_calendar_month_changed(self, year: int, month: int) -> None:
+        if self._calendar_month_changed_callback is not None:
+            self._calendar_month_changed_callback(year, month)
+
+    def _on_calendar_cancel_clicked(self, _btn: Gtk.Button) -> None:
+        self._calendar_btn.popdown()
+
+    def _on_calendar_jump_clicked(self, _btn: Gtk.Button) -> None:
+        self._calendar_btn.popdown()
+        if self._jump_callback is not None:
+            self._jump_callback(self._date_time_picker.get_datetime())
 
     def _build_speed_popover(self) -> Gtk.Popover:
         """Radio-button popover for _speed_btn -- same shape as
@@ -882,10 +1011,11 @@ class Timeline(Gtk.Box):
         download_btn.set_tooltip_text("Download")
         button_cluster.append(download_btn)
 
-        calendar_btn = Gtk.Button()
-        calendar_btn.set_icon_name("x-office-calendar-symbolic")
-        calendar_btn.set_tooltip_text("Jump to date/time")
-        button_cluster.append(calendar_btn)
+        self._calendar_btn = Gtk.MenuButton()
+        self._calendar_btn.set_icon_name("x-office-calendar-symbolic")
+        self._calendar_btn.set_tooltip_text("Jump to date/time")
+        self._calendar_btn.set_popover(self._build_calendar_popover())
+        button_cluster.append(self._calendar_btn)
 
         # Same zoom_at() the canvas's own scroll-wheel handler uses, just
         # centered on the canvas midpoint since a button click has no

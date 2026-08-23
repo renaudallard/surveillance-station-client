@@ -23,14 +23,22 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Tests for debug-log credential redaction."""
+"""Tests for debug-log credential redaction and --log-file handling."""
 
 from __future__ import annotations
 
 import io
 import logging
+from pathlib import Path
 
-from surveillance.__main__ import _LOG_FORMAT, _RedactFormatter
+from surveillance import __main__ as main_module
+from surveillance.__main__ import (
+    _LOG_FORMAT,
+    _clean_completed_logs,
+    _mark_log_complete,
+    _parse_log_file_arg,
+    _RedactFormatter,
+)
 
 
 def _emit(msg: str, *args: object, exc: BaseException | None = None) -> str:
@@ -90,3 +98,81 @@ class TestRedaction:
     def test_plain_url_keeps_host(self) -> None:
         out = _emit("connecting to %s", "wss://nas:5001/webman/3rdparty/x?api=y")
         assert "wss://nas:5001/webman/3rdparty/x?api=y" in out
+
+
+class TestParseLogFileArg:
+    def test_absent_is_none(self) -> None:
+        value, argv = _parse_log_file_arg(["surveillance", "--debug"])
+        assert value is None
+        assert argv == ["surveillance", "--debug"]
+
+    def test_bare_is_empty_string(self) -> None:
+        value, argv = _parse_log_file_arg(["surveillance", "--log-file", "--debug"])
+        assert value == ""
+        assert argv == ["surveillance", "--debug"]
+
+    def test_with_path(self) -> None:
+        value, argv = _parse_log_file_arg(["surveillance", "--log-file=/var/log/run.log"])
+        assert value == "/var/log/run.log"
+        assert argv == ["surveillance"]
+
+    def test_repeated_last_one_wins_and_all_removed(self) -> None:
+        value, argv = _parse_log_file_arg(
+            ["surveillance", "--log-file=/var/log/a.log", "--log-file=/var/log/b.log"]
+        )
+        assert value == "/var/log/b.log"
+        assert argv == ["surveillance"]
+
+    def test_other_args_untouched_and_ordered(self) -> None:
+        value, argv = _parse_log_file_arg(["surveillance", "--debug", "--log-file", "extra"])
+        assert value == ""
+        assert argv == ["surveillance", "--debug", "extra"]
+
+
+class TestCleanCompletedLogs:
+    def test_removes_log_and_sentinel_for_completed_session(self, tmp_path: Path) -> None:
+        log = tmp_path / "debug-20260101T000000.log"
+        sentinel = tmp_path / "debug-20260101T000000.log.complete"
+        log.write_text("some log content")
+        sentinel.touch()
+
+        _clean_completed_logs(tmp_path)
+
+        assert not log.exists()
+        assert not sentinel.exists()
+
+    def test_keeps_log_with_no_sentinel(self, tmp_path: Path) -> None:
+        log = tmp_path / "debug-20260101T000000.log"
+        log.write_text("a crash log, never marked complete")
+
+        _clean_completed_logs(tmp_path)
+
+        assert log.exists()
+
+    def test_ignores_unrelated_files(self, tmp_path: Path) -> None:
+        other = tmp_path / "notes.txt"
+        other.write_text("unrelated")
+
+        _clean_completed_logs(tmp_path)
+
+        assert other.exists()
+
+    def test_empty_directory_is_a_no_op(self, tmp_path: Path) -> None:
+        _clean_completed_logs(tmp_path)  # must not raise
+
+
+class TestMarkLogComplete:
+    def test_touches_the_configured_path(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        sentinel = tmp_path / "debug-20260101T000000.log.complete"
+        monkeypatch.setattr(main_module, "_log_complete_path", sentinel)  # type: ignore[attr-defined]
+
+        _mark_log_complete()
+
+        assert sentinel.exists()
+
+    def test_no_op_when_unset(self, monkeypatch: object) -> None:
+        monkeypatch.setattr(main_module, "_log_complete_path", None)  # type: ignore[attr-defined]
+
+        _mark_log_complete()  # must not raise

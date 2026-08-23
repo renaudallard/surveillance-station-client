@@ -53,8 +53,18 @@ def _data_dir() -> Path:
     return base / "surveillance-station"
 
 
+def _state_dir() -> Path:
+    # Logs specifically -- XDG_STATE_HOME is where the spec puts state
+    # that should persist but isn't precious enough for XDG_DATA_HOME
+    # (which holds actual user content here, e.g. snapshots).
+    xdg = os.environ.get("XDG_STATE_HOME", "")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return base / "surveillance-station"
+
+
 CONFIG_DIR = _config_dir()
 DATA_DIR = _data_dir()
+STATE_DIR = _state_dir()
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 

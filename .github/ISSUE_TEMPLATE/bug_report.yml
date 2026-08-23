@@ -61,11 +61,11 @@ body:
     attributes:
       label: Debug logs
       description: |
-        Run with `--debug`, reproduce the issue, and paste the logs here.
+        Run with `--debug --log-file=...`, reproduce the issue, and paste the logs here.
         Passwords and session tokens are automatically redacted in the log output.
 
         ```sh
-        surveillance --debug 2> /tmp/debug.log
+        surveillance --debug --log-file=/tmp/debug.log 2>/dev/null
         ```
       render: text
     validations:

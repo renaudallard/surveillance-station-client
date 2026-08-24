@@ -49,6 +49,10 @@ _REDACT_PARAMS = re.compile(
 # overrides from [camera_overrides].
 _REDACT_USERINFO = re.compile(r"(\w+://)[^/\s@]+@")
 
+# GLib prints these from inside app.run() and returns without ever
+# starting the application, so a log file opened for one is litter.
+_HELP_FLAGS = frozenset({"-h", "--help", "--help-all", "--help-gapplication"})
+
 
 class _RedactFormatter(logging.Formatter):
     """Strip credentials from log output.
@@ -82,7 +86,7 @@ def main() -> None:
     for handler in logging.getLogger().handlers:
         handler.setFormatter(_RedactFormatter(_LOG_FORMAT))
 
-    if log_file_arg is not None:
+    if log_file_arg is not None and _HELP_FLAGS.isdisjoint(sys.argv):
         # A log destination the user got wrong should read like a failed
         # shell redirection, not like a crash in the app they were trying
         # to record: this runs before the window exists.

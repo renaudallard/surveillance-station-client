@@ -119,6 +119,11 @@ def install(log_file_arg: str, formatter: logging.Formatter) -> Path:
         # with mode="w" and write into it at independent offsets, which
         # loses one session's log and splices a fragment into the other.
         log_path = log_dir / f"debug-{datetime.now():%Y%m%dT%H%M%S}-{os.getpid()}.log"
+        # 0600 like the config file. Redaction covers credentials, not the
+        # NAS host names, user names and camera names the log is full of.
+        # Only for the file we name ourselves: an explicit --log-file=PATH
+        # is the caller's own file, on their own terms.
+        os.close(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         _complete_path = log_path.with_name(log_path.name + ".complete")
     handler = logging.FileHandler(log_path, mode="w")
     handler.setFormatter(formatter)

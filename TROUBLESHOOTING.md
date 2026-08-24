@@ -199,7 +199,13 @@ nvidia-smi
 ## Collecting debug logs
 
 ```sh
-surveillance --debug 2>&1 | tee ~/surveillance-debug.log
+surveillance --debug --log-file=~/surveillance-debug.log
+```
+
+If the terminal output itself is slowing things down under heavy
+debug volume, drop it and rely on the file alone:
+```sh
+surveillance --debug --log-file=~/surveillance-debug.log 2>/dev/null
 ```
 
 Useful log namespaces:

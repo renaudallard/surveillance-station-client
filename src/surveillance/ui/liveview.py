@@ -221,9 +221,7 @@ def compute_focus_marker_update(
     )
     if best_tick is not None and gap_started_at is not None:
         stale = (
-            best_tick >= gap_reference_position
-            if reverse
-            else best_tick <= gap_reference_position
+            best_tick >= gap_reference_position if reverse else best_tick <= gap_reference_position
         )
         if stale:
             best_tick = None

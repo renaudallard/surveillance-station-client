@@ -332,9 +332,7 @@ class TimelineCanvas(Gtk.DrawingArea):
         self._layout_events = layout_events
         self.queue_draw()
 
-    def set_view_changed_callback(
-        self, callback: Callable[[float, float, bool], None]
-    ) -> None:
+    def set_view_changed_callback(self, callback: Callable[[float, float, bool], None]) -> None:
         """Set the callback notified of every view change (pan, zoom,
         reset, and each tick while following "now") — receives
         (view_start, view_end, following). LiveView uses this to keep
@@ -1012,9 +1010,7 @@ class Timeline(Gtk.Box):
         of how the popover was dismissed."""
         self._filter_cancel_callback = callback
 
-    def set_filter_apply_callback(
-        self, callback: Callable[[set[str] | None, bool], None]
-    ) -> None:
+    def set_filter_apply_callback(self, callback: Callable[[set[str] | None, bool], None]) -> None:
         """*callback* receives (selected_keys, match_all) from the
         Filter-events popover's Apply button -- see
         EventTypeFilterView.set_apply_callback for the exact contract."""
@@ -1077,9 +1073,7 @@ class Timeline(Gtk.Box):
         if self._filter_apply_callback is not None:
             self._filter_apply_callback(selected_keys, match_all)
 
-    def set_download_populate_callback(
-        self, callback: Callable[[], list[tuple[int, str]]]
-    ) -> None:
+    def set_download_populate_callback(self, callback: Callable[[], list[tuple[int, str]]]) -> None:
         """*callback* returns (camera_id, camera_name) for every camera
         currently assigned to a slot in the active layout -- pulled fresh
         every time the Download popover opens (see _on_download_popover_show)
@@ -1210,9 +1204,7 @@ class Timeline(Gtk.Box):
             self._download_camera_dropdown.set_selected(0)
             self._download_camera_dropdown.set_sensitive(True)
         else:
-            self._download_camera_dropdown.set_model(
-                Gtk.StringList.new(["No cameras available"])
-            )
+            self._download_camera_dropdown.set_model(Gtk.StringList.new(["No cameras available"]))
             self._download_camera_dropdown.set_sensitive(False)
         has_cameras = bool(self._download_cameras)
         self._download_submit_btn.set_sensitive(has_cameras)

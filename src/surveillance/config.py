@@ -54,7 +54,7 @@ def _data_dir() -> Path:
 
 
 def _state_dir() -> Path:
-    # Logs specifically -- XDG_STATE_HOME is where the spec puts state
+    # Logs specifically. XDG_STATE_HOME is where the spec puts state
     # that should persist but isn't precious enough for XDG_DATA_HOME
     # (which holds actual user content here, e.g. snapshots).
     xdg = os.environ.get("XDG_STATE_HOME", "")

@@ -142,6 +142,29 @@ than a one-off recovery. Workarounds:
   codec to mux, the stream is piped straight to mpv, so this does not
   apply to it either. Keeps WebSocket, at the price of the audio.
 
+## Known limitations of the Live View timeline
+
+The Live View timeline (Live/History mode, seeking, playback speed, event
+markers, downloads) has been tested with many simultaneous cameras over
+prolonged periods, but a few rough edges remain, including but not limited
+to:
+
+- History-mode playback can stall for several seconds up to a minute or
+  more, roughly every 30-40 seconds, when playing near real time — once the
+  history buffer runs empty and catches up to what was "now" when History
+  mode was entered.
+- Playing History faster than 1x can cause playback to periodically jump
+  backward before continuing forward, most noticeable at high speeds or
+  with multiple cameras active.
+- The timeline's position marker can run several seconds ahead of what's
+  actually visible on screen during History playback.
+- Pausing and resuming a Live camera always reconnects rather than resuming
+  instantly — a deliberate tradeoff for now, not a bug.
+- Pressing Pause during History playback on a large layout (a full 4x4 grid)
+  has been known to cause some cameras, particularly ones with no audio, to
+  lose their stream and not recover on their own — leaving and re-entering
+  the layout gets them back.
+
 ## The Live View timeline's buttons feel sluggish with many cameras
 
 Clicking the ruler, Back/Forward 10s, or Pause/Play seeks every active slot

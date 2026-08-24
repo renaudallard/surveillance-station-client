@@ -131,11 +131,13 @@ is not set, and marks it complete on a clean exit (window close,
 Ctrl-C, or SIGTERM) by creating a same-named
 .I .complete
 sentinel file alongside it \(em an abnormal exit (a crash, or the
-process being killed) leaves the log without one. On the next run,
-every previous log marked complete this way is deleted along with its
+process being killed) leaves the log without one. The next run that
+also passes a bare
+.B \-\-log\-file
+deletes every previous log marked complete this way along with its
 sentinel; one left over from an abnormal exit is kept for inspection,
 so disk usage only grows across repeated crashes, not from ordinary
-use.
+use. The automatically named file is created mode 0600.
 .SH CONFIGURATION
 Configuration is stored in TOML format at:
 .PP

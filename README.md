@@ -94,9 +94,9 @@ Debug logs automatically redact passwords, session tokens, and usernames.
 `--debug`). Given a path, it writes there. Without one, it writes to a fresh,
 timestamped file under `$XDG_STATE_HOME/surveillance-station/logs/` (or
 `~/.local/state/surveillance-station/logs/` if `$XDG_STATE_HOME` isn't
-set) and marks it complete on a clean exit. A file marked complete is
-deleted on next run. Unmarked files left over from crashes are kept for
-inspection.
+set) and marks it complete on a clean exit. Files marked complete are
+deleted by the next run that also passes a bare `--log-file`. Unmarked
+files left over from crashes are kept for inspection.
 
 On launch, a login dialog asks for your NAS connection details:
 

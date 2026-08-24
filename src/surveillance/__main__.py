@@ -90,7 +90,11 @@ def main() -> None:
             log_path = logfile.install(log_file_arg, _RedactFormatter(_LOG_FORMAT))
         except OSError as e:
             sys.exit(f"surveillance: cannot open log file: {e}")
-        print(f"Logging to {log_path}")
+        # stderr, not stdout: every exit here is os._exit(), which skips
+        # the stdout flush, so on anything but a terminal this line was
+        # dropped, and it is the only place the auto-generated name is
+        # ever shown. stderr is line buffered even when redirected.
+        print(f"Logging to {log_path}", file=sys.stderr)
 
     # Suppress chatty third-party loggers in debug mode
     for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):

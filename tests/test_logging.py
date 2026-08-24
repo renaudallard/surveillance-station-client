@@ -27,18 +27,16 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import logging
 from pathlib import Path
 
-from surveillance import __main__ as main_module
-from surveillance.__main__ import (
-    _LOG_FORMAT,
-    _clean_completed_logs,
-    _mark_log_complete,
-    _parse_log_file_arg,
-    _RedactFormatter,
-)
+import pytest
+
+from surveillance import logfile
+from surveillance.__main__ import _LOG_FORMAT, _RedactFormatter
+from surveillance.logfile import _clean_completed, mark_complete, parse_arg
 
 
 def _emit(msg: str, *args: object, exc: BaseException | None = None) -> str:
@@ -102,29 +100,29 @@ class TestRedaction:
 
 class TestParseLogFileArg:
     def test_absent_is_none(self) -> None:
-        value, argv = _parse_log_file_arg(["surveillance", "--debug"])
+        value, argv = parse_arg(["surveillance", "--debug"])
         assert value is None
         assert argv == ["surveillance", "--debug"]
 
     def test_bare_is_empty_string(self) -> None:
-        value, argv = _parse_log_file_arg(["surveillance", "--log-file", "--debug"])
+        value, argv = parse_arg(["surveillance", "--log-file", "--debug"])
         assert value == ""
         assert argv == ["surveillance", "--debug"]
 
     def test_with_path(self) -> None:
-        value, argv = _parse_log_file_arg(["surveillance", "--log-file=/var/log/run.log"])
+        value, argv = parse_arg(["surveillance", "--log-file=/var/log/run.log"])
         assert value == "/var/log/run.log"
         assert argv == ["surveillance"]
 
     def test_repeated_last_one_wins_and_all_removed(self) -> None:
-        value, argv = _parse_log_file_arg(
+        value, argv = parse_arg(
             ["surveillance", "--log-file=/var/log/a.log", "--log-file=/var/log/b.log"]
         )
         assert value == "/var/log/b.log"
         assert argv == ["surveillance"]
 
     def test_other_args_untouched_and_ordered(self) -> None:
-        value, argv = _parse_log_file_arg(["surveillance", "--debug", "--log-file", "extra"])
+        value, argv = parse_arg(["surveillance", "--debug", "--log-file", "extra"])
         assert value == ""
         assert argv == ["surveillance", "--debug", "extra"]
 
@@ -136,7 +134,7 @@ class TestCleanCompletedLogs:
         log.write_text("some log content")
         sentinel.touch()
 
-        _clean_completed_logs(tmp_path)
+        _clean_completed(tmp_path)
 
         assert not log.exists()
         assert not sentinel.exists()
@@ -145,7 +143,7 @@ class TestCleanCompletedLogs:
         log = tmp_path / "debug-20260101T000000.log"
         log.write_text("a crash log, never marked complete")
 
-        _clean_completed_logs(tmp_path)
+        _clean_completed(tmp_path)
 
         assert log.exists()
 
@@ -153,26 +151,53 @@ class TestCleanCompletedLogs:
         other = tmp_path / "notes.txt"
         other.write_text("unrelated")
 
-        _clean_completed_logs(tmp_path)
+        _clean_completed(tmp_path)
 
         assert other.exists()
 
     def test_empty_directory_is_a_no_op(self, tmp_path: Path) -> None:
-        _clean_completed_logs(tmp_path)  # must not raise
+        _clean_completed(tmp_path)  # must not raise
 
 
 class TestMarkLogComplete:
     def test_touches_the_configured_path(
-        self, tmp_path: Path, monkeypatch: object
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         sentinel = tmp_path / "debug-20260101T000000.log.complete"
-        monkeypatch.setattr(main_module, "_log_complete_path", sentinel)  # type: ignore[attr-defined]
+        monkeypatch.setattr(logfile, "_complete_path", sentinel)
 
-        _mark_log_complete()
+        mark_complete()
 
         assert sentinel.exists()
 
-    def test_no_op_when_unset(self, monkeypatch: object) -> None:
-        monkeypatch.setattr(main_module, "_log_complete_path", None)  # type: ignore[attr-defined]
+    def test_no_op_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(logfile, "_complete_path", None)
 
-        _mark_log_complete()  # must not raise
+        mark_complete()  # must not raise
+
+
+class TestNoStateInDunderMain:
+    """__main__ is the top of the import graph, so nothing may reach into it.
+
+    Under `python -m surveillance` the interpreter runs __main__.py as the
+    module __main__ and leaves surveillance.__main__ out of sys.modules, so
+    a module that imports surveillance.__main__ gets a second copy with its
+    own globals. State shared with the quit paths went stale that way once.
+    """
+
+    def test_nothing_imports_surveillance_dunder_main(self) -> None:
+        src = Path(__file__).resolve().parent.parent / "src" / "surveillance"
+        offenders = []
+        for path in src.rglob("*.py"):
+            if path.name == "__main__.py":
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom):
+                    imported = {node.module}
+                elif isinstance(node, ast.Import):
+                    imported = {alias.name for alias in node.names}
+                else:
+                    continue
+                if "surveillance.__main__" in imported:
+                    offenders.append(f"{path.relative_to(src).as_posix()}:{node.lineno}")
+        assert offenders == []

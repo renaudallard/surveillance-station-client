@@ -1,9 +1,10 @@
-.TH SURVEILLANCE 1 "2026-08-18" "0.8.1" "User Commands"
+.TH SURVEILLANCE 1 "2026-08-24" "0.8.5" "User Commands"
 .SH NAME
 surveillance \- Synology Surveillance Station client
 .SH SYNOPSIS
 .B surveillance
 .RB [ \-\-debug ]
+.RB [ \-\-log\-file [\fB=\fPPATH]]
 .SH DESCRIPTION
 .B surveillance
 is a native GTK4 desktop client for Synology Surveillance Station.
@@ -190,6 +191,29 @@ Enable debug logging to stderr.
 Passwords, session tokens, usernames, one-time codes, and credentials
 embedded in stream URLs are redacted from the output, including inside
 exception tracebacks.
+.TP
+.BR \-\-log\-file [\fB=\fPPATH]
+Also write logs to a file, at the same redacted content and level
+(WARNING, or DEBUG if \-\-debug is also given) as stderr. With
+.I PATH
+given, writes there, truncated on every run. Without it, writes to an
+automatically named file under
+.IR $XDG_STATE_HOME/surveillance-station/logs/ ,
+or
+.I ~/.local/state/surveillance-station/logs/
+if
+.I $XDG_STATE_HOME
+is not set, and marks it complete on a clean exit (window close,
+Ctrl-C, or SIGTERM) by creating a same-named
+.I .complete
+sentinel file alongside it \(em an abnormal exit (a crash, or the
+process being killed) leaves the log without one. The next run that
+also passes a bare
+.B \-\-log\-file
+deletes every previous log marked complete this way along with its
+sentinel; one left over from an abnormal exit is kept for inspection,
+so disk usage only grows across repeated crashes, not from ordinary
+use. The automatically named file is created mode 0600.
 .SH CONFIGURATION
 Configuration is stored in TOML format at:
 .PP

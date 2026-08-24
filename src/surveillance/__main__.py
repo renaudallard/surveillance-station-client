@@ -25,9 +25,13 @@
 
 """Entry point for surveillance application."""
 
+from __future__ import annotations
+
 import logging
 import re
 import sys
+
+from surveillance import logfile
 
 # Timestamped so a bug report can be lined up against the timestamps the
 # libraries this app drives print on the same stderr (mpv, ffmpeg,
@@ -44,6 +48,10 @@ _REDACT_PARAMS = re.compile(
 # Credentials embedded in a stream URL, as in the rtsp://user:pass@host
 # overrides from [camera_overrides].
 _REDACT_USERINFO = re.compile(r"(\w+://)[^/\s@]+@")
+
+# GLib prints these from inside app.run() and returns without ever
+# starting the application, so a log file opened for one is litter.
+_HELP_FLAGS = frozenset({"-h", "--help", "--help-all", "--help-gapplication"})
 
 
 class _RedactFormatter(logging.Formatter):
@@ -65,12 +73,32 @@ def main() -> None:
     while "--debug" in sys.argv:
         sys.argv.remove("--debug")
 
+    # Stripped here for the same reason as --debug, and handled in
+    # surveillance.logfile: bare it auto-names a file per run under
+    # STATE_DIR/logs, --log-file=PATH writes exactly there.
+    log_file_arg, remaining_argv = logfile.parse_arg(sys.argv)
+    sys.argv[:] = remaining_argv
+
     level = logging.DEBUG if debug else logging.WARNING
     logging.basicConfig(level=level, format=_LOG_FORMAT)
     # On the handler, not the root logger: a logger's own filters never see
     # records propagated up from the module loggers the application uses.
     for handler in logging.getLogger().handlers:
         handler.setFormatter(_RedactFormatter(_LOG_FORMAT))
+
+    if log_file_arg is not None and _HELP_FLAGS.isdisjoint(sys.argv):
+        # A log destination the user got wrong should read like a failed
+        # shell redirection, not like a crash in the app they were trying
+        # to record: this runs before the window exists.
+        try:
+            log_path = logfile.install(log_file_arg, _RedactFormatter(_LOG_FORMAT))
+        except OSError as e:
+            sys.exit(f"surveillance: cannot open log file: {e}")
+        # stderr, not stdout: every exit here is os._exit(), which skips
+        # the stdout flush, so on anything but a terminal this line was
+        # dropped, and it is the only place the auto-generated name is
+        # ever shown. stderr is line buffered even when redirected.
+        print(f"Logging to {log_path}", file=sys.stderr)
 
     # Suppress chatty third-party loggers in debug mode
     for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):
@@ -79,8 +107,12 @@ def main() -> None:
     import os
     import signal
 
-    signal.signal(signal.SIGINT, lambda *_: os._exit(0))
-    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    def _graceful_exit(*_args: object) -> None:
+        logfile.mark_complete()
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _graceful_exit)
+    signal.signal(signal.SIGTERM, _graceful_exit)
 
     from surveillance.app import SurveillanceApp
 
@@ -90,6 +122,7 @@ def main() -> None:
 
     app = SurveillanceApp()
     app.run(sys.argv)
+    logfile.mark_complete()
     os._exit(0)
 
 

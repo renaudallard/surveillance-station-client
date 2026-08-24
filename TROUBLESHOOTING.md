@@ -231,6 +231,14 @@ nvidia-smi
 surveillance --debug 2>&1 | tee ~/surveillance-debug.log
 ```
 
+`--log-file` writes the same records to a file without the redirection,
+which helps when a session may end before you get to save the terminal.
+Keep stderr as well where you can: crash tracebacks and GTK's own
+warnings go straight there and never reach the log file.
+```sh
+surveillance --debug --log-file 2>&1 | tee ~/surveillance-debug.log
+```
+
 Useful log namespaces:
 
 - `surveillance.services.ws_bridge` - WebSocket bridge errors (classified),
@@ -240,5 +248,7 @@ Useful log namespaces:
   messages, which it reports only through this logger
 - `surveillance.ui.player` - playback start failures
 
-A debug run also lets the muxing ffmpeg write its complaints straight to
-stderr, unprefixed by any of the namespaces above.
+On a debug run the bridge also pipes the muxing ffmpeg's stderr and
+re-logs each line under `surveillance.services.ws_bridge` as
+`ffmpeg for <camera>: ...`, so it lands in the capture with everything
+else rather than on the terminal by itself.

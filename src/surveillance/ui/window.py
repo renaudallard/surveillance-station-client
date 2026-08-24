@@ -166,6 +166,10 @@ class MainWindow(Gtk.ApplicationWindow):
             from surveillance.config import save_config_now
 
             save_config_now(self.app.config)
+        # Graceful shutdown, see surveillance.logfile.mark_complete.
+        from surveillance.logfile import mark_complete
+
+        mark_complete()
         os._exit(0)
         return True
 

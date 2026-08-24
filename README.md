@@ -82,12 +82,22 @@ surveillance
 ## Usage
 
 ```sh
-surveillance            # launch the application
-surveillance --debug    # enable debug logging to stderr
-python -m surveillance  # run directly from the source tree
+surveillance                                  # launch the application
+surveillance --debug                          # enable debug logging to stderr
+surveillance --log-file                       # log to an auto-named file that will be preserved for sessions that do not exit normally
+surveillance --debug --log-file=/tmp/run.log  # log to a file of your own choosing
+python -m surveillance                        # run directly from the source tree
 ```
 
 Debug logs automatically redact passwords, session tokens, and usernames.
+
+`--log-file` writes at the same level as stderr (WARNING, or DEBUG with
+`--debug`). Given a path, it writes there. Without one, it writes to a fresh,
+timestamped file under `$XDG_STATE_HOME/surveillance-station/logs/` (or
+`~/.local/state/surveillance-station/logs/` if `$XDG_STATE_HOME` isn't
+set) and marks it complete on a clean exit. Files marked complete are
+deleted by the next run that also passes a bare `--log-file`. Unmarked
+files left over from crashes are kept for inspection.
 
 On launch, a login dialog asks for your NAS connection details:
 

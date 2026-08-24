@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -112,7 +113,12 @@ def install(log_file_arg: str, formatter: logging.Formatter) -> Path:
         log_dir = STATE_DIR / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         _clean_completed(log_dir)
-        log_path = log_dir / f"debug-{datetime.now():%Y%m%dT%H%M%S}.log"
+        # Per-process name, for the same reason config.py qualifies its
+        # temp file: the timestamp only resolves to the second, so two
+        # instances started inside one second would open the same path
+        # with mode="w" and write into it at independent offsets, which
+        # loses one session's log and splices a fragment into the other.
+        log_path = log_dir / f"debug-{datetime.now():%Y%m%dT%H%M%S}-{os.getpid()}.log"
         _complete_path = log_path.with_name(log_path.name + ".complete")
     handler = logging.FileHandler(log_path, mode="w")
     handler.setFormatter(formatter)

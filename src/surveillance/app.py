@@ -35,7 +35,7 @@ import gi
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gdk, Gio, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.client import SurveillanceAPI
 from surveillance.config import AppConfig, load_config
@@ -54,6 +54,29 @@ class SurveillanceApp(Gtk.Application):
         super().__init__(
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
+        )
+        # Registered for --help only. main() strips both flags from argv
+        # before we run, because logging has to be configured before any
+        # of this is imported, so GOption never actually parses them. Left
+        # unregistered they were simply missing from the help output.
+        # OPTIONAL_ARG is not usable here (GLib allows it only on a
+        # callback arg), hence --log-file=PATH with the bare form spelled
+        # out in the description instead.
+        self.add_main_option(
+            "debug",
+            0,
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.NONE,
+            "Enable debug logging to stderr",
+            None,
+        )
+        self.add_main_option(
+            "log-file",
+            0,
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.STRING,
+            "Also write logs to a file; omit PATH for an auto-named one",
+            "PATH",
         )
         self.config: AppConfig = AppConfig()
         self.api: SurveillanceAPI | None = None

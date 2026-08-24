@@ -219,5 +219,7 @@ Useful log namespaces:
   messages, which it reports only through this logger
 - `surveillance.ui.player` - playback start failures
 
-A debug run also lets the muxing ffmpeg write its complaints straight to
-stderr, unprefixed by any of the namespaces above.
+On a debug run the bridge also pipes the muxing ffmpeg's stderr and
+re-logs each line under `surveillance.services.ws_bridge` as
+`ffmpeg for <camera>: ...`, so it lands in the capture with everything
+else rather than on the terminal by itself.

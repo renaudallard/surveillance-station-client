@@ -53,10 +53,10 @@ jobs:
                   body: [
                     '**The debug logs section does not appear to contain valid debug logs.**',
                     '',
-                    'Please run the application with `--debug --log-file=...` and capture the output:',
+                    'Please run the application with `--debug` and capture the output:',
                     '',
                     '```sh',
-                    'surveillance --debug --log-file=/tmp/debug.log 2>/dev/null',
+                    'surveillance --debug 2> /tmp/debug.log',
                     '```',
                     '',
                     'Then reproduce the issue and paste the contents of `/tmp/debug.log` in the **Debug logs** field.',

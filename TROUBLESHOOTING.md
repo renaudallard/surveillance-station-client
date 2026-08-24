@@ -199,13 +199,15 @@ nvidia-smi
 ## Collecting debug logs
 
 ```sh
-surveillance --debug --log-file=~/surveillance-debug.log
+surveillance --debug 2>&1 | tee ~/surveillance-debug.log
 ```
 
-If the terminal output itself is slowing things down under heavy
-debug volume, drop it and rely on the file alone:
+`--log-file` writes the same records to a file without the redirection,
+which helps when a session may end before you get to save the terminal.
+Keep stderr as well where you can: crash tracebacks and GTK's own
+warnings go straight there and never reach the log file.
 ```sh
-surveillance --debug --log-file=~/surveillance-debug.log 2>/dev/null
+surveillance --debug --log-file 2>&1 | tee ~/surveillance-debug.log
 ```
 
 Useful log namespaces:

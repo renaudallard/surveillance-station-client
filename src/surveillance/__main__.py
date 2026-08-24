@@ -145,20 +145,29 @@ def main() -> None:
         handler.setFormatter(_RedactFormatter(_LOG_FORMAT))
 
     if log_file_arg is not None:
-        if log_file_arg:
-            log_path = Path(log_file_arg)
-        else:
-            from datetime import datetime
+        # expanduser() because no shell expands a tilde after the = in an
+        # option word, so --log-file=~/x.log arrives here literally.
+        # Everything that can fail on the way to an open file is one
+        # diagnostic rather than a traceback: this runs before the window
+        # exists, and a log destination the user got wrong should not read
+        # like a crash in the app they were trying to record.
+        try:
+            if log_file_arg:
+                log_path = Path(log_file_arg).expanduser()
+            else:
+                from datetime import datetime
 
-            from surveillance.config import STATE_DIR
+                from surveillance.config import STATE_DIR
 
-            log_dir = STATE_DIR / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            _clean_completed_logs(log_dir)
-            log_path = log_dir / f"debug-{datetime.now():%Y%m%dT%H%M%S}.log"
-            global _log_complete_path
-            _log_complete_path = log_path.with_name(log_path.name + ".complete")
-        file_handler = logging.FileHandler(log_path, mode="w")
+                log_dir = STATE_DIR / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                _clean_completed_logs(log_dir)
+                log_path = log_dir / f"debug-{datetime.now():%Y%m%dT%H%M%S}.log"
+                global _log_complete_path
+                _log_complete_path = log_path.with_name(log_path.name + ".complete")
+            file_handler = logging.FileHandler(log_path, mode="w")
+        except OSError as e:
+            sys.exit(f"surveillance: cannot open log file: {e}")
         file_handler.setFormatter(_RedactFormatter(_LOG_FORMAT))
         logging.getLogger().addHandler(file_handler)
         print(f"Logging to {log_path}")

@@ -698,6 +698,20 @@ class LiveView(Gtk.Box):
         # -- same technique as _seek_generation/_timeline_thumbnail_generation.
         self._timeline_data_generation = 0
         self._presence_last_live_fetch = 0.0
+        # One EnumInterval fetch at a time. The generation above only
+        # discards a stale *result*; nothing stopped the requests
+        # themselves piling up, and this one is not cheap -- it is the
+        # same call services.event gives a 120s timeout because a wide
+        # range across many cameras has been seen to outlast the
+        # client's own 30s default. While following "now" it is issued
+        # on a timer, so a fetch slower than that timer would have
+        # stacked without bound. A request wanted while one is in
+        # flight is remembered and re-issued when that one settles,
+        # rather than dropped: the live-follow path would ask again on
+        # its next tick, but a settled pan/zoom (which stops the ticks)
+        # would never get another chance.
+        self._timeline_fetch_in_flight = False
+        self._timeline_fetch_pending: tuple[float, float, bool] | None = None
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
         self._streams_paused = False  # true while another page is shown
@@ -1107,6 +1121,11 @@ class LiveView(Gtk.Box):
         pan/zoom over already-covered territory stays a cache hit."""
         if not self.app.api:
             return
+        if self._timeline_fetch_in_flight:
+            # Coalesced rather than queued: only the newest view
+            # matters by the time the in-flight one lands.
+            self._timeline_fetch_pending = (start, end, force)
+            return
         focus_camera_id, active_camera_ids = self._active_timeline_cameras()
         focus_id_list = [focus_camera_id] if focus_camera_id is not None else []
         all_ids = list(dict.fromkeys([*active_camera_ids, *focus_id_list]))
@@ -1133,6 +1152,7 @@ class LiveView(Gtk.Box):
 
         self._timeline_data_generation += 1
         generation = self._timeline_data_generation
+        self._timeline_fetch_in_flight = True
         run_async(
             list_presence_and_events(
                 self.app.api, needed, camera_names, int(fetch_start), int(fetch_end)
@@ -1146,8 +1166,24 @@ class LiveView(Gtk.Box):
                 focus_camera_id,
                 active_camera_ids,
             ),
-            error_callback=lambda exc: log.debug("Timeline data fetch failed: %s", exc),
+            error_callback=self._on_timeline_data_failed,
         )
+
+    def _on_timeline_data_failed(self, exc: BaseException) -> None:
+        log.debug("Timeline data fetch failed: %s", exc)
+        self._settle_timeline_fetch()
+
+    def _settle_timeline_fetch(self) -> None:
+        """Release the one-at-a-time slot and run whatever view change
+        arrived while the fetch was out -- see _timeline_fetch_in_flight.
+        Called down both the success and the failure path: a failed
+        fetch that left the flag set would wedge the presence bar for
+        the rest of the session."""
+        self._timeline_fetch_in_flight = False
+        pending, self._timeline_fetch_pending = self._timeline_fetch_pending, None
+        if pending is not None:
+            start, end, force = pending
+            self._refresh_timeline_data(start, end, force=force)
 
     def _camera_name(self, camera_id: int) -> str:
         return next((c.name for c in self._cameras if c.id == camera_id), str(camera_id))
@@ -1162,16 +1198,19 @@ class LiveView(Gtk.Box):
         focus_camera_id: int | None,
         active_camera_ids: list[int],
     ) -> None:
-        if generation != self._timeline_data_generation:
-            return  # superseded by a newer view change
-        presence, events = result
-        events_by_camera: dict[int, list[Event]] = {}
-        for ev in events:
-            events_by_camera.setdefault(ev.camera_id, []).append(ev)
-        for cid in requested_ids:
-            self._presence_cache[cid] = (fetch_start, fetch_end, presence.get(cid, []))
-            self._event_cache[cid] = (fetch_start, fetch_end, events_by_camera.get(cid, []))
-        self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
+        # Applied before the slot is released, not after: releasing it
+        # can start the next fetch straight away, and that bumps the
+        # generation this result is checked against.
+        if generation == self._timeline_data_generation:
+            presence, events = result
+            events_by_camera: dict[int, list[Event]] = {}
+            for ev in events:
+                events_by_camera.setdefault(ev.camera_id, []).append(ev)
+            for cid in requested_ids:
+                self._presence_cache[cid] = (fetch_start, fetch_end, presence.get(cid, []))
+                self._event_cache[cid] = (fetch_start, fetch_end, events_by_camera.get(cid, []))
+            self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
+        self._settle_timeline_fetch()
 
     def _apply_timeline_data_to_canvas(
         self, focus_camera_id: int | None, active_camera_ids: list[int]

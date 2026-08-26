@@ -142,6 +142,58 @@ than a one-off recovery. Workarounds:
   codec to mux, the stream is piped straight to mpv, so this does not
   apply to it either. Keeps WebSocket, at the price of the audio.
 
+## Known limitations of the Live View timeline
+
+The Live View timeline (Live/History mode, seeking, playback speed, event
+markers, downloads) has been tested with many simultaneous cameras over
+prolonged periods, but a few rough edges remain, including but not limited
+to:
+
+- History-mode playback can stall for several seconds up to a minute or
+  more, roughly every 30-40 seconds, when playing near real time — once the
+  history buffer runs empty and catches up to what was "now" when History
+  mode was entered.
+- Playing History faster than 1x can cause playback to periodically jump
+  backward before continuing forward, most noticeable at high speeds or
+  with multiple cameras active.
+- The timeline's position marker can run several seconds ahead of what's
+  actually visible on screen during History playback.
+- Pausing and resuming a Live camera always reconnects rather than resuming
+  instantly — a deliberate tradeoff for now, not a bug.
+- Pressing Pause during History playback on a large layout (a full 4x4 grid)
+  has been known to cause some cameras, particularly ones with no audio, to
+  lose their stream and not recover on their own — leaving and re-entering
+  the layout gets them back.
+
+## The Live View timeline's buttons feel sluggish with many cameras
+
+Clicking the ruler, Back/Forward 10s, or Pause/Play seeks every active slot
+in the current layout at once. On a 4x4 (or larger) grid, each slot's own
+lookup against the NAS adds up, so response can lag noticeably behind a
+click — this is more noticeable than on a smaller layout, not a hang.
+
+- Avoid clicking a button again before the previous click has visibly taken
+  effect. Rapid repeats are coalesced into a single request rather than
+  queued one-by-one, but still wait on the same round trip, so spamming a
+  button does not make it respond faster.
+- Switch to a smaller layout (2x2 or 1x1) for snappier timeline response,
+  especially while scrubbing through History mode.
+
+## High playback speed is demanding, especially on larger layouts
+
+The Live View timeline's speed dropdown (History mode only) asks DSM to
+deliver frames that many times faster — at 8x or above, decoding that many
+times more video per second, multiplied across every active History slot in
+the layout, is a real load on both the NAS and this client's own CPU/memory,
+not just a UI setting. Running a high speed across a full 4x4 grid at once
+has been observed to crash the app outright, and to be heavy enough on the
+system as a whole to affect other running applications too.
+
+If a high speed causes instability, drop to a smaller layout (2x2 or 1x1).
+
+There is no guard against this yet — high-speed playback under load is
+still being characterized.
+
 ## Recording playback never starts
 
 The player dialog opens, the video area stays black, and after seven seconds

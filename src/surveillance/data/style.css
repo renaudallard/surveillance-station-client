@@ -81,6 +81,15 @@
     font-weight: bold;
 }
 
+/* Marks the slot whose camera the Live View timeline previews on hover
+   (see LiveView._timeline_focus_slot) — a border rather than the
+   selection label's text swap, since the two are independent and can
+   apply to the same slot at once. Same blue as .slot-selected-label
+   for a consistent "this is the thing selection is about" language. */
+.timeline-focus-frame {
+    border: 1px solid #3584e4;
+}
+
 /* Push-to-talk mic button while actively transmitting — same red as
    .notification-badge/.status-dot, a familiar "live mic" convention. */
 .mic-active {
@@ -141,4 +150,66 @@
 
 .home-mode-active {
     color: @success_color;
+}
+
+/* Reuses sidebar-show-symbolic for the timeline toggle (see headerbar.py) —
+   rotating it 90° counter-clockwise turns its highlighted left edge into a
+   highlighted bottom edge, matching the same "highlight = the panel"
+   convention for a bottom pane instead of a side one. */
+.rotate-ccw-90 {
+    transform: rotate(-90deg);
+}
+
+/* The Live View timeline's Rev icon (icons.py's history_direction_icon)
+   mirrors the same loop-arrow+triangle glyph used for Fwd, rather than
+   needing separate reverse-drawn art. */
+.flip-horizontal {
+    transform: scaleX(-1);
+}
+
+/* Fixed rather than theme-derived to avoid visual clutter with video */
+.timeline {
+    background-color: #24292e;
+    border-top: 1px solid @borders;
+}
+
+.timeline-toolbar {
+    padding: 4px 8px;
+}
+
+/* live_btn — always present (see Timeline.set_history_active: opacity,
+   not visibility, is what reflects whether there's anything to return
+   to, so the rest of the toolbar never shifts). Deliberately plain
+   (the theme's normal text color, not blue): blue is reserved for
+   "this is live/current" (see .timeline-live-text), and this button
+   only ever does anything while that's *not* true. */
+.timeline-live-active {
+    font-weight: bold;
+}
+
+/* The toolbar's own real-time clock/date — always blue, since it's
+   real time regardless of what the ruler shows. Same blue as the
+   timeline's own ruler ticks while following "now" (TimelineCanvas.
+   _draw's _LIVE_TICK_COLOR) and .slot-selected-label/.timeline-focus-
+   frame — matches DSM's own web app, which shows its live clock in
+   the same blue. */
+.timeline-live-text {
+    color: #3584e4;
+    font-weight: bold;
+}
+
+.timeline-clock {
+    font-family: monospace;
+    font-size: 1.1em;
+}
+
+.timeline-thumbnail {
+    background-color: #1a1a1a;
+    border-radius: 4px;
+}
+
+.timeline-thumbnail-time {
+    color: #fff;
+    font-weight: bold;
+    text-shadow: 0 0 3px #000, 0 0 3px #000;
 }

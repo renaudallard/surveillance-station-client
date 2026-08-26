@@ -54,6 +54,82 @@ or
 while retrying. Both recover automatically once the camera is reachable
 again.
 .TP
+.B Live View Timeline
+A shared timeline strip below the grid, toggled from the header bar
+(persists across restarts). Scroll or use the zoom buttons to zoom the
+time scale (centered on the cursor), click-and-drag to pan; a thin blue
+border marks which slot's camera the timeline is currently tracking
+\(em it follows the last-clicked slot, defaults to the upper-left slot
+on layout load, and fades after 10 seconds of no activity anywhere in
+the window. Hovering the ruler shows a small preview thumbnail of that
+camera at the hovered time, with its date/time overlaid. In History
+mode, a date/time bubble follows the marker as it moves. Below the
+ruler, a recording-presence bar shows two rows: where the tracked
+slot's own camera has a recording, and where any camera in the current
+layout does.
+.IP
+Clicking a point on the ruler switches every slot in the current
+layout into History mode, each playing its own camera's recorded video
+from that time; a
+.B Live
+button returns every slot to the real-time stream. Picking a different
+camera into a slot already in History mode keeps playing recorded
+video, for the newly picked camera, at the same point in time, rather
+than dropping back to live; switching grid layout always returns to
+live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are
+unavailable while a slot shows recorded video (mute/volume and
+Snapshot remain available). Jump \(+-10s buttons seek every slot in
+the current layout the same way clicking the ruler does. A
+.B Pause
+button freezes every active slot in place \(em a live slot just
+freezes locally without leaving Live mode, while a History slot asks
+DSM to actually stop sending, so the gap behind wall clock grows for
+as long as it stays paused; resuming a History slot paused for under
+10 seconds lands at least 10 seconds behind live rather than right at
+the edge. A playback-speed dropdown (History mode only) offers 1/8x
+through 100x plus a Fwd/Rev direction toggle, applied to every active
+History slot at once; it resets to 1x/Fwd whenever a slot returns to
+Live or the layout switches. Real motion/alarm events are overlaid on
+the same two presence rows as orange markers.
+.B Previous event
+and
+.B Next event
+jump to the nearest one on either side of the current position, across
+every camera in the layout; Previous stays available in Live mode
+(dropping into History first, like Back 10s), while Next is
+History-only, like Forward 10s. Events within 10 seconds of wall clock
+are skipped, since a seek that close would just be clamped back to the
+live edge anyway. A calendar button opens a date/time picker, its own
+days marked and any day without a recording (across the current
+layout) refused, and its
+.B Jump
+button greyed out until the exact date/time selected falls within a
+real recording; jumping there re-centers the timeline at its default
+zoom, while Back/Forward 10s and Previous/Next event instead just pan
+(at whatever zoom is already set) if their own target would otherwise
+land off-screen. A
+.B Filter events
+button narrows the presence bar's event markers and Previous/Next
+event navigation down to chosen event types (Any or All of a
+multi-select, decoded per camera brand). Opening it scans each layout
+camera's full recording history for the types it has ever produced (a
+persisted, incrementally-updated cache, so only the first scan and any
+time elapsed since the last one cost real seconds), showing a
+per-camera progress checklist meanwhile. A
+.B Download
+button opens a popup with a camera picker (only cameras currently
+assigned to a slot in the layout, since some may be empty, and
+defaulting to the tracked slot's own camera), above two tabs: Quick
+Save, whose three one-click buttons immediately prompt for a save
+location and download around the tracked slot's current position \(em
+.B "Download last 1/2/5 min"
+up to it in Live mode, or
+.B "Download \-1/2/5 to +1/2/5 min"
+centered on it in History mode, since both directions are already
+available once paused on a moment of interest \(em and Custom Save,
+with Start/End date-time fields (defaulting to a short clip ending at
+the same point) for an exact range.
+.TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.
 The panel button in the header bar hides or shows it, and that choice is
@@ -152,7 +228,9 @@ The
 .B [general]
 section stores the theme, the polling intervals, the snapshot directory,
 .IR sidebar_visible ,
-which records whether the camera sidebar is shown, and
+which records whether the camera sidebar is shown,
+.IR timeline_visible ,
+which records whether the Live View timeline strip is shown, and
 .IR dismissed_update_version ,
 the release tag whose update notice has been dismissed.
 .PP

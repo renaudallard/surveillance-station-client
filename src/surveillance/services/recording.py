@@ -54,10 +54,12 @@ PRESET_LAST7D = "last7d"
 PRESET_LAST30D = "last30d"
 
 # Recording.Download by recording id needs version 6 or later. Version 5
-# returns a 400 "Execution failed" with no file. The official client uses
-# version 4 for its own download, but with a different, event-based param
-# set (eventId/mountId/archId), so version 4 does not apply to the id-based
-# call this client makes.
+# returns a 400 "Execution failed" with no file. The official web client
+# uses version 4 for its own downloads, but with a different, event-based
+# param set (eventId/mountId/archId/recEvtType/offsetTimeMs/playTimeMs --
+# confirmed by capturing its own traffic) for downloading an arbitrary
+# sub-range rather than a whole recording, so version 4 does not apply to
+# the id-based call this client makes. See download_recording_range.
 RECORDING_DOWNLOAD_VERSION = 6
 
 
@@ -144,6 +146,83 @@ async def list_recordings(
     return recordings, total
 
 
+# How far around a click-to-seek target to search for a covering
+# recording. Hardcoded for now at a size generous enough to comfortably
+# cover a ~30min rolling recording segment (see ws_bridge.py's module
+# docstring) -- segment rotation size isn't a DSM constant, so this may
+# need to become dynamic or user-configurable if a shorter/longer
+# rotation is ever seen in practice. Cheap enough to call fresh per
+# click regardless.
+_HISTORY_SEEK_WINDOW = 2 * 3600
+
+
+async def find_recording_at(
+    api: SurveillanceAPI, camera_id: int, target_unix: int
+) -> Recording | None:
+    """Find the recording covering *target_unix* for *camera_id*, for
+    History-mode click-to-seek (see ws_bridge.py's module docstring for
+    the wire protocol this feeds).
+
+    A fresh List call per lookup rather than reusing LiveView's own
+    presence-bar cache (LiveView._presence_cache): that cache lives in
+    the UI layer, keyed by whatever range the timeline currently has
+    fetched, while this service-layer function has no access to it and
+    only ever needs a cheap, narrow window around one point -- a fresh
+    call per lookup is simpler than threading that cache down here.
+
+    Returns the containing recording if *target_unix* falls within one,
+    otherwise the nearest recording in the fetched window (a click
+    landing in a gap between recordings -- motion-only recording
+    routinely leaves them -- should still seek to *something* nearby
+    rather than refuse), or None if nothing was recorded anywhere near
+    *target_unix*. See find_covering_recording_at for a strict variant
+    that returns None instead of the nearest match.
+    """
+    recordings, _total = await list_recordings(
+        api,
+        camera_id=camera_id,
+        from_time=target_unix - _HISTORY_SEEK_WINDOW,
+        to_time=target_unix + _HISTORY_SEEK_WINDOW,
+        limit=500,
+    )
+    if not recordings:
+        return None
+    for rec in recordings:
+        if rec.start_time <= target_unix <= rec.stop_time:
+            return rec
+    return min(
+        recordings,
+        key=lambda r: min(abs(r.start_time - target_unix), abs(r.stop_time - target_unix)),
+    )
+
+
+async def find_covering_recording_at(
+    api: SurveillanceAPI, camera_id: int, target_unix: int
+) -> Recording | None:
+    """Like find_recording_at, but None instead of the nearest recording
+    when *target_unix* falls in a genuine gap -- for a continuous-
+    playback resolver (WebSocketBridge._refresh_history_recording_if_stale,
+    wired up via LiveView._enter_history_mode's own resolve()) rather
+    than click-to-seek.
+
+    The two callers need opposite answers to the same gap: a click
+    landing in one should still seek to *something* nearby rather than
+    refuse (find_recording_at's own nearest-fallback), but a resolver
+    checking whether playback has drifted past its loaded recording
+    must be able to tell "nothing covers this yet" apart from "found a
+    real one" -- otherwise it keeps swapping in whichever of the
+    recordings on either side of the gap happens to be nearest as the
+    target creeps forward, re-clamping the play offset to a different
+    one of their edges each time. That bounces the position between two
+    different boundaries instead of holding it steady until a recording
+    that actually covers the target shows up.
+    """
+    rec = await find_recording_at(api, camera_id, target_unix)
+    if rec is not None and rec.start_time <= target_unix <= rec.stop_time:
+        return rec
+    return None
+
+
 def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
     """Build a playback URL for a recording.
 
@@ -208,6 +287,53 @@ async def download_recording(
     return await stream_to_file(chunks, output_path, f"Recording {recording_id}")
 
 
+async def download_recording_range(
+    api: SurveillanceAPI,
+    rec: Recording,
+    start_unix: float,
+    end_unix: float,
+    output_path: Path,
+) -> Path:
+    """Download the [start_unix, end_unix) slice of *rec* to disk.
+
+    Uses the event-based version=4 download (see RECORDING_DOWNLOAD_VERSION's
+    comment) rather than the whole-file id-based download: offsetTimeMs/
+    playTimeMs let DSM cut an arbitrary sub-range out of the covering
+    recording without this client having to trim the file itself.
+
+    Raises:
+        ValueError: end_unix does not come after start_unix.
+        ApiError: Synology API error with numeric code.
+        OSError: File-system write failure (partial file is cleaned up).
+    """
+    offset_ms = max(0, round((start_unix - rec.start_time) * 1000))
+    play_ms = round((end_unix - start_unix) * 1000)
+    if play_ms <= 0:
+        raise ValueError("end time must be after start time")
+
+    log.debug(
+        "Downloading recording %d range (offset=%dms, play=%dms) to %s",
+        rec.id,
+        offset_ms,
+        play_ms,
+        output_path,
+    )
+    chunks = api.stream_download(
+        api="SYNO.SurveillanceStation.Recording",
+        method="Download",
+        version=4,
+        extra_params={
+            "eventId": str(rec.id),
+            "offsetTimeMs": str(offset_ms),
+            "playTimeMs": str(play_ms),
+            "mountId": str(rec.mount_id),
+            "archId": str(rec.arch_id),
+            "recEvtType": str(rec.event_type),
+        },
+    )
+    return await stream_to_file(chunks, output_path, f"Recording {rec.id} range")
+
+
 _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
 
 _MAX_THUMBNAIL_CACHE = 128
@@ -244,14 +370,52 @@ def clear_snapshot_cache() -> None:
     _recording_thumbnail_cache.clear()
 
 
+async def _request_thumbnail(
+    api: SurveillanceAPI, camera_id: int, arch_id: int, mount_id: int, target_time: int
+) -> bytes:
+    """Recording.GetThumbnail request/response handling, shared by every
+    thumbnail source. eventInfo must be a JSON array of objects matching
+    the APK format (dsId + blFallbackByLoadEvt + eventInfo only). Callers
+    are responsible for holding _thumbnail_semaphore.
+    """
+    try:
+        data = await api.request(
+            api="SYNO.SurveillanceStation.Recording",
+            method="GetThumbnail",
+            version=5,
+            extra_params={
+                "dsId": "0",
+                "blFallbackByLoadEvt": "true",
+                "eventInfo": json.dumps(
+                    [
+                        {
+                            "cameraId": camera_id,
+                            "archId": arch_id,
+                            "mountId": mount_id,
+                            "rec_group": 0,
+                            "targetTime": target_time,
+                        }
+                    ]
+                ),
+            },
+        )
+        thumbs = data if isinstance(data, list) else [data]
+        for thumb in thumbs:
+            b64 = thumb.get("thumbnail", "")
+            if b64:
+                image_data = base64.b64decode(b64)
+                if image_data:
+                    return image_data
+    except Exception as exc:
+        log.debug("Thumbnail request failed for camera %d at %d: %s", camera_id, target_time, exc)
+    return b""
+
+
 async def fetch_recording_thumbnail(
     api: SurveillanceAPI,
     rec: Recording,
 ) -> bytes:
-    """Fetch a thumbnail for a recording.
-
-    Uses Recording.GetThumbnail with eventInfo array matching the APK format.
-    """
+    """Fetch a thumbnail for a recording, cached by recording id."""
     if rec.id in _recording_thumbnail_cache:
         return _recording_thumbnail_cache[rec.id]
 
@@ -261,48 +425,24 @@ async def fetch_recording_thumbnail(
         if rec.id in _recording_thumbnail_cache:
             return _recording_thumbnail_cache[rec.id]
 
-        # Recording.GetThumbnail — eventInfo must be a JSON array of objects
-        # matching the APK format (dsId + blFallbackByLoadEvt + eventInfo only).
-        try:
-            data = await api.request(
-                api="SYNO.SurveillanceStation.Recording",
-                method="GetThumbnail",
-                version=5,
-                extra_params={
-                    "dsId": "0",
-                    "blFallbackByLoadEvt": "true",
-                    "eventInfo": json.dumps(
-                        [
-                            {
-                                "cameraId": rec.camera_id,
-                                "archId": rec.arch_id,
-                                "mountId": rec.mount_id,
-                                "rec_group": 0,
-                                "targetTime": rec.start_time,
-                            }
-                        ]
-                    ),
-                },
-            )
-            thumbs = data if isinstance(data, list) else [data]
-            for thumb in thumbs:
-                b64 = thumb.get("thumbnail", "")
-                if b64:
-                    image_data = base64.b64decode(b64)
-                    if image_data:
-                        if generation == _cache_generation:
-                            _cache_put(
-                                _recording_thumbnail_cache,
-                                rec.id,
-                                image_data,
-                                _MAX_THUMBNAIL_CACHE,
-                            )
-                        return image_data
-        except Exception as exc:
-            log.debug(
-                "Recording thumbnail failed for %d: %s",
-                rec.id,
-                exc,
-            )
+        image_data = await _request_thumbnail(
+            api, rec.camera_id, rec.arch_id, rec.mount_id, rec.start_time
+        )
+        if image_data and generation == _cache_generation:
+            _cache_put(_recording_thumbnail_cache, rec.id, image_data, _MAX_THUMBNAIL_CACHE)
+        return image_data
 
-    return b""
+
+async def fetch_camera_thumbnail_at(api: SurveillanceAPI, camera_id: int, timestamp: int) -> bytes:
+    """Fetch a thumbnail for *camera_id* at approximately *timestamp*.
+
+    Used by the Live View timeline's hover preview — unlike a specific
+    Recording row this is an arbitrary point on the timeline, so it isn't
+    cached; the timeline debounces hover events instead to bound request
+    volume. Returns b"" if the camera has no recording at that time (e.g.
+    it was offline), same as fetch_recording_thumbnail's own failure case.
+    """
+    async with _thumbnail_semaphore:
+        return await _request_thumbnail(
+            api, camera_id, arch_id=0, mount_id=0, target_time=timestamp
+        )

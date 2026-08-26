@@ -283,15 +283,14 @@ class TestSampleRateDetectionRobustness:
     def test_median_survives_a_scheduling_hiccup(self, rate: int) -> None:
         from statistics import median
 
-        from surveillance.services.aac import nearest_sample_rate
-        from surveillance.services.ws_bridge import _AAC_DETECTION_INTERVALS
+        from surveillance.services.aac import _AAC_DETECTION_INTERVALS, nearest_sample_rate
 
         nominal = 1024 / rate
         intervals = [nominal] * (_AAC_DETECTION_INTERVALS - 1) + [nominal + 0.050]
         assert nearest_sample_rate(median(intervals)) == rate
 
     def test_enough_intervals_for_a_median(self) -> None:
-        from surveillance.services.ws_bridge import _AAC_DETECTION_INTERVALS
+        from surveillance.services.aac import _AAC_DETECTION_INTERVALS
 
         assert _AAC_DETECTION_INTERVALS >= 3
         assert _AAC_DETECTION_INTERVALS % 2 == 1  # a true middle sample

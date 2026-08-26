@@ -98,6 +98,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self._homemode_poll_id: int = 0
         self._alerts_poll_id: int = 0
 
+        # Window-wide mouse activity, used to keep the Live View timeline's
+        # focus-slot frame lit (see LiveView.register_timeline_activity).
+        # Capture phase so it sees every motion first, regardless of which
+        # child widget the event is actually over or does with it.
+        activity = Gtk.EventControllerMotion()
+        activity.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        activity.connect("motion", self._on_window_motion)
+        self.add_controller(activity)
+
         # Exit handlers. Both vfunc override and signal connection
         # for maximum compatibility across PyGObject versions.
         self.connect("close-request", lambda *_: self._force_exit("signal"))
@@ -119,6 +128,13 @@ class MainWindow(Gtk.ApplicationWindow):
         clear_action = Gio.SimpleAction.new("clear-layout", None)
         clear_action.connect("activate", self._on_clear_layout_action)
         self.add_action(clear_action)
+
+    def _on_window_motion(
+        self, _controller: Gtk.EventControllerMotion, _x: float, _y: float
+    ) -> None:
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "register_timeline_activity"):
+            live_view.register_timeline_activity()
 
     def _on_grid_layout_action(self, action: Gio.SimpleAction, value: GLib.Variant) -> None:
         action.set_state(value)
@@ -420,6 +436,17 @@ class MainWindow(Gtk.ApplicationWindow):
         """Show or hide the camera sidebar panel."""
         self.sidebar.set_visible(visible)
         self.app.config.sidebar_visible = visible
+
+        from surveillance.config import save_config
+
+        save_config(self.app.config)
+
+    def toggle_timeline(self, visible: bool) -> None:
+        """Show or hide the Live View timeline."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "timeline"):
+            live_view.timeline.set_visible(visible)
+        self.app.config.timeline_visible = visible
 
         from surveillance.config import save_config
 

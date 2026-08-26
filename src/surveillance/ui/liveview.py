@@ -27,9 +27,13 @@
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
-from datetime import datetime
+import time
+from collections.abc import Callable, Sequence
+from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,23 +42,38 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, Gio, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-untyped]
 
-from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
-from surveillance.config import save_config, save_config_now
+from surveillance.api.models import Camera, CameraStatus, Event, PtzPatrol, PtzPreset, Recording
+from surveillance.config import EventTypeHistory, save_config, save_config_now
 from surveillance.services import ptz
+from surveillance.services.event import (
+    list_granular_events,
+    list_presence_and_events,
+    list_recording_presence,
+    merge_intervals,
+)
+from surveillance.services.event_bits import build_filter_options, event_matches_keys
 from surveillance.services.live import (
     AUDIO_PROTOCOLS,
     OFFLINE_PLACEHOLDER_URL,
+    get_history_view_path,
     get_live_view_path,
 )
 from surveillance.services.ptt import PttOccupiedError, PttSession
+from surveillance.services.recording import (
+    download_recording_range,
+    fetch_camera_thumbnail_at,
+    find_covering_recording_at,
+    find_recording_at,
+)
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
-from surveillance.services.ws_bridge import WebSocketBridge
+from surveillance.services.ws_bridge import MIN_HISTORY_DELTA_SECONDS, WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
 from surveillance.ui.rtsp_health import RtspHealthMonitor
 from surveillance.ui.slot_toolbar import SlotToolbar
+from surveillance.ui.timeline import Timeline
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -65,6 +84,160 @@ log = logging.getLogger(__name__)
 # Internal grid is always 4x4 (16 slots).  Positions: idx = row*4 + col.
 _GRID_COLS = 4
 _MAX_SLOTS = 16
+
+_TIMELINE_THUMBNAIL_WIDTH = 160
+_TIMELINE_THUMBNAIL_HEIGHT = 90
+
+# Gap between each slot's own WS-connect/ffmpeg-spawn burst when many
+# slots change Live/History state at once (entering History via a
+# timeline click, or returning via the Live button/layout switch) --
+# without it, a full 4x4 grid opens 16 new WebSocket connections and
+# spawns up to 16 new ffmpeg mux processes in the same GTK main-loop
+# iteration, on top of whatever the slots being replaced were still
+# using (their own teardown is async -- see CameraSlot.stop_stream --
+# so there's a real window where both coexist). Confirmed live: this
+# reliably OOM-killed the whole app (and took other running
+# applications down with it) before staggering was added; 3x3 (9
+# slots) survived unstaggered. Not scientifically tuned -- just small
+# enough that a full 4x4 transition (16 * this) still feels immediate.
+_HISTORY_TRANSITION_STAGGER_MS = 150
+
+_TIMELINE_NUDGE_SECONDS = 10  # Back 10s / Forward 10s's step size
+
+# Safety net for _flush_timeline_nudge's in-flight tracking: normally
+# cleared the moment the focus slot's own recording lookup resolves,
+# but that signal can go missing (e.g. the timeline focus slot changes
+# mid-lookup) -- without this, a single missed signal would wedge
+# Back/Forward 10s shut forever. Generous relative to DSM's observed
+# few-second lookup latency, since firing early just means a
+# still-accumulating burst of clicks gets flushed a little sooner
+# rather than fully coalesced -- never incorrect, just less batched.
+_NUDGE_RESOLVE_TIMEOUT_SECONDS = 10
+
+# How long a pan/zoom must settle before the presence bar refetches --
+# same technique and rough magnitude as the hover-thumbnail debounce
+# (see timeline._THUMBNAIL_DEBOUNCE_MS), just slower since a presence
+# fetch covers a whole camera list rather than one hover point.
+_PRESENCE_DEBOUNCE_MS = 200
+
+# While following "now" the view changes every tick by design (see
+# TimelineCanvas._on_tick), which would otherwise mean a presence
+# fetch every second; this caps it to an occasional trailing-edge
+# refresh instead.
+_PRESENCE_LIVE_REFRESH_SEC = 5.0
+
+# Fixed window Previous/Next event searches on either side of the
+# reference position -- same "cheap enough to call fresh per click"
+# precedent as recording.py's own _HISTORY_SEEK_WINDOW, rather than an
+# expanding search: a click that finds nothing just logs and does
+# nothing (see LiveView._seek_to_nearest_event).
+_EVENT_NAV_WINDOW_SECONDS = 7 * 86400
+
+# A camera's first-ever event-type scan (see _scan_next_camera_for_
+# event_types) can't ask EnumInterval for literally its entire history
+# from epoch: confirmed live -- from_time=0 crashes DSM's backend with
+# an HTTP 502 (not a client-side timeout) rather than just being slow,
+# almost certainly because event_map's 5-second-bucket bookkeeping has
+# to cover the whole requested range regardless of how much of it
+# actually has data, and a multi-decade range is a few hundred million
+# buckets. This cap is comfortably past any real NAS's own storage-
+# limited retention without being unbounded -- not a substitute for
+# asking DSM what a camera's oldest recording actually is, just
+# cheaper than doing so.
+_EVENT_TYPE_SCAN_MAX_LOOKBACK_SECONDS = 2 * 365 * 86400
+
+
+def order_cameras_focus_first(
+    cameras: list[tuple[int, str]], focus_camera_id: int | None
+) -> list[tuple[int, str]]:
+    """Move the entry matching *focus_camera_id* to the front, preserving
+    relative order otherwise -- used by _download_available_cameras so the
+    Download popover's camera dropdown (which always defaults to position
+    0) opens on the camera the timeline is already tracking. A no-op if
+    focus_camera_id isn't None but also isn't in *cameras* (e.g. the
+    tracked slot is empty)."""
+    result = list(cameras)
+    if focus_camera_id is None:
+        return result
+    for i, (camera_id, _name) in enumerate(result):
+        if camera_id == focus_camera_id:
+            result.insert(0, result.pop(i))
+            break
+    return result
+
+
+def compute_focus_marker_update(
+    current_position: float | None,
+    last_set_position: float | None,
+    active_ticks: Sequence[int | None],
+    gap_started_at: float | None,
+    gap_reference_position: float,
+    now: float,
+    speed: str,
+    reverse: bool,
+) -> tuple[float | None, float | None, float]:
+    """Pure decision core of LiveView._advance_focus_history_position --
+    see that method's own docstring for the full rationale: the shared
+    timeline marker takes whichever active camera actually has real
+    data this tick, and only extrapolates from wall clock/speed once
+    none of them did.
+
+    Returns (new_position, new_gap_started_at, new_gap_reference_position)
+    for the caller to apply to both the marker and its own state.
+    new_position is None only when there's genuinely nothing to show yet
+    (no real tick has ever arrived and there's no prior position to
+    extrapolate from, e.g. History mode was just entered).
+
+    *current_position* != *last_set_position* means something other than
+    this function moved the focus slot's position since the last call --
+    a seek, a fresh entry into History, or a focus switch onto a slot at
+    a different point -- so any extrapolation in progress is measured
+    from a now-irrelevant point and must restart from here instead of
+    resuming as if a gap had been running since that earlier point.
+
+    While a gap is in progress (gap_started_at is not None), a real tick
+    is only trusted if it's at-or-after gap_reference_position -- the
+    marker's own position at the moment the gap began. A tick at or
+    before that point can only be a stale replay of whatever recording
+    just stopped covering the target (e.g. a reconnect that -- absent
+    find_covering_recording_at -- resolved back onto it instead of
+    finding nothing): this is what actually produces the periodic
+    backward jump, even after the extrapolation fallback below already
+    handles the general case. Anything at or
+    after gap_reference_position is genuine new data -- whether it's the
+    actual resuming recording or something in between -- and wins over
+    the extrapolated guess even if it lands a little behind where that
+    guess had gotten to, same as real data always taking priority once
+    it resumes. Outside of an active gap this check is skipped: ordinary
+    playback ticks are already naturally increasing on their own.
+    """
+    if current_position != last_set_position:
+        gap_started_at = None
+
+    best_tick = (
+        min((t for t in active_ticks if t is not None), default=None)
+        if reverse
+        else max((t for t in active_ticks if t is not None), default=None)
+    )
+    if best_tick is not None and gap_started_at is not None:
+        stale = (
+            best_tick >= gap_reference_position if reverse else best_tick <= gap_reference_position
+        )
+        if stale:
+            best_tick = None
+
+    if best_tick is not None:
+        return float(best_tick), None, gap_reference_position
+
+    if current_position is None:
+        return None, gap_started_at, gap_reference_position
+
+    if gap_started_at is None:
+        gap_started_at = now
+        gap_reference_position = current_position
+    elapsed = now - gap_started_at
+    speed_signed = (-1.0 if reverse else 1.0) * float(speed)
+    return gap_reference_position + elapsed * speed_signed, gap_started_at, gap_reference_position
 
 
 class CameraSlot(Gtk.Box):
@@ -163,6 +336,14 @@ class CameraSlot(Gtk.Box):
         self._ws_bridge: WebSocketBridge | None = None
         self._rtsp_monitor: RtspHealthMonitor | None = None
         self._ptt_session: PttSession | None = None
+        # This slot's current position within History playback, unix
+        # time — None whenever it's on Live (or RTSP, which has no
+        # History at all). Set on every seek and ticked forward by
+        # LiveView's own history-position timer while playing (see
+        # _tick_history_positions); read back when this slot becomes
+        # the timeline's focus slot, to show its position rather than
+        # whichever slot had focus last (see _set_timeline_focus_slot).
+        self._history_position: float | None = None
         # Set when a stream gives up while the camera is still reported
         # ENABLED (a transport-level failure, not a status change) — there's
         # no future status transition to retry on, so sync_camera_statuses()
@@ -210,6 +391,9 @@ class CameraSlot(Gtk.Box):
 
     def set_audio_playable(self, playable: bool) -> None:
         self._toolbar.set_audio_playable(playable)
+
+    def set_history_mode(self, is_history: bool) -> None:
+        self._toolbar.set_history_mode(is_history)
 
     def set_mic_callback(self, callback: object) -> None:
         self._toolbar.set_mic_callback(callback)
@@ -319,6 +503,15 @@ class CameraSlot(Gtk.Box):
             self._header.add_css_class("dim-label")
             self._header.set_label(f"Slot {self._display_index + 1}")
 
+    def set_timeline_focus(self, focused: bool) -> None:
+        """Toggle the border marking this as the timeline's reference
+        camera — independent of set_selected(), which changes the
+        header text for the unrelated camera-assignment click flow."""
+        if focused:
+            self.add_css_class("timeline-focus-frame")
+        else:
+            self.remove_css_class("timeline-focus-frame")
+
     def set_status(self, status: str) -> None:
         """Show the stream state next to the camera name, "" once playing."""
         self._status = status
@@ -376,6 +569,8 @@ class CameraSlot(Gtk.Box):
         self.stop_ptt()
         self.player.reset_zoom()
         self._toolbar.clear()
+        self.set_history_mode(False)
+        self._history_position = None
         self.camera = None
         self._status = ""
         self._stream_lost = False
@@ -392,7 +587,117 @@ class LiveView(Gtk.Box):
         self.window = window
         self.app = window.app
         self._selected_slot: int | None = None
+        # Slot whose camera the timeline previews on hover — independent
+        # of _selected_slot (that one's for the camera-assignment click
+        # flow and can be unset; this one always points at a real slot).
+        self._timeline_focus_slot: int = 0
+        self._timeline_last_activity: float = 0.0
+        # Back/Forward 10s coalescing -- see _flush_timeline_nudge.
+        self._pending_nudge_seconds: float = 0.0
+        self._nudge_seek_in_flight: bool = False
+        # Bumped once per _seek_slot_to_time batch (see _on_timeline_seek)
+        # so _on_recording_resolved can tell a lookup superseded by a
+        # newer seek -- landing late, after that newer one already
+        # applied -- from one still worth acting on.
+        self._seek_generation: int = 0
+        # Bumped per Previous/Next event click so a slower/older lookup
+        # resolving after a newer one (rapid repeated clicking is
+        # exactly what _last_event_nav_key below exists to make
+        # unnecessary) can't undo it -- see _on_event_nav_resolved.
+        self._event_nav_generation: int = 0
+        # (camera_id, start_time) of the event a Previous/Next click
+        # last landed on -- excluded from the next search in either
+        # direction so a seek's landed position sitting a little past
+        # that event (see _on_event_nav_resolved) doesn't just re-find
+        # it, while leaving every other close-by-but-distinct event
+        # still reachable one click at a time.
+        self._last_event_nav_key: tuple[int, int] | None = None
+        # Bumped per calendar-popover month view so a slower/older
+        # availability fetch resolving after a newer one (fast month
+        # navigation) can't apply stale marks to the now-different
+        # month -- see _on_calendar_availability_fetched.
+        self._calendar_generation: int = 0
+        # Bumped per Filter-events popover open so a slower/older
+        # per-camera history scan resolving after the popover was
+        # reopened or cancelled can't keep going or apply stale
+        # progress -- see _on_filter_popover_show/_scan_next_camera_
+        # for_event_types.
+        self._filter_scan_generation: int = 0
+        # Selected event-type filter keys (see services.event_bits) --
+        # None means "All Event Types", the same no-filtering
+        # convention AdvancedSearchDialog's own event-type filter uses.
+        # Session-only (not persisted): only the per-camera scan cache
+        # (AppConfig.event_type_history) survives a restart.
+        self._event_filter_keys: set[str] | None = None
+        self._event_filter_match_all: bool = False
+        # Timeline Pause/Play's own state -- distinct from
+        # _streams_paused below (that one's for navigating away from
+        # Live View entirely, this one's a deliberate user action that
+        # persists while the page stays open; see _pause_all_slots).
+        self._timeline_paused: bool = False
+        # Timeline speed dropdown's own state -- DSM's literal
+        # multiplier string (see WebSocketBridge.set_speed), applied to
+        # every active History slot the same way Pause is, and reset to
+        # "1" wherever Pause's own state is (leaving History, switching
+        # layout): see _return_all_to_live/_apply_layout.
+        self._timeline_speed: str = "1"
+        # Timeline Fwd/Rev toggle's own state -- same scope/reset as
+        # _timeline_speed (see WebSocketBridge.set_reverse).
+        self._timeline_reverse: bool = False
+        # _advance_focus_history_position's own state, for extrapolating
+        # the shared marker from wall clock/speed when no active camera
+        # has delivered a real frame in the last tick: a recording gap
+        # or outage covering every active camera at once).
+        # None whenever the marker is currently tracking real data.
+        # _history_gap_started_at is when that extrapolation began (wall
+        # clock, for computing elapsed time each tick, not accumulated
+        # tick-by-tick so a delayed GLib tick can't drift it);
+        # _history_gap_reference_position is the marker's own position at
+        # that moment, the base the extrapolation adds elapsed*speed to;
+        # _history_gap_last_set_position is whatever this method itself
+        # last wrote, so the next tick can tell a seek/focus-switch moved
+        # the focus slot's position out from under it (see the method's
+        # own docstring for why that has to restart the extrapolation).
+        self._history_gap_started_at: float | None = None
+        self._history_gap_reference_position: float = 0.0
+        self._history_gap_last_set_position: float | None = None
+        # Slots _return_all_to_live has told to leave History, whose old
+        # bridge object may still be alive and delivering real ticks until
+        # its own staggered restart actually replaces it (that replacement
+        # is what clears a slot from this set again -- see _start_bridge).
+        # _tick_history_positions/_advance_focus_history_position both skip
+        # any slot listed here, since is_history alone can't tell a bridge
+        # that is genuinely still in History apart from one that is on its
+        # way out but has not been superseded yet -- without this, a real
+        # tick from that stale bridge can resurrect a _history_position
+        # (and the shared canvas marker, if it lands on the focus slot's
+        # tick-collection pass) moments after the return-to-live reset.
+        self._leaving_history_slots: set[int] = set()
         self._active: list[int] = []  # physical indices of visible slots
+        # Recording-presence cache: camera_id -> (covered_start,
+        # covered_end, spans). A view fully within [covered_start,
+        # covered_end] is served from cache; anything else triggers a
+        # fetch of the view padded by one window's width on each side,
+        # which replaces the entry (see _presence_covers/_refresh_timeline_data)
+        # -- not a general interval-coverage set, just enough to avoid
+        # re-fetching on the small pans/zooms this bar is actually used for.
+        # Deliberately NOT consulted at all while following "now" (see
+        # _on_timeline_view_changed's force=True) -- a live fetch's own
+        # padding reaches past "now" into a future with no recordings
+        # yet, so treating that as durable coverage would freeze the
+        # trailing edge at whatever was true the first time it was ever
+        # fetched, for every camera sharing that cache entry.
+        self._presence_cache: dict[int, tuple[float, float, list[tuple[int, int]]]] = {}
+        # Event-marker cache, same shape/coverage rules as the presence
+        # cache above -- populated together from the same EnumInterval
+        # fetch (see _on_timeline_data_fetched), never independently.
+        self._event_cache: dict[int, tuple[float, float, list[Event]]] = {}
+        self._presence_debounce_id = 0
+        # Bumped per fetch batch so a slower-landing fetch superseded by
+        # a newer view change never overwrites the cache with stale data
+        # -- same technique as _seek_generation/_timeline_thumbnail_generation.
+        self._timeline_data_generation = 0
+        self._presence_last_live_fetch = 0.0
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
         self._streams_paused = False  # true while another page is shown
@@ -410,7 +715,6 @@ class LiveView(Gtk.Box):
         self.grid.set_hexpand(True)
         self.grid.set_vexpand(True)
         self.grid.set_overflow(Gtk.Overflow.HIDDEN)
-        self.append(self.grid)
 
         # Pre-create all 16 slots (max for 4x4) and attach to the grid.
         # Slots are never removed — only shown/hidden on layout change.
@@ -438,12 +742,114 @@ class LiveView(Gtk.Box):
         # Apply initial layout (show/hide slots)
         self._apply_layout()
 
+        self.timeline = Timeline()
+        self.timeline.set_visible(self.app.config.timeline_visible)
+        self.timeline.canvas.set_hover_callback(self._on_timeline_hover)
+        self.timeline.canvas.set_hover_leave_callback(self._on_timeline_hover_leave)
+        self.timeline.canvas.set_seek_callback(self._on_timeline_seek)
+        self.timeline.canvas.set_view_changed_callback(self._on_timeline_view_changed)
+        self.timeline.live_btn.connect("clicked", self._on_timeline_live_clicked)
+        self.timeline.back_10s_btn.connect("clicked", self._on_timeline_back_10s)
+        self.timeline.forward_10s_btn.connect("clicked", self._on_timeline_forward_10s)
+        self.timeline.prev_event_btn.connect("clicked", self._on_timeline_prev_event)
+        self.timeline.next_event_btn.connect("clicked", self._on_timeline_next_event)
+        self.timeline.pause_btn.connect("clicked", self._on_timeline_pause_play)
+        self.timeline.set_speed_callback(self._on_timeline_speed_selected)
+        self.timeline.set_reverse_callback(self._on_timeline_reverse_selected)
+        self.timeline.set_jump_callback(self._on_calendar_jump)
+        self.timeline.set_calendar_initial_datetime_callback(self._calendar_initial_datetime)
+        self.timeline.set_calendar_month_changed_callback(self._on_calendar_month_changed)
+        self.timeline.set_filter_popover_show_callback(self._on_filter_popover_show)
+        self.timeline.set_filter_cancel_callback(self._on_filter_cancel)
+        self.timeline.set_filter_apply_callback(self._on_filter_apply)
+        self.timeline.set_download_populate_callback(self._download_available_cameras)
+        self.timeline.set_download_initial_datetime_callback(self._calendar_initial_datetime)
+        self.timeline.set_download_callback(self._on_timeline_download)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self.grid)
+        content.append(self.timeline)
+
+        # A Gtk.Overlay rather than a Gtk.Popover for the hover-preview
+        # thumbnail: a popover is a separate native surface, and one
+        # positioned to appear over the grid never actually became
+        # visible in testing — the grid's video slots are GL-rendered
+        # (MpvGLArea) and paint over it regardless of its own reported
+        # visible/mapped state. An overlay child is composited in the
+        # same render tree as its base, same as each slot's own
+        # hover toolbar already floats over its GL video correctly (see
+        # CameraSlot._player_overlay) — the same fix applied one level
+        # up, spanning the whole grid+timeline rather than one slot.
+        self._thumbnail_picture = Gtk.Picture()
+        self._thumbnail_picture.set_size_request(
+            _TIMELINE_THUMBNAIL_WIDTH, _TIMELINE_THUMBNAIL_HEIGHT
+        )
+        self._thumbnail_picture.add_css_class("timeline-thumbnail")
+
+        # Date/time overlaid on the thumbnail itself, matching DSM's own
+        # hover preview. A second, inner Overlay (its size follows the
+        # picture, the base child — the label is just floated on top,
+        # same as the picture is floated on the grid+timeline below).
+        self._thumbnail_time_label = Gtk.Label()
+        self._thumbnail_time_label.add_css_class("timeline-thumbnail-time")
+        self._thumbnail_time_label.set_justify(Gtk.Justification.CENTER)
+        self._thumbnail_time_label.set_halign(Gtk.Align.CENTER)
+        self._thumbnail_time_label.set_valign(Gtk.Align.END)
+        self._thumbnail_time_label.set_margin_bottom(4)
+
+        self._thumbnail_frame = Gtk.Overlay()
+        self._thumbnail_frame.set_child(self._thumbnail_picture)
+        self._thumbnail_frame.add_overlay(self._thumbnail_time_label)
+        self._thumbnail_frame.set_halign(Gtk.Align.START)
+        self._thumbnail_frame.set_valign(Gtk.Align.START)
+        self._thumbnail_frame.set_visible(False)
+        # Input-transparent: sitting over the ruler, it would otherwise
+        # swallow the very motion events that keep it positioned.
+        self._thumbnail_frame.set_can_target(False)
+        self._timeline_thumbnail_generation = 0
+
+        self._overlay = Gtk.Overlay()
+        self._overlay.set_child(content)
+        self._overlay.add_overlay(self._thumbnail_frame)
+        # Without this, Gtk.Overlay measures the child within whatever
+        # space is left after its margin, shrinking it near the right
+        # edge instead of keeping its requested size — our own margin
+        # clamp in _show_timeline_thumbnail is what actually keeps it
+        # on-screen, so the overlay doesn't need to constrain it too.
+        self._overlay.set_clip_overlay(self._thumbnail_frame, False)
+        self.append(self._overlay)
+
+        GLib.timeout_add(1000, self._check_timeline_focus_idle)
+        GLib.timeout_add(1000, self._tick_history_positions)
+
     # ------------------------------------------------------------------
     # Layout management
     # ------------------------------------------------------------------
 
     def _apply_layout(self) -> None:
         """Show/hide slots to match the current layout."""
+        # History mode is scoped to the layout it was entered in -- a
+        # switch always leaves it, on every slot, not just ones becoming
+        # hidden (see _return_all_to_live). Before self._active changes
+        # below, since that's what it reads to know which slots to check.
+        self._return_all_to_live()
+        # Same scoping for a Pause left active. Every slot's own local
+        # pause needs clearing explicitly here, not just the toolbar's
+        # tracking flag/icon: slot objects are a fixed pool reused
+        # across layout switches, not recreated, and mpv.play() never
+        # resets mpv.pause on its own -- a slot paused in the old
+        # layout would otherwise still show a frozen picture under
+        # whatever camera the new layout puts on it, with the toolbar
+        # wrongly reading "playing". Unconditionally, across the whole
+        # pool rather than just self._active: a slot hidden by this
+        # switch can still be reused by a later one.
+        if self._timeline_paused:
+            self._timeline_paused = False
+            self.timeline.set_paused(False)
+        for slot in self._slots:
+            slot.player.set_paused(False)
+            if slot._rtsp_monitor is not None:
+                slot._rtsp_monitor.set_paused(False)
         new_active = list(LAYOUT_VISIBLE[self._current_layout])
         self._select_slot(None)
 
@@ -473,6 +879,1199 @@ class LiveView(Gtk.Box):
                     slot.stop_ptt()
 
         self._active = new_active
+        self._set_timeline_focus_slot(new_active[0])
+
+    def register_timeline_activity(self) -> None:
+        """Record mouse activity anywhere in the app window.
+
+        Called from MainWindow's window-level motion controller. Keeps
+        the current timeline-focus slot's frame lit as long as there's
+        been activity within the last 10s, and revives it on the next
+        activity even after it's already faded — so moving toward and
+        hovering the timeline re-lights whichever slot it previews,
+        with nothing timeline-specific needed here to make that happen.
+        """
+        self._timeline_last_activity = time.time()
+        self._slots[self._timeline_focus_slot].set_timeline_focus(True)
+
+    def _check_timeline_focus_idle(self) -> bool:
+        if time.time() - self._timeline_last_activity >= 10.0:
+            self._slots[self._timeline_focus_slot].set_timeline_focus(False)
+        return True  # continue ticking
+
+    def _set_timeline_focus_slot(self, slot_idx: int) -> None:
+        if slot_idx != self._timeline_focus_slot:
+            self._slots[self._timeline_focus_slot].set_timeline_focus(False)
+            self._timeline_focus_slot = slot_idx
+            # The shared marker follows whichever slot the timeline
+            # focuses on (see _set_history_position) — switching focus
+            # has to resync it to the new slot's own position, History
+            # or not, rather than leaving the previous slot's marker up.
+            self.timeline.canvas.set_history_position(self._slots[slot_idx]._history_position)
+            # The presence bar's own focus row follows the same switch.
+            self._request_presence_refresh()
+        self.register_timeline_activity()
+
+    def _tick_history_positions(self) -> bool:
+        """Refresh every non-focus slot's History playback position from
+        its own bridge's actual last-received frame (see
+        WebSocketBridge.current_history_position) rather than assuming
+        forward progress ourselves -- a theoretical wall-clock-based
+        estimate drifts from real playback at any speed but 1x, since
+        DSM needs real time to ramp delivery up (or down) to a new
+        rate rather than changing it instantly, and stays wrong
+        afterwards for as long as the estimate's own assumptions don't
+        match what's actually playing. Skipped for a paused slot: its
+        position is frozen by WebSocketBridge.pause() itself.
+
+        The focus slot -- the one the shared timeline marker actually
+        shows -- is handled separately, by _advance_focus_history_position:
+        a real recording gap in that one camera alone must not freeze
+        the shared marker while every other active camera keeps playing,
+        so it can't just trust this slot's own bridge the same way the
+        others here do. Both skip a slot in _leaving_history_slots
+        (see that field's own comment).
+        """
+        for slot_idx in self._active:
+            if slot_idx == self._timeline_focus_slot or slot_idx in self._leaving_history_slots:
+                continue
+            slot = self._slots[slot_idx]
+            if slot._ws_bridge is None or slot._ws_bridge.is_paused:
+                continue
+            position = slot._ws_bridge.current_history_position
+            if position is not None:
+                self._set_history_position(slot, position)
+        self._advance_focus_history_position()
+        return True  # continue ticking
+
+    def _advance_focus_history_position(self) -> None:
+        """Update the focus slot's own position (and, via
+        _set_history_position, the shared canvas marker) from whichever
+        active camera actually delivered real data in the last tick --
+        it doesn't matter which one, since every active slot is playing
+        toward the same target -- falling back to a wall-clock/speed
+        estimate only once every active camera has gone quiet at once:
+        a real recording gap in just the focus camera is masked for
+        free as long as any other active camera keeps delivering, which
+        is the common case and needs no estimation at all, only a
+        genuine gap or outage covering the whole layout at
+        the same instant ever reaches the fallback below.
+
+        See WebSocketBridge.consume_last_real_tick for why this is safe
+        to call once a second across every active bridge without missing
+        real data: each one accumulates its own highest tick between
+        calls, this just drains and compares them. The actual decision
+        is pulled out into compute_focus_marker_update so it's testable
+        without a live CameraSlot/WebSocketBridge (GTK widgets segfault
+        without a display in this test environment).
+        """
+        focus_slot = self._slots[self._timeline_focus_slot]
+        if focus_slot._ws_bridge is None or focus_slot._ws_bridge.is_paused:
+            return
+
+        ticks: list[int | None] = []
+        for i in self._active:
+            if i in self._leaving_history_slots:
+                continue
+            bridge = self._slots[i]._ws_bridge
+            if bridge is None:
+                continue
+            ticks.append(bridge.consume_last_real_tick())
+
+        new_position, self._history_gap_started_at, self._history_gap_reference_position = (
+            compute_focus_marker_update(
+                focus_slot._history_position,
+                self._history_gap_last_set_position,
+                ticks,
+                self._history_gap_started_at,
+                self._history_gap_reference_position,
+                time.time(),
+                self._timeline_speed,
+                self._timeline_reverse,
+            )
+        )
+        if new_position is None:
+            return  # nothing to extrapolate from yet
+        self._set_history_position(focus_slot, new_position)
+        self._history_gap_last_set_position = new_position
+
+    def _on_timeline_hover(self, local_x: float, timestamp: float) -> None:
+        """TimelineCanvas.set_hover_callback target.
+
+        Empty and offline slots both just mean "no thumbnail" — same as
+        fetch_camera_thumbnail_at's own empty-result case for a camera
+        with nothing recorded at that time, so nothing further needs to
+        distinguish them here.
+        """
+        camera = self._slots[self._timeline_focus_slot].camera
+        if camera is None or not self.app.api:
+            self._thumbnail_frame.set_visible(False)
+            return
+
+        # PyGObject versions disagree on whether this returns (ok, x, y)
+        # or just (x, y) on success / None on failure — handle both
+        # rather than pin to whichever shape this system happens to use.
+        translated = self.timeline.canvas.translate_coordinates(self._overlay, local_x, 0)
+        if translated is None:
+            return
+        if len(translated) == 3:
+            ok, overlay_x, overlay_y = translated
+            if not ok:
+                return
+        else:
+            overlay_x, overlay_y = translated
+
+        self._timeline_thumbnail_generation += 1
+        generation = self._timeline_thumbnail_generation
+
+        run_async(
+            fetch_camera_thumbnail_at(self.app.api, camera.id, int(timestamp)),
+            callback=lambda data: self._show_timeline_thumbnail(
+                generation, overlay_x, overlay_y, timestamp, data
+            ),
+            error_callback=lambda exc: log.debug("Timeline thumbnail fetch failed: %s", exc),
+        )
+
+    def _on_timeline_hover_leave(self) -> None:
+        self._timeline_thumbnail_generation += 1  # orphan any fetch already in flight
+        self._thumbnail_frame.set_visible(False)
+
+    # ------------------------------------------------------------------
+    # Recording presence and event markers
+    # ------------------------------------------------------------------
+
+    def _on_timeline_view_changed(self, start: float, end: float, following: bool) -> None:
+        """TimelineCanvas.set_view_changed_callback target.
+
+        Two very different cadences share this one callback: a settled
+        pan/zoom (following=False) is debounced like the hover thumbnail,
+        but following=True fires on every one-second tick by design (see
+        TimelineCanvas._on_tick) and would mean a fetch a second if
+        treated the same way -- throttled instead to an occasional
+        trailing-edge refresh.
+        """
+        if following:
+            if time.time() - self._presence_last_live_fetch < _PRESENCE_LIVE_REFRESH_SEC:
+                return
+            self._presence_last_live_fetch = time.time()
+            # force=True: see _presence_cache's own comment for why the
+            # live-follow path can't rely on the coverage cache.
+            self._refresh_timeline_data(start, end, force=True)
+            return
+        if self._presence_debounce_id:
+            GLib.source_remove(self._presence_debounce_id)
+        self._presence_debounce_id = GLib.timeout_add(
+            _PRESENCE_DEBOUNCE_MS, self._on_presence_debounce_fire, start, end
+        )
+
+    def _on_presence_debounce_fire(self, start: float, end: float) -> bool:
+        self._presence_debounce_id = 0
+        self._refresh_timeline_data(start, end)
+        return False  # one-shot timeout, don't repeat
+
+    def _request_presence_refresh(self) -> None:
+        """Re-derive presence/events for whatever the timeline's current
+        view covers, for a change to which cameras are active/focused
+        rather than to the view itself -- see the call sites in
+        _set_timeline_focus_slot, _save_session, and
+        _restore_layout_cameras.
+        """
+        if not hasattr(self, "timeline"):
+            return  # still constructing -- _apply_layout runs before self.timeline exists
+        start, end = self.timeline.canvas.get_view_range()
+        self._refresh_timeline_data(start, end)
+
+    def _active_timeline_cameras(self) -> tuple[int | None, list[int]]:
+        """(focus_camera_id, active_camera_ids) for the current layout --
+        an empty slot contributes nothing to either."""
+        active_ids = []
+        seen: set[int] = set()
+        for i in self._active:
+            camera = self._slots[i].camera
+            if camera is not None and camera.id not in seen:
+                seen.add(camera.id)
+                active_ids.append(camera.id)
+        focus_camera = self._slots[self._timeline_focus_slot].camera
+        return (focus_camera.id if focus_camera else None), active_ids
+
+    def _presence_covers(self, camera_id: int, start: float, end: float) -> bool:
+        cached = self._presence_cache.get(camera_id)
+        return cached is not None and cached[0] <= start and cached[1] >= end
+
+    def _refresh_timeline_data(self, start: float, end: float, force: bool = False) -> None:
+        """Fetch/update presence and event markers for whatever cameras
+        are focused/active, for the [start, end] view range. *force*
+        skips the cache-coverage check (see _presence_cache's own
+        comment for why the live-follow path needs this) -- callers
+        other than the live-follow path leave it False so a settled
+        pan/zoom over already-covered territory stays a cache hit."""
+        if not self.app.api:
+            return
+        focus_camera_id, active_camera_ids = self._active_timeline_cameras()
+        focus_id_list = [focus_camera_id] if focus_camera_id is not None else []
+        all_ids = list(dict.fromkeys([*active_camera_ids, *focus_id_list]))
+        if not all_ids:
+            self.timeline.canvas.set_presence_data([], [])
+            self.timeline.canvas.set_event_markers([], [])
+            return
+
+        if force:
+            needed = all_ids
+        else:
+            needed = [cid for cid in all_ids if not self._presence_covers(cid, start, end)]
+        if not needed:
+            self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
+            return
+
+        # Padded by one window's width on each side so re-panning by up
+        # to a screen's worth in either direction stays a cache hit
+        # instead of a network round trip -- see _presence_cache's own
+        # comment for what this caching scheme deliberately doesn't do.
+        pad = end - start
+        fetch_start, fetch_end = start - pad, end + pad
+        camera_names = {cid: self._camera_name(cid) for cid in needed}
+
+        self._timeline_data_generation += 1
+        generation = self._timeline_data_generation
+        run_async(
+            list_presence_and_events(
+                self.app.api, needed, camera_names, int(fetch_start), int(fetch_end)
+            ),
+            callback=lambda result: self._on_timeline_data_fetched(
+                generation,
+                needed,
+                fetch_start,
+                fetch_end,
+                result,
+                focus_camera_id,
+                active_camera_ids,
+            ),
+            error_callback=lambda exc: log.debug("Timeline data fetch failed: %s", exc),
+        )
+
+    def _camera_name(self, camera_id: int) -> str:
+        return next((c.name for c in self._cameras if c.id == camera_id), str(camera_id))
+
+    def _on_timeline_data_fetched(
+        self,
+        generation: int,
+        requested_ids: list[int],
+        fetch_start: float,
+        fetch_end: float,
+        result: tuple[dict[int, list[tuple[int, int]]], list[Event]],
+        focus_camera_id: int | None,
+        active_camera_ids: list[int],
+    ) -> None:
+        if generation != self._timeline_data_generation:
+            return  # superseded by a newer view change
+        presence, events = result
+        events_by_camera: dict[int, list[Event]] = {}
+        for ev in events:
+            events_by_camera.setdefault(ev.camera_id, []).append(ev)
+        for cid in requested_ids:
+            self._presence_cache[cid] = (fetch_start, fetch_end, presence.get(cid, []))
+            self._event_cache[cid] = (fetch_start, fetch_end, events_by_camera.get(cid, []))
+        self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
+
+    def _apply_timeline_data_to_canvas(
+        self, focus_camera_id: int | None, active_camera_ids: list[int]
+    ) -> None:
+        focus_spans = (
+            self._presence_cache[focus_camera_id][2]
+            if focus_camera_id is not None and focus_camera_id in self._presence_cache
+            else []
+        )
+        layout_spans = merge_intervals(
+            [
+                span
+                for cid in active_camera_ids
+                for span in self._presence_cache.get(cid, (0.0, 0.0, []))[2]
+            ]
+        )
+        self.timeline.canvas.set_presence_data(focus_spans, layout_spans)
+
+        focus_events = (
+            [
+                (ev.start_time, ev.stop_time)
+                for ev in self._event_cache[focus_camera_id][2]
+                if self._event_passes_filter(ev)
+            ]
+            if focus_camera_id is not None and focus_camera_id in self._event_cache
+            else []
+        )
+        layout_events = [
+            (ev.start_time, ev.stop_time)
+            for cid in active_camera_ids
+            for ev in self._event_cache.get(cid, (0.0, 0.0, []))[2]
+            if self._event_passes_filter(ev)
+        ]
+        self.timeline.canvas.set_event_markers(focus_events, layout_events)
+
+    def _camera_vendor(self, camera_id: int) -> str:
+        return next((c.vendor for c in self._cameras if c.id == camera_id), "")
+
+    def _event_passes_filter(self, ev: Event) -> bool:
+        """True unless the Filter-events popover has narrowed things
+        down and this event's decoded type isn't one of the selected
+        keys -- see services.event_bits and _on_filter_apply. Applies
+        equally to the presence bar's own markers and to Previous/Next
+        event navigation, so both always agree on what counts."""
+        if self._event_filter_keys is None:
+            return True
+        vendor = self._camera_vendor(ev.camera_id)
+        return event_matches_keys(
+            ev.event_type,
+            ev.reserved,
+            vendor,
+            self._event_filter_keys,
+            self._event_filter_match_all,
+        )
+
+    def _on_timeline_prev_event(self, _btn: Gtk.Button) -> None:
+        """Timeline's Previous event button -- always live (see
+        Timeline._build_toolbar), so a click while on Live drops the
+        whole layout into History mode first, the same as Back 10s."""
+        self._seek_to_nearest_event(forward=False)
+
+    def _on_timeline_next_event(self, _btn: Gtk.Button) -> None:
+        """Timeline's Next event button -- only reachable in History
+        mode (see Timeline.set_history_active), so there's always a
+        History position to search forward from."""
+        self._seek_to_nearest_event(forward=True)
+
+    def _seek_to_nearest_event(self, forward: bool) -> None:
+        """Find the nearest real event before/after the focus slot's
+        current position (or "now" if it's on Live), across every
+        camera in the active layout -- same scope as the presence bar's
+        own layout-accumulated row -- and seek the whole layout there
+        the same way a ruler click does, including dropping Live into
+        History.
+
+        A fixed search window rather than an expanding one, same
+        precedent as recording.py's own _HISTORY_SEEK_WINDOW: cheap
+        enough to call fresh per click, and a click with genuinely
+        nothing found just logs and does nothing rather than growing
+        the window indefinitely looking for a needle that isn't there.
+
+        Candidates within MIN_HISTORY_DELTA_SECONDS of wall clock are
+        skipped even when found -- WebSocketBridge would just clamp a
+        seek that close back to its own near-live floor anyway (see
+        _set_history_delta there), which for Next event could otherwise
+        mean landing back on the same clamped position repeatedly.
+        """
+        if not self.app.api or not self._active:
+            return
+        _, active_camera_ids = self._active_timeline_cameras()
+        if not active_camera_ids:
+            return
+        camera_names = {cid: self._camera_name(cid) for cid in active_camera_ids}
+        reference = self._focus_reference_time()
+        if forward:
+            from_time, to_time = int(reference), int(reference + _EVENT_NAV_WINDOW_SECONDS)
+        else:
+            from_time, to_time = int(reference - _EVENT_NAV_WINDOW_SECONDS), int(reference)
+
+        self._event_nav_generation += 1
+        generation = self._event_nav_generation
+        run_async(
+            list_granular_events(self.app.api, active_camera_ids, camera_names, from_time, to_time),
+            callback=lambda events, gen=generation, ref=reference: self._on_event_nav_resolved(
+                forward, gen, ref, events
+            ),
+            error_callback=lambda exc: log.error("Event lookup failed: %s", exc),
+        )
+
+    def _on_event_nav_resolved(
+        self, forward: bool, generation: int, reference: float, events: list[Event]
+    ) -> None:
+        """list_granular_events' result for one Previous/Next click.
+
+        Discarded if a newer click has fired since this lookup started
+        (see _event_nav_generation) -- rapid repeated clicking, exactly
+        the workaround _last_event_nav_key exists to make unnecessary,
+        would otherwise risk a slower/older lookup resolving after a
+        newer one and undoing its progress.
+        """
+        if generation != self._event_nav_generation:
+            return
+        now = time.time()
+        if forward:
+            candidates = [ev for ev in events if ev.start_time > reference]
+        else:
+            candidates = [ev for ev in events if ev.start_time < reference]
+        # A seek lands at-or-after the requested target (DSM rounds
+        # forward onto the next servable frame, never back), so a
+        # backward click's own landed position can sit a little past the
+        # event it just found -- close enough that it still passes the
+        # plain `<` filter above and would otherwise get re-selected as
+        # "nearest" on every subsequent Previous click, needing rapid
+        # repeated clicks to actually get past it. Excluding only that
+        # exact (camera, start_time) rather than a time window keeps
+        # other genuinely distinct events sitting close by still
+        # reachable one at a time. Matched on (camera_id, start_time),
+        # not Event.id -- that field is the *parent recording file's*
+        # id (see services.event._decode_camera_events), shared by every
+        # granular event decoded from the same file.
+        candidates = [
+            ev for ev in candidates if (ev.camera_id, ev.start_time) != self._last_event_nav_key
+        ]
+        candidates = [ev for ev in candidates if now - ev.start_time >= MIN_HISTORY_DELTA_SECONDS]
+        candidates = [ev for ev in candidates if self._event_passes_filter(ev)]
+        if not candidates:
+            log.info("No %s event found", "next" if forward else "previous")
+            return
+        nearest = min(candidates, key=lambda ev: abs(ev.start_time - reference))
+        self._last_event_nav_key = (nearest.camera_id, nearest.start_time)
+        self._on_timeline_seek(nearest.start_time)
+
+    # ------------------------------------------------------------------
+    # Calendar jump
+    # ------------------------------------------------------------------
+
+    def _calendar_initial_datetime(self) -> datetime:
+        """Timeline.set_calendar_initial_datetime_callback target -- the
+        popover opens to wherever the focus slot currently is, same
+        reference point as Back/Forward 10s and Previous/Next event."""
+        return datetime.fromtimestamp(self._focus_reference_time())
+
+    def _on_calendar_jump(self, dt: datetime) -> None:
+        """Timeline.set_jump_callback target -- seeks the whole layout
+        there the same way a ruler click does, including dropping Live
+        into History. No day-existence re-check here: the picker itself
+        already refused any day without a layout-accumulated recording
+        (see _on_calendar_month_changed), and a specific time of day
+        within an available day is deliberately never checked (a click
+        landing in a same-day gap is exactly what a ruler click already
+        handles -- nearest recording, or nothing found).
+
+        Unlike a ruler click, this can land far outside whatever the
+        timeline currently shows -- normalizes zoom and centers the
+        view on the target first (see TimelineCanvas.center_on) so the
+        jump doesn't leave the marker off-screen, or inherit whatever
+        zoom/pan the timeline happened to be left at.
+        """
+        self.timeline.canvas.center_on(dt.timestamp())
+        self._on_timeline_seek(dt.timestamp())
+
+    def _on_calendar_month_changed(self, year: int, month: int) -> None:
+        """Timeline.set_calendar_month_changed_callback target -- fetch
+        which days of (year, month) have any recording, and the merged
+        recording spans themselves, across every camera in the active
+        layout, for the picker's own day-existence marking/refusal and
+        exact-time Jump validation (see DateTimePicker.
+        set_month_availability)."""
+        if not self.app.api:
+            return
+        _, active_camera_ids = self._active_timeline_cameras()
+        if not active_camera_ids:
+            return
+        month_start = datetime(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        month_end = datetime(year, month, last_day, 23, 59, 59)
+
+        self._calendar_generation += 1
+        generation = self._calendar_generation
+        run_async(
+            list_recording_presence(
+                self.app.api,
+                active_camera_ids,
+                int(month_start.timestamp()),
+                int(month_end.timestamp()),
+            ),
+            callback=lambda result, gen=generation: self._on_calendar_availability_fetched(
+                gen, year, month, result
+            ),
+            error_callback=lambda exc: log.debug("Calendar availability fetch failed: %s", exc),
+        )
+
+    def _on_calendar_availability_fetched(
+        self,
+        generation: int,
+        year: int,
+        month: int,
+        result: dict[int, list[tuple[int, int]]],
+    ) -> None:
+        if generation != self._calendar_generation:
+            return  # superseded by a newer month view
+        days: set[int] = set()
+        all_spans: list[tuple[int, int]] = []
+        for spans in result.values():
+            all_spans.extend(spans)
+            for span_start, span_stop in spans:
+                day = datetime.fromtimestamp(span_start).date()
+                end_day = datetime.fromtimestamp(span_stop).date()
+                while day <= end_day:
+                    if day.year == year and day.month == month:
+                        days.add(day.day)
+                    day += timedelta(days=1)
+        self.timeline.set_calendar_month_availability(year, month, days, merge_intervals(all_spans))
+
+    # ------------------------------------------------------------------
+    # Download
+    # ------------------------------------------------------------------
+
+    def _download_available_cameras(self) -> list[tuple[int, str]]:
+        """Timeline.set_download_populate_callback target -- (camera_id,
+        name) for every camera actually assigned to a slot in the active
+        layout, pulled fresh each time the Download popover opens rather
+        than tracked as slots change (see the callback's own docstring).
+        The timeline's own tracked camera (see _timeline_focus_slot) comes
+        first, so the popover's dropdown -- which always defaults to
+        position 0 -- opens on the camera the timeline is already showing,
+        the same reference point as the calendar jump and Back/Forward 10s."""
+        cameras = list(
+            dict.fromkeys(
+                (slot.camera.id, slot.camera.name)
+                for i, slot in enumerate(self._slots)
+                if i in self._active and slot.camera
+            )
+        )
+        focus_camera = self._slots[self._timeline_focus_slot].camera
+        return order_cameras_focus_first(cameras, focus_camera.id if focus_camera else None)
+
+    def _on_timeline_download(self, camera_id: int, start: datetime, end: datetime) -> None:
+        """Timeline.set_download_callback target -- resolves the covering
+        recording for *camera_id* at *start* and streams the [start, end)
+        slice to a user-chosen file, mirroring RecordingsView._on_download's
+        FileDialog/status/error handling."""
+        api = self.app.api
+        if not api:
+            return
+        camera_name = next((c.name for c in self._cameras if c.id == camera_id), str(camera_id))
+
+        dialog = Gtk.FileDialog()
+        safe_name = re.sub(r'[/\\<>:"|?*]', "_", camera_name)
+        dialog.set_initial_name(f"{safe_name}_{start:%Y%m%d_%H%M%S}.mp4")
+
+        def _on_save(d: Gtk.FileDialog, result: object) -> None:
+            try:
+                gfile = d.save_finish(result)
+            except Exception:
+                return  # Cancelled
+            if gfile is None:
+                return
+            path = gfile.get_path()
+            if not path or self.app.api is None:
+                return
+
+            async def _do_download() -> Path:
+                rec = await find_recording_at(api, camera_id, int(start.timestamp()))
+                if rec is None:
+                    raise ValueError("No recording found for that camera/time range")
+                return await download_recording_range(
+                    api, rec, start.timestamp(), end.timestamp(), Path(path)
+                )
+
+            def _on_success(p: Path) -> None:
+                log.info("Downloaded %s [%s - %s] to %s", camera_name, start, end, p)
+                info = Gtk.AlertDialog()
+                info.set_message("Download complete")
+                info.set_detail(f"Saved to {p}")
+                info.set_buttons(["OK"])
+                info.show(self.window)
+
+            def _on_error(exc: Exception) -> None:
+                log.error("Download failed for %s [%s - %s]: %s", camera_name, start, end, exc)
+                err = Gtk.AlertDialog()
+                err.set_message("Download failed")
+                err.set_detail(f"Could not download from '{camera_name}'.\n\n{exc}")
+                err.set_buttons(["OK"])
+                err.show(self.window)
+
+            run_async(_do_download(), callback=_on_success, error_callback=_on_error)
+
+        dialog.save(self.window, None, _on_save)
+
+    # ------------------------------------------------------------------
+    # Event-type filter
+    # ------------------------------------------------------------------
+
+    def _on_filter_popover_show(self) -> None:
+        """Timeline.set_filter_popover_show_callback target -- start (or
+        restart) the per-camera history scan the Filter-events checklist
+        is built from. Reuses the exact same EnumInterval-based decode
+        as event markers do (list_granular_events), just scoped one
+        camera at a time and merged into a persisted cache
+        (AppConfig.event_type_history) rather than the presence bar's
+        own short-lived one, so it must never be redone for a camera
+        once known, only brought forward from wherever it was last
+        checked. See AppConfig.event_type_history's own comment for why
+        this is spread out one camera at a time
+        (_scan_next_camera_for_event_types) rather than combined into
+        one request.
+        """
+        if not self.app.api:
+            return
+        _, active_camera_ids = self._active_timeline_cameras()
+        self._filter_scan_generation += 1
+        generation = self._filter_scan_generation
+        if not active_camera_ids:
+            self.timeline.show_filter_options(
+                [], self._event_filter_keys, self._event_filter_match_all
+            )
+            return
+        names = [self._camera_name(cid) for cid in active_camera_ids]
+        self.timeline.show_filter_scanning(names)
+        self._scan_next_camera_for_event_types(generation, active_camera_ids, 0)
+
+    def _scan_next_camera_for_event_types(
+        self, generation: int, camera_ids: list[int], index: int
+    ) -> None:
+        """One EnumInterval request per camera, strictly sequential --
+        never combined into one multi-camera request, which is what
+        risks a timeout on a wide range (see services.event's own
+        _EVENT_MAP_REQUEST_TIMEOUT comment), not the per-camera cost
+        itself. A camera already in the cache only needs the gap since
+        its own checked_until brought forward, not a fresh full scan.
+        """
+        if generation != self._filter_scan_generation or not self.app.api:
+            return
+        if index >= len(camera_ids):
+            self._finish_event_type_scan(generation, camera_ids)
+            return
+        camera_id = camera_ids[index]
+        history = self.app.config.event_type_history.get(camera_id)
+        now = int(time.time())
+        from_time = (
+            history.checked_until
+            if history is not None
+            else now - _EVENT_TYPE_SCAN_MAX_LOOKBACK_SECONDS
+        )
+        camera_name = self._camera_name(camera_id)
+
+        def _on_scanned(events: list[Event]) -> None:
+            self._on_camera_event_types_scanned(
+                generation, camera_id, index, camera_ids, now, events
+            )
+
+        def _on_failed(exc: BaseException) -> None:
+            self._on_camera_event_type_scan_failed(generation, camera_id, index, camera_ids, exc)
+
+        run_async(
+            list_granular_events(
+                self.app.api, [camera_id], {camera_id: camera_name}, from_time, now
+            ),
+            callback=_on_scanned,
+            error_callback=_on_failed,
+        )
+
+    def _on_camera_event_types_scanned(
+        self,
+        generation: int,
+        camera_id: int,
+        index: int,
+        camera_ids: list[int],
+        cutoff: int,
+        events: list[Event],
+    ) -> None:
+        if generation != self._filter_scan_generation:
+            return  # popover closed/reopened since this camera's scan started
+        history = self.app.config.event_type_history.setdefault(camera_id, EventTypeHistory())
+        seen = set(history.types)
+        seen.update((ev.event_type, ev.reserved) for ev in events)
+        history.types = sorted(seen)
+        history.checked_until = cutoff
+        save_config(self.app.config)
+        self.timeline.mark_filter_camera_scanned(self._camera_name(camera_id))
+        self._scan_next_camera_for_event_types(generation, camera_ids, index + 1)
+
+    def _on_camera_event_type_scan_failed(
+        self,
+        generation: int,
+        camera_id: int,
+        index: int,
+        camera_ids: list[int],
+        exc: BaseException,
+    ) -> None:
+        if generation != self._filter_scan_generation:
+            return
+        log.debug("Event-type scan failed for %s: %s", self._camera_name(camera_id), exc)
+        # Skip it for this round -- its cache entry (if any) is left
+        # untouched, so the next popover open just retries from the
+        # same checked_until instead of the whole scan getting stuck.
+        self.timeline.mark_filter_camera_scanned(self._camera_name(camera_id))
+        self._scan_next_camera_for_event_types(generation, camera_ids, index + 1)
+
+    def _finish_event_type_scan(self, generation: int, camera_ids: list[int]) -> None:
+        if generation != self._filter_scan_generation:
+            return
+        occurrences: list[tuple[int, int, str]] = []
+        for cid in camera_ids:
+            history = self.app.config.event_type_history.get(cid)
+            if history is None:
+                continue
+            vendor = self._camera_vendor(cid)
+            occurrences.extend((flag, reserved, vendor) for flag, reserved in history.types)
+        options = build_filter_options(occurrences)
+        self.timeline.show_filter_options(
+            options, self._event_filter_keys, self._event_filter_match_all
+        )
+
+    def _on_filter_cancel(self) -> None:
+        """Timeline.set_filter_cancel_callback target -- fires on any
+        popover dismissal (Cancel click, click-outside, Escape; see
+        Timeline._on_filter_popover_closed). Bumping the generation is
+        enough: every in-flight scan step already checks it before
+        doing anything further (see _scan_next_camera_for_event_types
+        and friends), so the abandoned chain just stops on its own
+        rather than continuing to populate the cache in the
+        background."""
+        self._filter_scan_generation += 1
+
+    def _on_filter_apply(self, selected_keys: set[str] | None, match_all: bool) -> None:
+        """Timeline.set_filter_apply_callback target -- narrows the
+        presence bar's own event markers and Previous/Next event
+        navigation to the chosen types (see _event_passes_filter).
+        Reuses whatever's already cached rather than re-fetching: the
+        underlying Event data doesn't change just because the filter
+        did."""
+        self._event_filter_keys = selected_keys
+        self._event_filter_match_all = match_all
+        focus_camera_id, active_camera_ids = self._active_timeline_cameras()
+        self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
+
+    def _on_timeline_seek(self, timestamp: float) -> None:
+        """TimelineCanvas.set_seek_callback target — seeks every active
+        slot with a camera into History mode at *timestamp*, each
+        resolving its own camera's covering recording independently.
+        The timeline is one shared display, not a shared stream: it
+        tells each slot what to play, the same way Live already works.
+        Staggered across slots (see _HISTORY_TRANSITION_STAGGER_MS)
+        rather than all fired in the same instant.
+
+        One generation (see _seek_generation) for the whole batch, not
+        one per slot -- slots within the same batch must not supersede
+        each other, only a *later* call to this method should.
+
+        Also clears a pending Pause, the same as WebSocketBridge.seek()
+        does at its own level: a seek is "go here and play", so leaving
+        the toolbar showing Play (and every slot's own player still
+        locally paused) after this would read as still paused when it
+        isn't.
+
+        Pans (without changing zoom) to keep the target visible -- see
+        TimelineCanvas.ensure_visible -- so Back/Forward 10s and
+        Previous/Next event, which can each land outside whatever the
+        timeline currently shows, never leave the marker off-screen. A
+        no-op for a ruler click, which can only ever target something
+        already visible.
+        """
+        if self._timeline_paused:
+            self._timeline_paused = False
+            self.timeline.set_paused(False)
+            for slot_idx in self._active:
+                self._slots[slot_idx].player.set_paused(False)
+        self.timeline.canvas.ensure_visible(timestamp)
+        target_unix = int(timestamp)
+        self._seek_generation += 1
+        generation = self._seek_generation
+        actions: list[Callable[[], None]] = [
+            partial(self._seek_slot_to_time, self._slots[slot_idx], target_unix, generation)
+            for slot_idx in self._active
+        ]
+        self._run_staggered(actions)
+
+    def _run_staggered(self, actions: list[Callable[[], None]]) -> None:
+        """Run each of *actions* in order, _HISTORY_TRANSITION_STAGGER_MS
+        apart across GTK main-loop iterations instead of all in the same
+        one -- see that constant for why. The first runs immediately."""
+        for i, action in enumerate(actions):
+            if i == 0:
+                action()
+            else:
+                GLib.timeout_add(
+                    i * _HISTORY_TRANSITION_STAGGER_MS, self._run_staggered_one, action
+                )
+
+    @staticmethod
+    def _run_staggered_one(action: Callable[[], None]) -> bool:
+        action()
+        return False  # one-shot timeout, don't repeat
+
+    def _seek_slot_to_time(self, slot: CameraSlot, target_unix: int, generation: int) -> None:
+        """Resolve which recording covers *target_unix* for *slot*'s
+        camera and enter (or continue) History mode there.
+
+        Shared by _on_timeline_seek (once per active slot on a timeline
+        click, all sharing one generation) and _assign_to_slot (a
+        camera picked into a slot that was already in History mode
+        keeps playing recorded video for the newly picked camera too,
+        at the same point in time, rather than silently dropping back
+        to live -- its own fresh generation, a batch of one)."""
+        if not self.app.api or slot.camera is None:
+            return
+        api = self.app.api
+        camera = slot.camera
+        slot_idx = slot.index
+        cam_id = camera.id
+        run_async(
+            find_recording_at(api, camera.id, target_unix),
+            callback=lambda rec, i=slot_idx, c=cam_id: self._on_recording_resolved(
+                generation, i, c, target_unix, rec
+            ),
+            error_callback=lambda exc, i=slot_idx, name=camera.name: self._on_history_lookup_failed(
+                i, name, exc
+            ),
+        )
+
+    def _on_history_lookup_failed(
+        self, slot_idx: int, camera_name: str, exc: BaseException
+    ) -> None:
+        log.error("History lookup failed for %s: %s", camera_name, exc)
+        self._finish_timeline_seek(slot_idx)
+
+    def _on_recording_resolved(
+        self,
+        generation: int,
+        slot_idx: int,
+        cam_id: int,
+        target_unix: int,
+        recording: Recording | None,
+    ) -> None:
+        """find_recording_at's result for one slot's seek request.
+
+        Discarded outright if a newer seek has been issued since this
+        lookup started (see _seek_generation) -- DSM's own per-camera
+        lookup latency varies enough, especially across a whole grid,
+        that a burst of clicks/ruler drags can otherwise have a stale
+        lookup land *after* a newer one already applied, silently
+        snapping a slot back to an earlier position and, worse, doing
+        it repeatedly as more stale lookups keep trickling in.
+
+        Still calls _finish_timeline_seek even when discarded this
+        way: a stale lookup's role as *an* in-flight one for this slot
+        is over regardless of whether its own result gets used.
+        Skipping that release here stranded a superseded Back/Forward
+        10s click until only _NUDGE_RESOLVE_TIMEOUT_SECONDS' safety
+        net eventually cleared it, several seconds later than a click
+        should ever take to register.
+        """
+        if generation != self._seek_generation:
+            self._finish_timeline_seek(slot_idx)
+            return
+        slot = self._slots[slot_idx]
+        if not (slot.camera and slot.camera.id == cam_id):
+            self._finish_timeline_seek(slot_idx)
+            return
+        if recording is None:
+            when = time.strftime("%c", time.localtime(target_unix))
+            log.info("No recording found near %s for %s", when, slot.camera.name)
+            self._finish_timeline_seek(slot_idx)
+        elif slot._ws_bridge is not None and slot._ws_bridge.is_history:
+            # Already playing recorded video: let the bridge itself decide
+            # whether this is a same-recording reseek (reuses the
+            # connection) or a jump to a different one (reconnects) — see
+            # WebSocketBridge.seek()'s own docstring.
+            run_async(
+                slot._ws_bridge.seek(recording, target_unix),
+                callback=lambda pos, s=slot, i=slot_idx: self._on_history_seek_applied(s, i, pos),
+                error_callback=lambda exc, i=slot_idx: self._on_history_seek_failed(slot, i, exc),
+            )
+        else:
+            position = self._enter_history_mode(slot, recording, target_unix)
+            self._on_history_seek_applied(slot, slot_idx, position)
+
+    def _on_history_seek_applied(self, slot: CameraSlot, slot_idx: int, position: int) -> None:
+        """Common tail for _on_recording_resolved's two seek-performing
+        branches. *position* may differ from what was requested (see
+        WebSocketBridge.seek's/_enter_history_mode's own near-live
+        clamp) -- reflecting it here, not the raw click/nudge target,
+        is what keeps the on-screen marker and a follow-up Forward 10s
+        (whose own reference point is this slot's _history_position)
+        from drifting past wall clock click by click."""
+        self._set_history_position(slot, position)
+        self.timeline.set_history_active(True)
+        self._finish_timeline_seek(slot_idx)
+
+    def _on_history_seek_failed(self, slot: CameraSlot, slot_idx: int, exc: BaseException) -> None:
+        log.error("History seek failed for %s: %s", slot.camera.name if slot.camera else "?", exc)
+        self._finish_timeline_seek(slot_idx)
+
+    def _finish_timeline_seek(self, slot_idx: int) -> None:
+        """Whatever a seek's outcome, the focus slot's part in it is
+        done -- let any Back/Forward 10s clicks that piled up meanwhile
+        fire as one flush (see _flush_timeline_nudge), now that
+        _set_history_position (if it ran) has already landed rather
+        than still being about to."""
+        if slot_idx == self._timeline_focus_slot:
+            self._nudge_seek_in_flight = False
+            self._flush_timeline_nudge()
+
+    def _set_history_position(self, slot: CameraSlot, position: float | None) -> None:
+        """Record *slot*'s own current History playback position (see
+        CameraSlot._history_position) and, if *slot* is the timeline's
+        current focus slot, push it to the canvas marker too — the two
+        can disagree, e.g. a non-focus slot mid-seek, and only the
+        focus slot's position is ever what the shared marker shows."""
+        slot._history_position = position
+        if slot.index == self._timeline_focus_slot:
+            self.timeline.canvas.set_history_position(position)
+
+    def _focus_reference_time(self) -> float:
+        """The focus slot's current History position, or wall-clock
+        "now" if it's on Live -- shared reference point for Back/Forward
+        10s (_flush_timeline_nudge) and Previous/Next event
+        (_seek_to_nearest_event)."""
+        position = self._slots[self._timeline_focus_slot]._history_position
+        return position if position is not None else time.time()
+
+    def _on_timeline_live_clicked(self, _btn: Gtk.Button) -> None:
+        """Timeline's Live button — return every slot currently playing
+        recorded video back to its normal live stream."""
+        self._return_all_to_live()
+
+    def _on_timeline_back_10s(self, _btn: Gtk.Button) -> None:
+        """Timeline's Back 10s button — see _nudge_timeline."""
+        self._nudge_timeline(-_TIMELINE_NUDGE_SECONDS)
+
+    def _on_timeline_forward_10s(self, _btn: Gtk.Button) -> None:
+        """Timeline's Forward 10s button — see _nudge_timeline. Only
+        reachable in History mode (see Timeline.set_history_active), so
+        there's always a position on the timeline to jump forward from."""
+        self._nudge_timeline(_TIMELINE_NUDGE_SECONDS)
+
+    def _nudge_timeline(self, delta_seconds: float) -> None:
+        """Accumulate a Back/Forward 10s click and flush it if nothing
+        is already in flight. DSM's per-camera recording lookup
+        (_seek_slot_to_time) takes long enough that a burst of taps
+        would otherwise each fire their own already-stale lookup;
+        instead they collapse into whatever the accumulated delta is
+        once the previous one lands (_flush_timeline_nudge, triggered
+        from _on_recording_resolved)."""
+        self._pending_nudge_seconds += delta_seconds
+        if not self._nudge_seek_in_flight:
+            self._flush_timeline_nudge()
+
+    def _flush_timeline_nudge(self) -> None:
+        """Fire one seek for whatever Back/Forward 10s delta has
+        accumulated since the last one landed. Marked in flight, via
+        the same path _on_timeline_seek already uses (which is also
+        what takes every slot into History mode, so clicking Back 10s
+        while live drops straight into it), until the focus slot's own
+        lookup resolves and calls back in here for anything that
+        accumulated meanwhile.
+
+        A target landing within WebSocketBridge's own near-live floor
+        is left for it to clamp (see _set_history_delta there) rather
+        than caught here and redirected to Live -- Forward 10s stays
+        historical navigation like every other seek; the Live button
+        right next to it is the deliberate way back to real time."""
+        delta, self._pending_nudge_seconds = self._pending_nudge_seconds, 0.0
+        if delta == 0 or not self._active:
+            return
+        target = self._focus_reference_time() + delta
+        self._nudge_seek_in_flight = True
+        GLib.timeout_add_seconds(_NUDGE_RESOLVE_TIMEOUT_SECONDS, self._on_nudge_resolve_timeout)
+        self._on_timeline_seek(target)
+
+    def _on_nudge_resolve_timeout(self) -> bool:
+        """Safety net for _flush_timeline_nudge's in-flight tracking —
+        see _NUDGE_RESOLVE_TIMEOUT_SECONDS."""
+        if self._nudge_seek_in_flight:
+            self._nudge_seek_in_flight = False
+            self._flush_timeline_nudge()
+        return False  # one-shot
+
+    def _on_timeline_pause_play(self, _btn: Gtk.Button) -> None:
+        """Timeline's Pause/Play button — a single shared toggle for
+        every active slot, the same scope as Back/Forward 10s and
+        Live."""
+        if self._timeline_paused:
+            self._resume_all_slots()
+        else:
+            self._pause_all_slots()
+
+    def _pause_all_slots(self) -> None:
+        """Freeze every active slot in place, each per its own current
+        mode rather than forcing a shared one -- see
+        WebSocketBridge.pause's own docstring for what "freeze" means
+        per mode. A Live slot never leaves Live mode just because it's
+        paused (see timeline.py's transport-cluster comment for why
+        that differs from Back 10s/Previous event)."""
+        self._timeline_paused = True
+        self.timeline.set_paused(True)
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None:
+                continue
+            if slot._ws_bridge is not None:
+                # Synchronously, before mpv -- see request_pause's own
+                # docstring for the write-stall race this closes.
+                slot._ws_bridge.request_pause()
+            if slot._rtsp_monitor is not None:
+                # Also before mpv -- same idea as request_pause: its
+                # own stall detection must already know a pause is
+                # deliberate before mpv.pause stops time_pos advancing,
+                # or it reads the frozen clock as the stream having
+                # died (see RtspHealthMonitor.set_paused's docstring).
+                slot._rtsp_monitor.set_paused(True)
+            # The local freeze applies regardless of protocol -- a
+            # camera on RTSP/mjpeg/etc. has no _ws_bridge at all, but
+            # mpv is still what's rendering it either way.
+            slot.player.set_paused(True)
+            if slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.pause(),
+                callback=lambda pos, s=slot: (
+                    self._set_history_position(s, pos) if pos is not None else None
+                ),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Pause failed for %s: %s", name, exc
+                ),
+            )
+
+    def _resume_all_slots(self) -> None:
+        """Undo _pause_all_slots for every active slot. A History
+        slot's resumed position can land later than where it was
+        paused (WebSocketBridge.resume's own wall-clock floor), hence
+        still updating _set_history_position here rather than assuming
+        the frozen marker was already correct."""
+        self._timeline_paused = False
+        self.timeline.set_paused(False)
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None:
+                continue
+            # Same reasoning as _pause_all_slots: the local unfreeze
+            # applies regardless of protocol.
+            slot.player.set_paused(False)
+            if slot._rtsp_monitor is not None:
+                slot._rtsp_monitor.set_paused(False)
+            if slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.resume(),
+                callback=lambda pos, s=slot: (
+                    self._set_history_position(s, pos) if pos is not None else None
+                ),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Resume failed for %s: %s", name, exc
+                ),
+            )
+
+    def _on_timeline_speed_selected(self, value: str) -> None:
+        """Timeline's speed dropdown — applies to every active History
+        slot at once, the same scope as Pause/Back/Forward 10s. A Live
+        slot has no speed concept (WebSocketBridge.set_speed is a
+        no-op for one), so this only actually does anything for slots
+        already in History mode."""
+        self._timeline_speed = value
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None or slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.set_speed(value),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Speed change failed for %s: %s", name, exc
+                ),
+            )
+
+    def _on_timeline_reverse_selected(self, reverse: bool) -> None:
+        """Timeline's Fwd/Rev toggle — same scope/reasoning as
+        _on_timeline_speed_selected."""
+        self._timeline_reverse = reverse
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera is None or slot._ws_bridge is None:
+                continue
+            camera_name = slot.camera.name
+            run_async(
+                slot._ws_bridge.set_reverse(reverse),
+                error_callback=lambda exc, name=camera_name: log.error(
+                    "Direction change failed for %s: %s", name, exc
+                ),
+            )
+
+    def _return_all_to_live(self) -> None:
+        """Return every active slot currently playing recorded video
+        back to its normal live stream — shared by the Live button and
+        _apply_layout, since History state is scoped to the current
+        layout and doesn't carry across a switch to a different one.
+        Restarted staggered (see _HISTORY_TRANSITION_STAGGER_MS), not
+        all in the same instant, for the same reason _on_timeline_seek
+        is.
+
+        __init__ calls _apply_layout() once before self.timeline exists
+        (self._active is still empty at that point too, so nothing
+        below finds anything to act on either way) — guard rather than
+        reorder __init__, since nothing else here depends on
+        construction order.
+        """
+        actions: list[Callable[[], None]] = []
+        for slot_idx in self._active:
+            slot = self._slots[slot_idx]
+            if slot.camera and slot._ws_bridge is not None and slot._ws_bridge.is_history:
+                self._set_history_position(slot, None)
+                self._leaving_history_slots.add(slot_idx)
+                actions.append(partial(self._start_stream, slot_idx, slot.camera))
+        self._run_staggered(actions)
+        if hasattr(self, "timeline"):
+            self.timeline.set_history_active(False)
+            self._timeline_speed = "1"
+            self.timeline.set_speed("1")
+            self._timeline_reverse = False
+            self.timeline.set_reverse(False)
+            if actions:
+                # Only when something actually left History -- a layout
+                # switch while every slot was already Live shouldn't
+                # clobber a view the user may have deliberately panned/
+                # zoomed while still watching live.
+                self.timeline.canvas.reset_view()
+
+    def _show_timeline_thumbnail(
+        self, generation: int, overlay_x: float, overlay_y: float, timestamp: float, data: bytes
+    ) -> None:
+        # The cursor may have moved on (or left) while the fetch was in
+        # flight — a stale image popping up over wherever it's pointing
+        # now would be worse than just not showing one.
+        if generation != self._timeline_thumbnail_generation:
+            log.debug("Timeline thumbnail: dropped stale response")
+            return
+        if not data:
+            log.debug("Timeline thumbnail: empty response")
+            return
+        try:
+            loader = GdkPixbuf.PixbufLoader()
+            loader.write(data)
+            loader.close()
+            pixbuf = loader.get_pixbuf()
+        except Exception as exc:
+            log.debug("Timeline thumbnail decode failed: %s", exc)
+            return
+        if pixbuf is None:
+            log.debug("Timeline thumbnail: decoded to no pixbuf")
+            return
+
+        # Gtk.Picture's own natural size follows its paintable's native
+        # pixel size, not set_size_request()'s minimum — DSM returns a
+        # much bigger image (seen: 320x180) than the small preview this
+        # is meant to be, and without capping it here the widget renders
+        # at that full native size regardless of what's requested, and
+        # the margin math below (which assumes the requested size) would
+        # then be positioning a box far taller than it actually draws.
+        scaled = pixbuf.scale_simple(
+            _TIMELINE_THUMBNAIL_WIDTH, _TIMELINE_THUMBNAIL_HEIGHT, GdkPixbuf.InterpType.BILINEAR
+        )
+        if scaled is None:
+            return
+        self._thumbnail_picture.set_paintable(Gdk.Texture.new_for_pixbuf(scaled))
+        self._thumbnail_time_label.set_label(
+            datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d\n%H:%M:%S")
+        )
+        # Centered horizontally on the cursor, bottom edge resting on
+        # the ruler's top edge, clamped to stay within the overlay.
+        overlay_width = self._overlay.get_width()
+        max_x = overlay_width - _TIMELINE_THUMBNAIL_WIDTH
+        x = max(0.0, min(overlay_x - _TIMELINE_THUMBNAIL_WIDTH / 2, max_x))
+        y = max(0.0, overlay_y - _TIMELINE_THUMBNAIL_HEIGHT)
+        self._thumbnail_frame.set_margin_start(int(x))
+        self._thumbnail_frame.set_margin_top(int(y))
+        self._thumbnail_frame.set_visible(True)
 
     def set_layout(self, layout: str) -> None:
         """Switch to *layout*, keeping each layout's camera assignments."""
@@ -531,6 +2130,8 @@ class LiveView(Gtk.Box):
                 # so clear it explicitly: hidden slots from other layouts keep
                 # their camera in memory rather than resetting it.
                 self._slots[phys].clear()
+        # The layout-accumulated row's own camera set just changed.
+        self._request_presence_refresh()
 
     # ------------------------------------------------------------------
     # User interactions
@@ -572,6 +2173,7 @@ class LiveView(Gtk.Box):
         """Select a grid slot, or deselect it if already selected."""
         if slot_idx not in self._active:
             return
+        self._set_timeline_focus_slot(slot_idx)
         if self._selected_slot == slot_idx:
             self._select_slot(None)
         else:
@@ -864,13 +2466,29 @@ class LiveView(Gtk.Box):
                 slot.clear()
                 break
 
+        target = self._slots[slot_idx]
+        # A slot playing recorded video keeps doing so for the newly
+        # picked camera too, at the same point in time it was already
+        # showing -- picking a camera isn't implicitly "return to live"
+        # the way the Live button explicitly is (see _return_all_to_live).
+        # Read before clear() below, which drops it.
+        history_target = (
+            target._history_position
+            if target._ws_bridge is not None and target._ws_bridge.is_history
+            else None
+        )
+
         # Clear the target slot and assign
-        self._slots[slot_idx].clear()
-        self._slots[slot_idx].assign(camera)
-        self._restore_saved_audio_state(self._slots[slot_idx], camera)
-        self._update_slot_audio(self._slots[slot_idx], camera)
-        self._load_slot_ptz_extras(self._slots[slot_idx], camera)
-        self._start_stream(slot_idx, camera)
+        target.clear()
+        target.assign(camera)
+        self._restore_saved_audio_state(target, camera)
+        self._update_slot_audio(target, camera)
+        self._load_slot_ptz_extras(target, camera)
+        if history_target is not None:
+            self._seek_generation += 1
+            self._seek_slot_to_time(target, int(history_target), self._seek_generation)
+        else:
+            self._start_stream(slot_idx, camera)
 
     # ------------------------------------------------------------------
     # Streaming
@@ -950,13 +2568,92 @@ class LiveView(Gtk.Box):
                 self._start_rtsp_monitor(slot, url)
 
     def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
-        """Start a WebSocket bridge and play the resulting pipe in mpv."""
+        """Start a Live WebSocket bridge and play the resulting pipe in
+        mpv (see _enter_history_mode for the History equivalent —
+        _start_bridge is the plumbing they share)."""
         slot.stop_stream()
         verify_ssl = self.app.api.profile.verify_ssl if self.app.api else True
         sid = self.app.api.sid if self.app.api else ""
         label = slot.camera.name if slot.camera else ""
         bridge = WebSocketBridge(url, verify_ssl, sid, label=label)
+        self._start_bridge(slot, bridge)
+
+    def _enter_history_mode(self, slot: CameraSlot, recording: Recording, target_unix: int) -> int:
+        """Switch *slot* into History mode, playing *recording* from
+        *target_unix* (see ws_bridge.py's module docstring for the wire
+        protocol). Only for a fresh seek -- a slot already in History
+        mode reuses its existing bridge's seek() instead, which reuses
+        the connection when it can rather than tearing down and
+        rebuilding a whole pipeline for every click (see
+        _on_recording_resolved).
+
+        Returns the actual (possibly clamped, see
+        WebSocketBridge._set_history_delta) position now playing --
+        available synchronously right off the freshly constructed
+        bridge, no await needed, since the clamp runs in its own
+        __init__ -- for the caller to reflect on its own UI rather than
+        assuming target_unix was used as-is. Falls back to target_unix
+        itself if there's no API to build a bridge at all."""
+        if not self.app.api:
+            return target_unix
+        slot.stop_stream()
+        verify_ssl = self.app.api.profile.verify_ssl
+        sid = self.app.api.sid
+        label = slot.camera.name if slot.camera else ""
+        url = get_history_view_path(self.app.api)
+        camera_id = recording.camera_id
+
+        async def resolve(target: int) -> Recording | None:
+            """Bound to camera_id, not to slot.camera -- this outlives
+            whatever the slot is showing by the time a stale reconnect
+            calls it (see WebSocketBridge's own history_resolver).
+
+            find_covering_recording_at, not find_recording_at: a stale
+            reconnect asking "does anything cover the target now" needs
+            None for a genuine gap (e.g. the camera was down for a
+            while), not the nearest recording on either side of it --
+            see find_covering_recording_at's own docstring for what
+            goes wrong otherwise."""
+            api = self.app.api
+            return await find_covering_recording_at(api, camera_id, target) if api else None
+
+        bridge = WebSocketBridge(
+            url,
+            verify_ssl,
+            sid,
+            label=label,
+            history_recording=recording,
+            history_target=target_unix,
+            history_resolver=resolve,
+            history_speed=self._timeline_speed,
+            history_reverse=self._timeline_reverse,
+        )
+        self._start_bridge(slot, bridge)
+        position = bridge.current_history_position
+        return position if position is not None else target_unix
+
+    def _start_bridge(self, slot: CameraSlot, bridge: WebSocketBridge) -> None:
+        """Plumbing shared by Live and History bridges alike: assign
+        *bridge* to *slot*, play the pipe once ready, and report a
+        permanent give-up the same way regardless of which mode started
+        it (see _start_ws_bridge / _enter_history_mode)."""
         slot._ws_bridge = bridge
+        # *bridge* is now the authoritative one for this slot either way
+        # -- clears the stale-tick guard _return_all_to_live armed, if
+        # any (see _leaving_history_slots's own comment).
+        self._leaving_history_slots.discard(slot.index)
+        # Ghosts/restores the camera-motor controls immediately, before
+        # the pipe is even ready -- a slot mid-History-connect has no
+        # live camera under it any more than one already playing does.
+        slot.set_history_mode(bridge.is_history)
+        if not bridge.is_history:
+            # Defensive: covers every path back to Live, not just the
+            # Live button (already clears this itself) -- e.g. a slot
+            # hidden by a layout switch while in History, then reshown
+            # later on its normal live stream, would otherwise keep a
+            # stale position that resurfaces if it becomes the timeline
+            # focus slot again.
+            self._set_history_position(slot, None)
         cam_id = slot.camera.id if slot.camera else -1
         slot_idx = slot.index
 
@@ -971,9 +2668,10 @@ class LiveView(Gtk.Box):
                 return
             if s.get_visible() and s.camera and s.camera.id == cam_id:
                 log.info(
-                    "WebSocket bridge ready, playing pipe: %s (audio_active=%s)",
+                    "WebSocket bridge ready, playing pipe: %s (audio_active=%s, history=%s)",
                     pipe_url,
                     bridge.audio_active,
+                    bridge.is_history,
                 )
                 s.set_status("")
                 s.player.play(
@@ -1020,6 +2718,13 @@ class LiveView(Gtk.Box):
         dying silently mid-stream — this is what fills that gap.
         """
         slot.set_status("")  # clear any leftover "offline"/"reconnect" label
+        # RTSP has no History mode at all (see ws_bridge.py's module
+        # docstring) -- a defensive reset for a slot that switches
+        # protocol away from a History WS session straight to RTSP,
+        # which would otherwise leave its camera-motor controls ghosted
+        # with nothing to ever un-ghost them.
+        slot.set_history_mode(False)
+        self._set_history_position(slot, None)
         slot.player.play(url)
         cam_id = slot.camera.id if slot.camera else -1
         slot_idx = slot.index
@@ -1087,6 +2792,9 @@ class LiveView(Gtk.Box):
         self.app.config.layout_cameras[self._current_layout] = cam_ids
         log.debug("layout_cameras session save: [%s] = %s", self._current_layout, cam_ids)
         save_config_now(self.app.config)
+        # Session changes (assign/clear a slot's camera) can change the
+        # layout-accumulated row's own camera set.
+        self._request_presence_refresh()
 
     def restore_session(self, cameras: list[Camera]) -> None:
         """Restore camera assignments from config."""

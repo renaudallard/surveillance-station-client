@@ -82,6 +82,8 @@ class RtspHealthMonitor:
         self._startup_checks = 0
         self._last_time_pos: float | None = None
         self._consecutive_stalls = 0
+        # Set by Live View's timeline Pause button -- see set_paused.
+        self._paused = False
         self._timer_id: int = GLib.timeout_add_seconds(_CHECK_INTERVAL_SECS, self._check)
 
     def stop(self) -> None:
@@ -90,7 +92,31 @@ class RtspHealthMonitor:
             GLib.source_remove(self._timer_id)
             self._timer_id = 0
 
+    def set_paused(self, paused: bool) -> None:
+        """Suspend stall detection while deliberately paused (see
+        _check's own guard) -- mpv.pause naturally stops time_pos from
+        advancing, which this monitor would otherwise misread as the
+        RTSP stream itself having died: retrying play() (a visible
+        black flash) after ~15s, then giving up on the stream entirely
+        after ~30s more, purely from a deliberate pause rather than
+        anything wrong with the camera.
+
+        On resume, the baseline is cleared rather than left to
+        immediately read as zero progress across the paused gap --
+        the next _check() then treats it like a fresh startup window
+        instead of an instant stall/timeout.
+        """
+        self._paused = paused
+        if paused:
+            return
+        self._advancing = False
+        self._startup_checks = 0
+        self._consecutive_stalls = 0
+        self._last_time_pos = None
+
     def _check(self) -> bool:
+        if self._paused:
+            return True
         pos = self._player.time_pos
         advancing = (
             pos is not None and self._last_time_pos is not None and pos > self._last_time_pos

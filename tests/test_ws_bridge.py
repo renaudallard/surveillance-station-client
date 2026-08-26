@@ -48,6 +48,7 @@ import types
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
+from urllib.parse import parse_qsl
 
 import pytest
 
@@ -68,7 +69,8 @@ except ModuleNotFoundError:
     _ws.exceptions = _exc  # type: ignore[attr-defined]
     sys.modules["websockets.exceptions"] = _exc
 
-from surveillance.services import ws_bridge
+from surveillance.api.models import Recording
+from surveillance.services import aac, ws_bridge
 from surveillance.services.aac import adts_header
 from surveillance.services.ws_bridge import WebSocketBridge
 
@@ -112,13 +114,17 @@ class _FakeWS:
 
         if self.closed:
             raise ConnectionClosedOK(None, None)
-        if self._messages:
-            return self._messages.pop(0)
-        while self._hang:
+        while True:
+            if self._messages:
+                return self._messages.pop(0)
+            if not self._hang:
+                raise ConnectionClosedOK(None, None)
+            # Re-checked each pass rather than just once up front, so a
+            # test can append a message while this is already hanging
+            # (e.g. simulating traffic that resumes after a pause).
             await asyncio.sleep(0.01)
             if self.closed:
                 raise ConnectionClosedOK(None, None)
-        raise ConnectionClosedOK(None, None)
 
 
 def _frame(header: bytes, payload: bytes) -> bytes:
@@ -765,7 +771,7 @@ async def _spawn_fake_mux_holder(**kwargs: Any) -> Any:
 # resolution, not a real race), so intervals never accumulate. Padding
 # with enough video frames to hit _AAC_DETECTION_VIDEO_FRAME_CAP makes
 # detection finish deterministically either way.
-_AAC_DETECTION_PADDING = [_video_frame() for _ in range(ws_bridge._AAC_DETECTION_VIDEO_FRAME_CAP)]
+_AAC_DETECTION_PADDING = [_video_frame() for _ in range(aac._AAC_DETECTION_VIDEO_FRAME_CAP)]
 
 
 async def _wait_until(done: Callable[[], bool], timeout: float = 5.0) -> None:
@@ -877,8 +883,8 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
-        assert bridge._frame_prefix_len == 3
-        assert bridge._aac_use_header_prepend is False
+        assert bridge._aac.frame_prefix_len == 3
+        assert bridge._aac.use_header_prepend is False
         await bridge.stop()
 
     async def test_mux_active_when_the_frame_is_split_across_the_header(
@@ -887,7 +893,7 @@ class TestAudioMuxDecision:
         """A camera whose payload doesn't validate under any prefix
         length (see _undetectable_prefix_frame), because the payload is
         missing its own leading bytes -- those are the last 4 bytes of
-        the WS message's own header instead (see _reconstruct_aac_frame).
+        the WS message's own header instead (see AacDetector.reconstruct_frame).
         Once the payload-only model is ruled out, the bridge must
         reconstruct frames from the header tail and mux with that instead
         of giving up.
@@ -926,7 +932,7 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
-        assert bridge._aac_use_header_prepend is True
+        assert bridge._aac.use_header_prepend is True
 
         # start() returns before the buffered frames are flushed -- the
         # pipeline sets its ready event first, on purpose (see
@@ -934,8 +940,8 @@ class TestAudioMuxDecision:
         await _wait_until(lambda: len(audio_writes) >= 6)
         first_frame = b"\x01\x02\x03\x00" + b"\xe0" * 50
         # 0x01's top 3 bits are an SCE, so the settled layout is mono.
-        assert bridge._aac_channels == 1
-        expected = adts_header(len(first_frame), bridge._aac_sample_rate, 1)
+        assert bridge._aac.channels == 1
+        expected = adts_header(len(first_frame), bridge._aac.sample_rate, 1)
         assert audio_writes[0] == expected + first_frame
         await bridge.stop()
 
@@ -970,7 +976,7 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
-        assert bridge._aac_use_header_prepend is True
+        assert bridge._aac.use_header_prepend is True
         assert validations == 2
         await bridge.stop()
 
@@ -1069,7 +1075,7 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await asyncio.wait_for(bridge.start(), timeout=5.0)
         assert bridge.audio_active is False
-        assert bridge._aac_detecting is False
+        assert bridge._aac.detecting is False
         # Ended as a deadline, not as a stall: a stall would have recorded
         # its reason and dropped the connection instead.
         assert bridge._error == ""
@@ -1088,7 +1094,7 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await asyncio.wait_for(bridge.start(), timeout=5.0)
         assert bridge.audio_active is False
-        assert bridge._aac_detecting is False
+        assert bridge._aac.detecting is False
         assert bridge._error == ""
         await bridge.stop()
 
@@ -1104,7 +1110,7 @@ class TestAudioMuxDecision:
         the transform must be attempted once, not once per framing mode."""
         subprocess_calls = 0
         transform_attempts = 0
-        real_adts_header = ws_bridge.adts_header
+        real_adts_header: Callable[[int, int, int], bytes] = ws_bridge.adts_header
 
         async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
             nonlocal subprocess_calls
@@ -1117,7 +1123,7 @@ class TestAudioMuxDecision:
             return real_adts_header(payload_length, sample_rate, channels)
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
-        monkeypatch.setattr(ws_bridge, "adts_header", _counting_adts_header)
+        monkeypatch.setattr(aac, "adts_header", _counting_adts_header)
         frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
         frames += [_aac_audio_frame(payload_len=8200) for _ in range(6)]
         frames += _AAC_DETECTION_PADDING
@@ -1155,9 +1161,9 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         assert bridge.audio_active is True
-        assert bridge._aac_config_from_header is True
-        assert bridge._aac_channels == 1
-        assert bridge._aac_sample_rate == 32000
+        assert bridge._aac.config_from_header is True
+        assert bridge._aac.channels == 1
+        assert bridge._aac.sample_rate == 32000
         await bridge.stop()
 
     async def test_a_mono_frame_beats_a_stereo_count_from_the_codec_info_payload(
@@ -1182,18 +1188,18 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         assert bridge.audio_active is True
-        assert bridge._aac_channels == 1  # the frames say single_channel_element
-        assert bridge._aac_sample_rate == 32000  # the rate still comes from the payload
+        assert bridge._aac.channels == 1  # the frames say single_channel_element
+        assert bridge._aac.sample_rate == 32000  # the rate still comes from the payload
         await bridge.stop()
 
     async def test_a_rejected_framing_does_not_supply_the_channel_fallback(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_aac_frames_look_valid runs once per framing model, and the
-        first model here reconstructs frames that read as stereo before
-        ffmpeg throws them out. What that rejected reconstruction claimed
-        must not become the fallback for the model that is kept: the
-        camera declared mono and no surviving frame names a layout."""
+        """frames_look_valid runs once per framing model, and the first
+        model here reconstructs frames that read as stereo before ffmpeg
+        throws them out. What that rejected reconstruction claimed must
+        not become the fallback for the model that is kept: the camera
+        declared mono and no surviving frame names a layout."""
         validations = 0
 
         async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
@@ -1216,8 +1222,8 @@ class TestAudioMuxDecision:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         assert validations == 2
-        assert bridge._aac_use_header_prepend is True
-        assert bridge._aac_channels == 1  # what DSM declared, not the rejected model
+        assert bridge._aac.use_header_prepend is True
+        assert bridge._aac.channels == 1  # what DSM declared, not the rejected model
         await bridge.stop()
 
 
@@ -1232,19 +1238,19 @@ class TestAudioConfigFromHeader:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         trailer = b"1|32000|\x14\x08"
         await bridge._setup_pipes("H264", "MPEG4-GENERIC", str(len(trailer)), b"\x00" * 4 + trailer)
-        assert bridge._aac_config_from_header is True
-        assert bridge._aac_declared_channels == 1
-        assert bridge._aac_sample_rate == 32000
+        assert bridge._aac.config_from_header is True
+        assert bridge._aac.declared_channels == 1
+        assert bridge._aac.sample_rate == 32000
         # Still true: the trailer says nothing about how a raw frame is
         # split across payload/header, so that still has to be detected.
-        assert bridge._aac_detecting is True
+        assert bridge._aac.detecting is True
 
     async def test_falls_back_to_detection_without_a_recognized_trailer(self) -> None:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge._setup_pipes("H264", "MPEG4-GENERIC", "", b"")
-        assert bridge._aac_config_from_header is False
-        assert bridge._aac_declared_channels == 2  # untouched stereo default
-        assert bridge._aac_detecting is True
+        assert bridge._aac.config_from_header is False
+        assert bridge._aac.declared_channels == 2  # untouched stereo default
+        assert bridge._aac.detecting is True
 
 
 class TestAacFrameReconstruction:
@@ -1255,22 +1261,22 @@ class TestAacFrameReconstruction:
 
     def test_payload_only_mode_strips_the_detected_prefix(self) -> None:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._frame_prefix_len = 3
-        frame = bridge._reconstruct_aac_frame(b"\x01\x02\x03\x04", b"\x34\x1f\xfc\x21\x1a")
+        bridge._aac.frame_prefix_len = 3
+        frame = bridge._aac.reconstruct_frame(b"\x01\x02\x03\x04", b"\x34\x1f\xfc\x21\x1a")
         assert frame == b"\x21\x1a"
 
     def test_header_prepend_mode_puts_the_header_tail_back_in_front(self) -> None:
         """The payload is missing its own leading bytes; the WS message's
         header ends in exactly those bytes. Nothing is stripped."""
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._aac_use_header_prepend = True
-        frame = bridge._reconstruct_aac_frame(b"\x01\x2e\x35\xa8", b"\xaa\xbb")
+        bridge._aac.use_header_prepend = True
+        frame = bridge._aac.reconstruct_frame(b"\x01\x2e\x35\xa8", b"\xaa\xbb")
         assert frame == b"\x01\x2e\x35\xa8\xaa\xbb"
 
     async def test_writes_an_adts_header_in_front_of_the_reconstructed_frame(self) -> None:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._aac_use_header_prepend = True
-        bridge._aac_sample_rate = 16000
+        bridge._aac.use_header_prepend = True
+        bridge._aac.sample_rate = 16000
         written: list[bytes] = []
         bridge._write_pipe = lambda audio, data: written.append(data)  # type: ignore[method-assign]
 
@@ -1286,9 +1292,9 @@ class TestAacFrameReconstruction:
         announces a channel_configuration that changes mid-stream, which
         no valid ADTS stream does."""
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        bridge._aac_sample_rate = 16000
-        bridge._frame_prefix_len = 0
-        bridge._aac_channels = 1
+        bridge._aac.sample_rate = 16000
+        bridge._aac.frame_prefix_len = 0
+        bridge._aac.channels = 1
         written: list[bytes] = []
         bridge._write_pipe = lambda audio, data: written.append(data)  # type: ignore[method-assign]
 
@@ -1408,3 +1414,868 @@ class TestPipeLifetime:
         await bridge.stop()
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+def _recording(
+    id: int = 100,
+    start_time: int = 1_700_000_000,
+    stop_time: int = 1_700_001_800,
+    mount_id: int = 0,
+    arch_id: int = 0,
+    event_type: int = 0,
+) -> Recording:
+    return Recording(
+        id=id,
+        camera_id=21,
+        camera_name="CAM 72 - Trampoline",
+        start_time=start_time,
+        stop_time=stop_time,
+        mount_id=mount_id,
+        arch_id=arch_id,
+        event_type=event_type,
+    )
+
+
+class TestHistoryMode:
+    """History (recorded) playback -- see ws_bridge.py's module docstring
+    for the wire protocol this drives against real DSM, confirmed by
+    sniffing DSM's own Monitor Center web client. Bridge-level only:
+    these exercise WebSocketBridge directly, with no UI/slot wiring."""
+
+    async def test_connect_sends_action_play_with_computed_offsets(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 654
+        # The bridge stores target as a delta from the wall clock (see
+        # _current_history_target) and recomputes it from that on every
+        # connect -- frozen here so this asserts the same exact value
+        # regardless of how much real time construction-to-connect takes.
+        # Comfortably past MIN_HISTORY_DELTA_SECONDS ahead of target,
+        # or _set_history_delta's own floor would clamp it -- that
+        # clamp has its own tests in TestPauseResume.
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        assert fake.sent, "the play command must be sent before anything else"
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["action"] == "play"
+        assert fields["id"] == str(rec.id)
+        assert fields["mountId"] == str(rec.mount_id)
+        assert fields["archId"] == str(rec.arch_id)
+        assert fields["recEvtType"] == str(rec.event_type)
+        assert fields["start"] == "654"
+        assert fields["end"] == str(rec.stop_time - rec.start_time)
+        assert fields["stamp"] == "1"
+        await bridge.stop()
+
+    async def test_connect_clamps_start_past_the_recordings_own_end(self, connect: Any) -> None:
+        """find_recording_at hands back the *nearest* recording for a
+        target landing in a gap between recordings, not necessarily one
+        that covers it -- a target past this recording's own end must
+        clamp to its last moment rather than requesting a start beyond
+        its length, which DSM held on the last decoded frame for
+        instead of erroring, reading as the slot having frozen."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.stop_time + 900  # 15 minutes past this recording's end
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["start"] == fields["end"]
+        await bridge.stop()
+
+    async def test_reconnect_resumes_from_elapsed_wall_clock_time_instead_of_rewinding(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """This bridge's own History sessions tend to drop on their own
+        after a fairly consistent ~2 minutes regardless of activity,
+        not just on a real connection drop -- likely this bridge not
+        yet doing whatever DSM's own web client does to keep one open
+        indefinitely, rather than DSM enforcing a session cap. Either
+        way, a reconnect (_pump's own, not a caller seek) must resume
+        near where playback should have reached by then, not replay
+        the original target and rewind every time (see
+        _current_history_target/self._history_delta_seconds)."""
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        # 20s ahead of target, comfortably past _set_history_delta's own
+        # floor (that clamp has its own tests in TestPauseResume).
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        assert dict(parse_qsl(fake1.sent[0]))["start"] == "100"
+
+        clock[0] += 45  # 45s of wall-clock time pass before DSM's own reconnect
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        assert dict(parse_qsl(fake2.sent[0]))["start"] == "145"
+        await bridge.stop()
+
+    async def test_reconnect_resolves_a_fresh_recording_once_the_loaded_one_runs_out(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recording stops extending once DSM finishes writing it --
+        its stop_time is then fixed, however far real time drifts past
+        it. Once a reconnect's target lands beyond that, it must ask
+        history_resolver for whatever now covers the camera at that
+        point rather than keep reconnecting into the same exhausted
+        recording forever (see _refresh_history_recording_if_stale)."""
+        rec1 = _recording(id=100, start_time=1_700_000_000, stop_time=1_700_000_200)
+        rec2 = _recording(id=200, start_time=1_700_000_150, stop_time=1_700_002_000)
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec1.start_time + 50
+        # +20 both here and below (a fixed offset, not a floor breach):
+        # comfortably past _set_history_delta's own floor, and uniform
+        # so it cancels out of every _current_history_target() read
+        # below rather than needing every assertion rederived for it.
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+        resolved_for: list[int] = []
+
+        async def resolver(t: int) -> Recording:
+            resolved_for.append(t)
+            return rec2
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec1,
+            history_target=target,
+            history_resolver=resolver,
+        )
+        await bridge.start()
+        assert dict(parse_qsl(fake1.sent[0]))["id"] == str(rec1.id)
+
+        past_end = rec1.stop_time + 30  # drifted past rec1's own end
+        clock[0] = float(past_end + 20)
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["id"] == str(rec2.id)
+        assert fields["start"] == str(past_end - rec2.start_time)
+        assert resolved_for == [past_end]
+        await bridge.stop()
+
+    async def test_reconnect_skips_the_resolver_while_still_within_the_loaded_recording(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolver call is a network round trip -- not worth paying
+        on every routine reconnect, only once the loaded recording
+        actually stops covering the target."""
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 50
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target))
+        resolved_for: list[int] = []
+
+        async def resolver(t: int) -> Recording:
+            resolved_for.append(t)
+            return rec
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_resolver=resolver,
+        )
+        await bridge.start()
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        assert resolved_for == []
+        await bridge.stop()
+
+    async def test_seek_within_same_recording_reuses_the_connection(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+
+        await bridge.seek(rec, rec.start_time + 900)
+
+        assert fake.closed is False, "a same-recording seek must not reconnect"
+        seek_msgs = [m for m in fake.sent if m.startswith("seekMs=")]
+        assert len(seek_msgs) == 1
+        fields = dict(parse_qsl(seek_msgs[0]))
+        assert fields["seekMs"] == "900000"
+        assert fields["stamp"] == "2"  # 1 was the initial action=play
+        await bridge.stop()
+
+    async def test_seek_within_same_recording_clamps_offset_past_the_end(
+        self, connect: Any
+    ) -> None:
+        """Same clamp as the initial action=play's start, and for the
+        same reason -- a same-recording reseek can land past this
+        recording's own end too."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+
+        await bridge.seek(rec, rec.stop_time + 900)
+
+        seek_msgs = [m for m in fake.sent if m.startswith("seekMs=")]
+        fields = dict(parse_qsl(seek_msgs[0]))
+        assert fields["seekMs"] == str((rec.stop_time - rec.start_time) * 1000)
+        await bridge.stop()
+
+    async def test_seek_to_a_different_recording_reconnects(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A seek landing outside the loaded recording's span must open a
+        fresh connection and repeat the action=play handshake for the new
+        recording -- the same reconnect machinery an ordinary drop uses,
+        not a second path (see seek()'s docstring)."""
+        rec1 = _recording(id=100)
+        rec2 = _recording(id=200, start_time=1_700_010_000, stop_time=1_700_011_800)
+        fake1 = _FakeWS([_codec_frame()], hang=True)
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        # Frozen for the same reason as test_connect_sends_action_play_
+        # with_computed_offsets -- the reconnect's start= is recomputed
+        # from the wall clock (see _current_history_target). +20 past
+        # the seek target, comfortably past _set_history_delta's own
+        # floor.
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(rec2.start_time + 220))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec1,
+            history_target=rec1.start_time + 50,
+        )
+        await bridge.start()
+
+        await bridge.seek(rec2, rec2.start_time + 200)
+        assert fake1.closed is True
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["id"] == str(rec2.id)
+        assert fields["start"] == "200"
+        assert fields["stamp"] == "1"  # a fresh connection resets the counter
+
+
+class TestPauseResume:
+    """WebSocketBridge.pause()/resume() -- Live and History act on them
+    differently (see both methods' own docstrings), so most of these
+    are split per mode rather than shared."""
+
+    def test_request_pause_sets_paused_synchronously(self) -> None:
+        """No event loop tick needed -- see request_pause's own
+        docstring for why a caller pausing mpv locally too must be
+        able to rely on this running to completion before it returns,
+        not just before pause() (an async method scheduled onto a
+        different thread/event loop) gets around to it."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        assert not bridge.is_paused
+        bridge.request_pause()
+        assert bridge.is_paused
+
+    async def test_pause_sends_pause_true_and_freezes_the_position(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        # +20 past target, comfortably past _set_history_delta's own
+        # floor -- that clamp has its own dedicated tests below.
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        clock[0] += 5  # 5s of real playback pass before the user pauses
+        frozen = await bridge.pause()
+        assert frozen == target + 5
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["pause"] == "true"
+        assert fields["restart"] == "false"
+        assert fields["start"] == str(frozen - rec.start_time)
+
+        clock[0] += 20  # wall clock keeps moving while paused
+        assert bridge._current_history_target() == frozen, "position must stay frozen while paused"
+        await bridge.stop()
+
+    async def test_entering_history_close_to_live_clamps_to_the_minimum_delta(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Entering History mode within MIN_HISTORY_DELTA_SECONDS of
+        wall clock -- a ruler click right near the live edge -- must
+        clamp rather than ask DSM to play that close to live, the same
+        floor seek()/resume() enforce (see _set_history_delta, the
+        single place this is applied, for why it lives there and not
+        just in resume() as it once did)."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        now = rec.start_time + 500
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(now))
+        near_live = now - 3  # only 3s behind wall clock -- inside the floor
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=near_live
+        )
+        await bridge.start()
+
+        expected = now - int(ws_bridge.MIN_HISTORY_DELTA_SECONDS)
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["start"] == str(expected - rec.start_time)
+        await bridge.stop()
+
+    async def test_seek_close_to_live_clamps_to_the_minimum_delta(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same floor as entering History mode close to live, but on
+        an ordinary seek (ruler click/Back-Forward-10s) within an
+        already-loaded recording -- this is the scenario that was
+        actually reachable live (clicking the ruler near the live
+        edge), unlike a short pause-then-resume, which the floor
+        already enforced at pause() time makes impossible to reach
+        (pausing always freezes at least the floor behind wall clock,
+        and only more time passes from there)."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        clock[0] += 20
+        near_live = int(clock[0]) - 3  # only 3s behind wall clock -- inside the floor
+        clamped = await bridge.seek(rec, near_live)
+        assert clamped == int(clock[0]) - int(ws_bridge.MIN_HISTORY_DELTA_SECONDS)
+
+        duration_ms = (rec.stop_time - rec.start_time) * 1000
+        expected_offset_ms = min(duration_ms, (clamped - rec.start_time) * 1000)
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["seekMs"] == str(expected_offset_ms)
+        await bridge.stop()
+
+    async def test_resume_does_not_clamp_after_a_long_enough_pause(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        frozen = await bridge.pause()
+
+        clock[0] += 25  # well past the floor
+        resumed = await bridge.resume()
+        assert resumed == frozen, "a long enough pause must resume exactly where it froze"
+        await bridge.stop()
+
+    async def test_pause_suspends_the_idle_timeout_in_history_mode(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pause() asks DSM to stop sending entirely -- the resulting
+        silence must not be mistaken for a stalled connection and
+        reconnected out from under a deliberate pause."""
+        monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.05)
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+        await bridge.pause()
+        await asyncio.sleep(0.3)  # several idle-timeout multiples
+        assert not fake.closed, "a deliberate pause must not trip the idle-stall reconnect"
+        await bridge.stop()
+
+    async def test_seek_within_same_recording_while_paused_explicitly_resumes(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ruler click/Back-Forward-10s while paused (same recording)
+        must not leave the bridge stuck asking DSM to hold at the old
+        frozen position, or send a bare seekMs to a connection DSM
+        still thinks is paused (untested whether that alone would
+        resume it) -- see seek()'s own docstring."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.pause()
+
+        new_target = rec.start_time + 300  # still within the same recording
+        # +20 past new_target, comfortably past _set_history_delta's
+        # own floor -- that clamp has its own dedicated tests below.
+        clock[0] = float(new_target + 20)
+        await bridge.seek(rec, new_target)
+
+        assert not bridge.is_paused
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["pause"] == "false"
+        assert fields["start"] == str(new_target - rec.start_time)
+        await bridge.stop()
+
+    async def test_seek_to_a_different_recording_while_paused_reconnects_unpaused(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same failure as the same-recording case above, but on the
+        reconnect path: the fresh connection must open with pause=false
+        and this seek's own target, not a stale frozen position dragged
+        in from _build_history_play_message picking up self._paused."""
+        rec1 = _recording(id=100)
+        rec2 = _recording(id=200, start_time=1_700_010_000, stop_time=1_700_011_800)
+        fake1 = _FakeWS([_codec_frame()], hang=True)
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec1.start_time + 50
+        clock = [float(target + 20)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec1, history_target=target
+        )
+        await bridge.start()
+        await bridge.pause()
+
+        new_target = rec2.start_time + 200
+        # +20 past new_target, comfortably past _set_history_delta's
+        # own floor -- that clamp has its own dedicated tests below.
+        clock[0] = float(new_target + 20)
+        await bridge.seek(rec2, new_target)
+        assert fake1.closed is True
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["id"] == str(rec2.id)
+        assert fields["start"] == "200"
+        assert fields["pause"] == "false"
+        assert not bridge.is_paused
+        await bridge.stop()
+
+    async def test_pause_discards_frames_locally_in_live_mode(self, connect: Any) -> None:
+        """Live's pause() never touches DSM -- the WS feed keeps
+        flowing, but frames must stop reaching the pipe while paused,
+        or a real pause would fill mpv's own cache and misread as a
+        stalled pipe within seconds (see _write_pipe's own guard).
+        resume() then forces a fresh reconnect (see its own docstring
+        for why: resuming mid-GOP on the same connection fed the
+        decoder frames with no recent keyframe behind them), hence two
+        fakes here rather than one."""
+        fake1 = _FakeWS([_codec_frame()], hang=True)
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        os.set_blocking(bridge._read_fd, False)
+
+        def _drain() -> bytes:
+            try:
+                return os.read(bridge._read_fd, 65536)
+            except BlockingIOError:
+                return b""
+
+        fake1._messages.append(_frame(b"mediaType=1", b"AAA"))
+        await _wait_until(lambda: _drain() != b"")
+
+        await bridge.pause()
+        fake1._messages.append(_frame(b"mediaType=1", b"BBB"))
+        await asyncio.sleep(0.1)
+        assert _drain() == b"", "a paused Live bridge must not write incoming frames to the pipe"
+
+        await bridge.resume()
+        assert fake1.closed, "resume() must force a fresh reconnect, not resume mid-GOP"
+        fake2._messages.append(_frame(b"mediaType=1", b"CCC"))
+        await _wait_until(lambda: _drain() != b"")
+        await bridge.stop()
+
+
+class TestHistorySpeed:
+    """WebSocketBridge.set_speed() -- confirmed live (0.5x-32x) to
+    genuinely scale DSM's own frame delivery rate, not just a hint left
+    for mpv (see _history_play_params' own "speed" bullet)."""
+
+    async def test_set_speed_updates_the_open_connection_in_place(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        await bridge.set_speed("2")
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["speed"] == "2"
+        assert fields["restart"] == "false"
+        await bridge.stop()
+
+    async def test_set_speed_persists_across_a_reconnect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.set_speed("8")
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["speed"] == "8"
+        await bridge.stop()
+
+    async def test_set_speed_is_a_noop_for_live(self, connect: Any) -> None:
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+
+        await bridge.set_speed("2")
+
+        assert not any("speed=2" in str(m) for m in fake.sent), "Live has no speed concept"
+        await bridge.stop()
+
+    async def test_history_speed_constructor_param_applies_from_the_first_connect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slot freshly entering History mid-layout starts at
+        whatever speed the rest of the layout is already at (see
+        self._speed's own comment), not always 1x."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_speed="4",
+        )
+        await bridge.start()
+
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["speed"] == "4"
+        await bridge.stop()
+
+
+class TestHistoryReverse:
+    """WebSocketBridge.set_reverse() -- confirmed live: DSM delivers
+    frames with genuinely decreasing msec, decodes cleanly through
+    this bridge's existing pipeline with no changes needed, and
+    combines correctly with a non-1 speed (see _history_play_params'
+    own "reverse" bullet)."""
+
+    async def test_set_reverse_updates_the_open_connection_in_place(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+
+        await bridge.set_reverse(True)
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["reverse"] == "true"
+        assert fields["restart"] == "false"
+        await bridge.stop()
+
+    async def test_set_reverse_persists_across_a_reconnect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted, no hang -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.set_reverse(True)
+
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        fields = dict(parse_qsl(fake2.sent[0]))
+        assert fields["reverse"] == "true"
+        await bridge.stop()
+
+    async def test_set_reverse_is_a_noop_for_live(self, connect: Any) -> None:
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+
+        await bridge.set_reverse(True)
+
+        assert not any("reverse=true" in str(m) for m in fake.sent), "Live has no reverse concept"
+        await bridge.stop()
+
+    async def test_history_reverse_constructor_param_applies_from_the_first_connect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slot freshly entering History mid-layout starts in
+        reverse if the rest of the layout already is (see
+        self._reverse's own comment), not always forward."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_reverse=True,
+        )
+        await bridge.start()
+
+        fields = dict(parse_qsl(fake.sent[0]))
+        assert fields["reverse"] == "true"
+        await bridge.stop()
+
+
+class TestHistoryActualPosition:
+    """_current_history_target() prefers self._last_video_msec (DSM's
+    own per-frame timestamp) over the wall-clock*delta estimate once a
+    frame has actually arrived -- the delta estimate assumes 1x, so at
+    any other speed it drifts from real playback (fast at first, since
+    DSM needs real time to ramp delivery up to a new rate, and forever
+    after for as long as the estimate's own 1x assumption doesn't
+    match what's actually playing)."""
+
+    async def test_uses_the_last_video_frames_own_msec_once_one_arrives(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        assert bridge.current_history_position == target  # delta estimate, nothing arrived yet
+
+        # A frame claiming far more progress than 1x*elapsed real time
+        # would ever produce -- e.g. mid-fast-forward.
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        await bridge.stop()
+
+    async def test_speed_change_uses_the_actual_position_not_the_stale_delta_estimate(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reproduces the reported bug: fast-forward for a while, then
+        change speed again -- the in-place update's own start= must
+        reflect where playback actually reached, not rewind to near
+        the original seek target the way the plain delta estimate
+        (which has no notion of speed at all) would."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: float(target + 20))
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=target
+        )
+        await bridge.start()
+        await bridge.set_speed("16")
+
+        # 15 wall-clock seconds at 16x landed DSM's own reporting far
+        # past what a naive delta*1x estimate (~135) would ever reach.
+        fake._messages.append(_frame(b"mediaType=1&msec=750000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 750)
+
+        await bridge.set_speed("1")
+
+        fields = dict(parse_qsl(fake.sent[-1]))
+        assert fields["speed"] == "1"
+        assert fields["start"] == "750"  # actual position reached, not back near 100
+        await bridge.stop()
+
+
+class TestConsumeLastRealTick:
+    """WebSocketBridge.consume_last_real_tick -- the real-tick-only
+    signal LiveView's shared timeline marker uses to detect "no active
+    camera delivered real data this second" (ToDo r). Unlike
+    current_history_position, this must never silently fall back to a
+    wall-clock estimate -- None has to mean "nothing real arrived",
+    or the marker could never tell a genuine gap/outage apart from
+    ordinary playback."""
+
+    async def test_none_before_any_frame_arrives(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
+    async def test_returns_the_absolute_position_of_the_last_real_frame(
+        self, connect: Any
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        assert bridge.consume_last_real_tick() == rec.start_time + 240
+        await bridge.stop()
+
+    async def test_clears_after_being_consumed(self, connect: Any) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        bridge.consume_last_real_tick()
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
+    async def test_live_bridge_never_reports_a_real_tick(self, connect: Any) -> None:
+        """No history_recording at all -- there's nothing to anchor an
+        absolute position to, same reason current_history_position is
+        already None for a Live bridge."""
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await asyncio.sleep(0.05)
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
+    async def test_only_updates_on_a_larger_tick(self, connect: Any) -> None:
+        """A guard against an out-of-order or duplicate frame quietly
+        moving the marker backward."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        fake._messages.append(_frame(b"mediaType=1&msec=100000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 100)
+        assert bridge.consume_last_real_tick() == rec.start_time + 240
+        await bridge.stop()

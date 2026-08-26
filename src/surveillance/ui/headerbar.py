@@ -71,7 +71,15 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.title_label.add_css_class("title")
         self.set_title_widget(self.title_label)
 
-        # Sidebar toggle (left side, left of Home Mode)
+        # Home mode toggle (left side, leftmost)
+        self.home_btn = Gtk.ToggleButton()
+        self.home_btn.set_icon_name("go-home-symbolic")
+        self.home_btn.set_tooltip_text("Home Mode")
+        self.home_btn.connect("toggled", self._on_home_toggled)
+        self.home_btn.set_sensitive(False)
+        self.pack_start(self.home_btn)
+
+        # Sidebar toggle (left side, right of Home Mode)
         self.sidebar_btn = Gtk.ToggleButton()
         self.sidebar_btn.set_icon_name("sidebar-show-symbolic")
         self.sidebar_btn.set_active(self.app.config.sidebar_visible)
@@ -98,13 +106,25 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.sidebar_overlay.add_overlay(self.sidebar_update_dot)
         self.pack_start(self.sidebar_overlay)
 
-        # Home mode toggle (left side)
-        self.home_btn = Gtk.ToggleButton()
-        self.home_btn.set_icon_name("go-home-symbolic")
-        self.home_btn.set_tooltip_text("Home Mode")
-        self.home_btn.connect("toggled", self._on_home_toggled)
-        self.home_btn.set_sensitive(False)
-        self.pack_start(self.home_btn)
+        # Timeline toggle (left side, right of the sidebar toggle) — Live
+        # View only, unlike the sidebar toggle, so it's hidden rather than
+        # merely disabled on other pages.
+        #
+        # No stock "bottom pane" icon shares sidebar-show-symbolic's
+        # convention of highlighting the panel itself (they all highlight
+        # the main content instead, leaving the pane an empty box) — so
+        # reuse that same icon rotated 90°, rather than pairing two icons
+        # with inverted-looking coloring.
+        self.timeline_btn = Gtk.ToggleButton()
+        timeline_icon = Gtk.Image.new_from_icon_name("sidebar-show-symbolic")
+        timeline_icon.set_pixel_size(16)
+        timeline_icon.add_css_class("rotate-ccw-90")
+        self.timeline_btn.set_child(timeline_icon)
+        self.timeline_btn.set_active(self.app.config.timeline_visible)
+        self._update_timeline_tooltip(self.app.config.timeline_visible)
+        self.timeline_btn.connect("toggled", self._on_timeline_toggled)
+        self.timeline_btn.set_visible(self._page == "live")
+        self.pack_start(self.timeline_btn)
 
         # Right side buttons
         # Grid layout selector
@@ -177,6 +197,14 @@ class AppHeaderBar(Gtk.HeaderBar):
         show = self._update_available and not self.app.config.sidebar_visible
         self.sidebar_update_dot.set_visible(show)
 
+    def _update_timeline_tooltip(self, visible: bool) -> None:
+        self.timeline_btn.set_tooltip_text("Hide Timeline" if visible else "Show Timeline")
+
+    def _on_timeline_toggled(self, btn: Gtk.ToggleButton) -> None:
+        visible = btn.get_active()
+        self._update_timeline_tooltip(visible)
+        self.window.toggle_timeline(visible)
+
     def _on_home_toggled(self, btn: Gtk.ToggleButton) -> None:
         if not self.app.api:
             return
@@ -207,6 +235,7 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._page = page_name
         self.title_label.set_label(f"Surveillance Station — {PAGE_TITLES[page_name]}")
         self.grid_btn.set_sensitive(self._connected and page_name == "live")
+        self.timeline_btn.set_visible(page_name == "live")
 
     _THEME_ICONS: ClassVar[dict[str, str]] = {
         "auto": "display-brightness-symbolic",

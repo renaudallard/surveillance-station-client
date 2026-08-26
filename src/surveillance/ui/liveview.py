@@ -600,6 +600,16 @@ class LiveView(Gtk.Box):
         # newer seek -- landing late, after that newer one already
         # applied -- from one still worth acting on.
         self._seek_generation: int = 0
+        # Which of those generations each slot's own newest lookup
+        # belongs to. Recorded per slot rather than compared against
+        # the counter itself, because not every seek covers every slot:
+        # _assign_to_slot seeks the one slot it just filled, and if
+        # that were allowed to move the shared counter it would
+        # supersede a timeline click's whole batch -- which is staggered
+        # across slots and so is genuinely still in flight for a couple
+        # of seconds -- leaving the rest of the layout on Live while
+        # part of it had gone to History.
+        self._slot_seek_generation: dict[int, int] = {}
         # Bumped per Previous/Next event click so a slower/older lookup
         # resolving after a newer one (rapid repeated clicking is
         # exactly what _last_event_nav_key below exists to make
@@ -1697,7 +1707,11 @@ class LiveView(Gtk.Box):
 
         One generation (see _seek_generation) for the whole batch, not
         one per slot -- slots within the same batch must not supersede
-        each other, only a *later* call to this method should.
+        each other, only a *later* call to this method should. Stamped
+        onto every slot up front rather than as each staggered action
+        fires, so a second click landing mid-stagger supersedes the
+        whole of the first batch and not just the part of it that had
+        got going.
 
         Also clears a pending Pause, the same as WebSocketBridge.seek()
         does at its own level: a seek is "go here and play", so leaving
@@ -1721,6 +1735,8 @@ class LiveView(Gtk.Box):
         target_unix = int(timestamp)
         self._seek_generation += 1
         generation = self._seek_generation
+        for slot_idx in self._active:
+            self._slot_seek_generation[slot_idx] = generation
         actions: list[Callable[[], None]] = [
             partial(self._seek_slot_to_time, self._slots[slot_idx], target_unix, generation)
             for slot_idx in self._active
@@ -1786,13 +1802,14 @@ class LiveView(Gtk.Box):
     ) -> None:
         """find_recording_at's result for one slot's seek request.
 
-        Discarded outright if a newer seek has been issued since this
-        lookup started (see _seek_generation) -- DSM's own per-camera
-        lookup latency varies enough, especially across a whole grid,
-        that a burst of clicks/ruler drags can otherwise have a stale
-        lookup land *after* a newer one already applied, silently
-        snapping a slot back to an earlier position and, worse, doing
-        it repeatedly as more stale lookups keep trickling in.
+        Discarded outright if a newer seek has been issued for this
+        slot since this lookup started (see _slot_seek_generation) --
+        DSM's own per-camera lookup latency varies enough, especially
+        across a whole grid, that a burst of clicks/ruler drags can
+        otherwise have a stale lookup land *after* a newer one already
+        applied, silently snapping a slot back to an earlier position
+        and, worse, doing it repeatedly as more stale lookups keep
+        trickling in.
 
         Still calls _finish_timeline_seek even when discarded this
         way: a stale lookup's role as *an* in-flight one for this slot
@@ -1802,7 +1819,7 @@ class LiveView(Gtk.Box):
         net eventually cleared it, several seconds later than a click
         should ever take to register.
         """
-        if generation != self._seek_generation:
+        if generation != self._slot_seek_generation.get(slot_idx):
             self._finish_timeline_seek(slot_idx)
             return
         slot = self._slots[slot_idx]
@@ -2575,6 +2592,7 @@ class LiveView(Gtk.Box):
         self._load_slot_ptz_extras(target, camera)
         if history_target is not None:
             self._seek_generation += 1
+            self._slot_seek_generation[slot_idx] = self._seek_generation
             self._seek_slot_to_time(target, int(history_target), self._seek_generation)
         else:
             self._start_stream(slot_idx, camera)

@@ -250,7 +250,7 @@ BUNDLEDIR="${APPDIR}/usr/lib/Surveillance"
 # without an RPATH. It currently works because the bootloader prepends
 # _internal itself, but ffmpeg is a child process of ours, not of the
 # bootloader's making, so don't lean on that.
-export LD_LIBRARY_PATH="${BUNDLEDIR}/_internal:${BUNDLEDIR}:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${BUNDLEDIR}/_internal:${BUNDLEDIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 # Bundled ffmpeg binary (see BINARIES above) -- appended, not prepended, so
 # the subprocess lookup in ws_bridge.py finds it on a system with no ffmpeg

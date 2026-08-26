@@ -1027,14 +1027,22 @@ class WebSocketBridge:
             if (self._read_fd < 0 and not self._aac.detecting) or not payload:
                 continue  # haven't seen codec info yet, or an empty frame
 
-            await self._dispatch_media_frame(fields.get("mediaType"), header, payload)
+            await self._dispatch_media_frame(fields, header, payload)
 
     async def _dispatch_media_frame(
-        self, media_type: str | None, header: bytes, payload: bytes
+        self, fields: dict[str, str], header: bytes, payload: bytes
     ) -> None:
         """Route one video/audio frame from _read_messages -- pulled out
         of that loop just to keep its own branch count down, not
-        because this is reused anywhere else."""
+        because this is reused anywhere else.
+
+        Takes the header's already-parsed *fields* as well as the raw
+        *header*: the bytes are still needed for the AAC path's own tail
+        (see AacDetector.reconstruct_frame), but re-parsing them here
+        would mean splitting the same ASCII string a second time for
+        every frame of every camera.
+        """
+        media_type = fields.get("mediaType")
         if self._paused and not self.is_history:
             self._discard_paused_frame(media_type)
             return
@@ -1046,7 +1054,7 @@ class WebSocketBridge:
                 # diverge as soon as speed is anything but 1x, since
                 # DSM needs real time to ramp delivery up (or down) to
                 # a new rate rather than changing it instantly.
-                msec = _parse_header(header).get("msec")
+                msec = fields.get("msec")
                 if msec is not None:
                     self._last_video_msec = int(msec)
                     if self._history_recording is not None:

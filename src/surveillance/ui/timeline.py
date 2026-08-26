@@ -262,7 +262,16 @@ class TimelineCanvas(Gtk.DrawingArea):
         self._view_end = time.time()
         self._following = True
         self.set_draw_func(self._draw)
-        self._tick_id = GLib.timeout_add(1000, self._on_tick)
+        # Started on map rather than here, and stopped again on unmap:
+        # hiding the whole strip from the header bar leaves this widget
+        # realized (GTK only unrealizes on unparent/dispose), so an
+        # unrealize-only teardown would leave the tick running -- and
+        # with it the once-a-second view-changed notification LiveView
+        # turns into a recording-presence fetch. See Timeline's own
+        # clock for the other half.
+        self._tick_id = 0
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
         self.connect("unrealize", self._on_unrealize)
         self._attach_pan_controls()
         self._attach_zoom_controls()
@@ -548,10 +557,25 @@ class TimelineCanvas(Gtk.DrawingArea):
         """
         self._view_end, self._following = clamp_to_live(self._view_end, time.time())
 
-    def _on_unrealize(self, _widget: Gtk.Widget) -> None:
+    def _on_map(self, _widget: Gtk.Widget) -> None:
+        if not self._tick_id:
+            self._tick_id = GLib.timeout_add(1000, self._on_tick)
+        # The view stopped following wall clock while unmapped, so
+        # catch it up now rather than showing a stale window for up to
+        # a second -- and let LiveView refill the presence bar for
+        # whatever the layout holds now.
+        self._on_tick()
+
+    def _on_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_ticking()
+
+    def _stop_ticking(self) -> None:
         if self._tick_id:
             GLib.source_remove(self._tick_id)
             self._tick_id = 0
+
+    def _on_unrealize(self, _widget: Gtk.Widget) -> None:
+        self._stop_ticking()
         if self._thumbnail_debounce_id:
             GLib.source_remove(self._thumbnail_debounce_id)
             self._thumbnail_debounce_id = 0
@@ -824,14 +848,29 @@ class Timeline(Gtk.Box):
         self.append(self.canvas)
         self.set_history_active(False)  # nothing to return to yet
 
-        self._clock_id = GLib.timeout_add(1000, self._update_clock)
+        # Same map/unmap pairing as the canvas's own tick, for the
+        # same reason -- see TimelineCanvas.__init__.
+        self._clock_id = 0
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
         self.connect("unrealize", self._on_unrealize)
         self._update_clock()
 
-    def _on_unrealize(self, _widget: Gtk.Widget) -> None:
+    def _on_map(self, _widget: Gtk.Widget) -> None:
+        if not self._clock_id:
+            self._clock_id = GLib.timeout_add(1000, self._update_clock)
+        self._update_clock()
+
+    def _on_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_clock()
+
+    def _stop_clock(self) -> None:
         if self._clock_id:
             GLib.source_remove(self._clock_id)
             self._clock_id = 0
+
+    def _on_unrealize(self, _widget: Gtk.Widget) -> None:
+        self._stop_clock()
 
     def set_history_active(self, active: bool) -> None:
         """Reflect whether any slot is currently playing recorded video

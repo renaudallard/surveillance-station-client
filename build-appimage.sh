@@ -234,8 +234,8 @@ cp -a "${BUILD_DIR}/dist/${APP_NAME}" "${APPDIR}/usr/lib/${APP_NAME}"
 # make sure the bundled ffmpeg is executable regardless -- unlike
 # libmpv/libportaudio (loaded via ctypes, never exec'd directly), this one
 # has to actually run.
-if [ -f "${APPDIR}/usr/lib/${APP_NAME}/ffmpeg" ]; then
-    chmod +x "${APPDIR}/usr/lib/${APP_NAME}/ffmpeg"
+if [ -f "${APPDIR}/usr/lib/${APP_NAME}/_internal/ffmpeg" ]; then
+    chmod +x "${APPDIR}/usr/lib/${APP_NAME}/_internal/ffmpeg"
 fi
 
 # Create AppRun with proper environment setup

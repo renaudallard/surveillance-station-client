@@ -188,11 +188,13 @@
 }
 
 /* The toolbar's own real-time clock/date — always blue, since it's
-   real time regardless of what the ruler shows. Same blue as the
-   timeline's own ruler ticks while following "now" (TimelineCanvas.
-   _draw's _LIVE_TICK_COLOR) and .slot-selected-label/.timeline-focus-
-   frame — matches DSM's own web app, which shows its live clock in
-   the same blue. */
+   real time regardless of what the ruler shows. Same blue as
+   .slot-selected-label/.timeline-focus-frame — matches DSM's own web
+   app, which shows its live clock in the same blue. The ruler's own
+   ticks are not blue: they are white while following "now" and grey
+   while showing a History position (TimelineCanvas._draw's
+   _LIVE_TICK_COLOR/_HISTORY_TICK_COLOR), against the canvas's own
+   fixed dark background. */
 .timeline-live-text {
     color: #3584e4;
     font-weight: bold;

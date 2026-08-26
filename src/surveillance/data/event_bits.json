@@ -21,7 +21,7 @@
         "brands": ["*"],
         "label": "Motion detected",
         "confirmed": true,
-        "notes": "An AI class (Person/Vehicle/Pet) can fire a genuinely new detection without this bit being set."
+        "notes": "Set when a fresh companion type=5 \"Motion detected\" eventlog entry lands in this exact 5-second bucket. Not a general motion-magnitude signal — an AI class (Person/Vehicle/Pet) can fire a genuinely new detection without this bit being set."
       }
     ],
     "9": [
@@ -37,7 +37,7 @@
         "brands": ["*"],
         "label": "Tampering detected",
         "confirmed": true,
-        "notes": ""
+        "notes": "Revised from an earlier wrong guess of \"QR Code\"."
       }
     ],
     "12": [
@@ -53,13 +53,13 @@
         "brands": ["reolink"],
         "label": "Face Detect",
         "confirmed": false,
-        "notes": "Fits Smart Event menu-order pattern, but never confirmed."
+        "notes": "Proposed as a plausible 4th member of the Person/Vehicle/Pet class-bit family. Not yet observed on any camera."
       },
       {
         "brands": ["hikvision"],
         "label": "Defocus Detection",
         "confirmed": false,
-        "notes": "Fits Smart Event menu-order pattern, but never confirmed."
+        "notes": "Fits the top of the sequential Smart Event menu-order pattern (see bits 25-31) exactly, but never directly triggered or eventlog-cross-referenced."
       }
     ],
     "25": [
@@ -73,7 +73,7 @@
         "brands": ["hikvision"],
         "label": "Scene Change Detection",
         "confirmed": true,
-        "notes": ""
+        "notes": "Flag 33554435 is eventlog-confirmed as Scene Change Detection on a Hikvision camera and as Person Detect on the Reolink — a direct brand collision."
       }
     ],
     "26": [
@@ -87,7 +87,7 @@
         "brands": ["hikvision"],
         "label": "Face Detection",
         "confirmed": false,
-        "notes": ""
+        "notes": "Seen once on a Hikvision camera with only Face recognition enabled, no vehicle involved, and its position matches the sequential menu-order pattern exactly (between Scene Change Detection and Intrusion Detection). A likely third brand collision, not yet independently confirmed the way bits 25/27 are."
       }
     ],
     "27": [
@@ -101,7 +101,7 @@
         "brands": ["hikvision"],
         "label": "Intrusion Detection",
         "confirmed": true,
-        "notes": ""
+        "notes": "Confirmed brand collision, independently twice: flag 134217731 and again on 134217729."
       }
     ],
     "28": [

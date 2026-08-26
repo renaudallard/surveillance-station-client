@@ -220,26 +220,43 @@ class EventTypeFilterView(Gtk.Box):
 
         self._all_types_btn.set_active(selected_keys is None)
         self._match_all_combo.set_active_id("and" if match_all else "or")
-        self._update_all_types_sensitivity()
+        # Explicitly, the same way AdvancedSearchDialog does after
+        # populating its own checklist: set_active above only emits when
+        # it changes something, and on the common path ("All Event
+        # Types" still checked from last time) it doesn't -- which left
+        # the per-type boxes clickable underneath a checked "All", until
+        # a first selection and deselection greyed them out and they
+        # stopped being clickable.
+        self._apply_all_types_state()
         self._apply_btn.set_sensitive(True)
         self._stack.set_visible_child_name("checklist")
 
     def _on_all_types_toggled(self, btn: Gtk.CheckButton) -> None:
-        active = btn.get_active()
-        for check in self._type_checks.values():
-            check.set_sensitive(not active)
-        if active:
+        if btn.get_active():
             self._match_all_combo.set_active_id("or")
-            self._match_all_combo.set_sensitive(False)
+        self._apply_all_types_state()
 
     def _on_type_toggled(self, _btn: Gtk.CheckButton) -> None:
-        self._update_all_types_sensitivity()
+        # Checking nothing at all means the same as "All Event Types",
+        # so say so rather than leaving an empty checklist that filters
+        # nothing. This re-enters _on_all_types_toggled when it changes
+        # anything, which is why the state below is applied from the
+        # current widget values rather than toggled from here.
+        self._all_types_btn.set_active(self._selected_count() == 0)
+        self._apply_all_types_state()
 
-    def _update_all_types_sensitivity(self) -> None:
-        selected_count = sum(1 for c in self._type_checks.values() if c.get_active())
-        self._all_types_btn.set_active(selected_count == 0)
-        # Any/All is meaningless below 2 selections.
-        self._match_all_combo.set_sensitive(selected_count >= 2)
+    def _selected_count(self) -> int:
+        return sum(1 for c in self._type_checks.values() if c.get_active())
+
+    def _apply_all_types_state(self) -> None:
+        """Sensitivity of the per-type boxes and the Any/All combo, from
+        whatever the checklist currently holds -- the per-type boxes are
+        subordinate to "All Event Types", and Any/All is meaningless
+        below two selections."""
+        all_types = self._all_types_btn.get_active()
+        for check in self._type_checks.values():
+            check.set_sensitive(not all_types)
+        self._match_all_combo.set_sensitive(not all_types and self._selected_count() >= 2)
 
     def _get_selected_keys(self) -> set[str] | None:
         if self._all_types_btn.get_active():

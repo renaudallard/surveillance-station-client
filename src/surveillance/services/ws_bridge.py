@@ -1550,20 +1550,21 @@ class WebSocketBridge:
                     # self._history_stamp itself) beats relying on an
                     # untested assumption that a bare seekMs also
                     # implicitly resumes a connection DSM still thinks
-                    # is paused.
+                    # is paused. It does not do the seeking, though:
+                    # it carries this target in its own start= field,
+                    # but goes out with restart=false, which is exactly
+                    # what tells DSM to leave start= alone (see
+                    # _send_history_update). The seekMs below is what
+                    # actually moves playback, in both cases.
                     await self._send_history_update()
-                else:
-                    self._history_stamp += 1
-                    # Same clamp as _build_history_play_message's
-                    # start, and for the same reason -- clamped_target
-                    # can still land past this recording's own end when
-                    # it's the nearest one to a target that's actually
-                    # in a gap.
-                    duration_ms = max(0, (recording.stop_time - recording.start_time) * 1000)
-                    offset_ms = min(
-                        duration_ms, max(0, (clamped_target - recording.start_time) * 1000)
-                    )
-                    await self._current_ws.send(f"seekMs={offset_ms}&stamp={self._history_stamp}")
+                self._history_stamp += 1
+                # Same clamp as _build_history_play_message's start,
+                # and for the same reason -- clamped_target can still
+                # land past this recording's own end when it's the
+                # nearest one to a target that's actually in a gap.
+                duration_ms = max(0, (recording.stop_time - recording.start_time) * 1000)
+                offset_ms = min(duration_ms, max(0, (clamped_target - recording.start_time) * 1000))
+                await self._current_ws.send(f"seekMs={offset_ms}&stamp={self._history_stamp}")
             return clamped_target
         self._history_recording = recording
         if self._current_ws is not None:

@@ -1850,7 +1850,12 @@ class TestPauseResume:
         must not leave the bridge stuck asking DSM to hold at the old
         frozen position, or send a bare seekMs to a connection DSM
         still thinks is paused (untested whether that alone would
-        resume it) -- see seek()'s own docstring."""
+        resume it) -- see seek()'s own docstring.
+
+        The resume goes out with restart=false, which is what stops DSM
+        acting on that message's own start=, so the seekMs still has to
+        follow it: without one, this seek would resume at the frozen
+        position rather than the requested target."""
         rec = _recording()
         fake = _FakeWS([_codec_frame()], hang=True)
         connect(fake)
@@ -1871,9 +1876,13 @@ class TestPauseResume:
         await bridge.seek(rec, new_target)
 
         assert not bridge.is_paused
-        fields = dict(parse_qsl(fake.sent[-1]))
-        assert fields["pause"] == "false"
-        assert fields["start"] == str(new_target - rec.start_time)
+        assert "seekMs" in fake.sent[-1], "a seek while paused must still tell DSM where to go"
+        seek_fields = dict(parse_qsl(fake.sent[-1]))
+        assert seek_fields["seekMs"] == str((new_target - rec.start_time) * 1000)
+        resume_fields = dict(parse_qsl(fake.sent[-2]))
+        assert resume_fields["pause"] == "false"
+        assert resume_fields["start"] == str(new_target - rec.start_time)
+        assert int(seek_fields["stamp"]) > int(resume_fields["stamp"])
         await bridge.stop()
 
     async def test_seek_to_a_different_recording_while_paused_reconnects_unpaused(

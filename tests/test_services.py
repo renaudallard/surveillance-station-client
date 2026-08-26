@@ -476,9 +476,7 @@ class TestEventService:
         assert merge_intervals([]) == []
 
     @pytest.mark.asyncio
-    async def test_list_recording_presence_reads_the_event_list(
-        self, api: SurveillanceAPI
-    ) -> None:
+    async def test_list_recording_presence_reads_the_event_list(self, api: SurveillanceAPI) -> None:
         """list_recording_presence reads EnumInterval's own per-file `event`
         list directly -- unlike list_granular_events, it never touches
         event_map at all."""

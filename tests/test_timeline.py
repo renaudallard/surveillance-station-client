@@ -175,9 +175,7 @@ class TestQuickDownloadLabel:
 
 class TestParseCustomDownloadRange:
     def test_valid_range_round_trips(self) -> None:
-        start, end = parse_custom_download_range(
-            "2026-08-22 10:00:00", "2026-08-22 10:00:30"
-        )
+        start, end = parse_custom_download_range("2026-08-22 10:00:00", "2026-08-22 10:00:30")
         assert start == datetime(2026, 8, 22, 10, 0, 0)
         assert end == datetime(2026, 8, 22, 10, 0, 30)
 

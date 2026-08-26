@@ -2218,9 +2218,7 @@ class TestConsumeLastRealTick:
         assert bridge.consume_last_real_tick() is None
         await bridge.stop()
 
-    async def test_returns_the_absolute_position_of_the_last_real_frame(
-        self, connect: Any
-    ) -> None:
+    async def test_returns_the_absolute_position_of_the_last_real_frame(self, connect: Any) -> None:
         rec = _recording()
         fake = _FakeWS([_codec_frame()], hang=True)
         connect(fake)

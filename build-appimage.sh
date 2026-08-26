@@ -238,6 +238,25 @@ if [ -f "${APPDIR}/usr/lib/${APP_NAME}/_internal/ffmpeg" ]; then
     chmod +x "${APPDIR}/usr/lib/${APP_NAME}/_internal/ffmpeg"
 fi
 
+# Three audio libraries the host has to provide. libpipewire and libasound
+# dlopen their plugins from a directory named at build time, we bundle no
+# plugins of either kind, and Debian and Ubuntu spell that directory the
+# same way, so our copy loads the host's plugins and then runs them against
+# the struct layouts of another release. That is the crash on Ubuntu 24.04,
+# whose PipeWire is 1.0.5 where trixie builds 1.4.2. libjack has to match
+# the jackd the host runs, for the same kind of reason. PyInstaller
+# collects all three because libmpv.so.2 names them in DT_NEEDED, so
+# deleting them would leave libmpv unloadable on a host that has none of
+# its own. Park each in a directory of its own instead, out of the loader's
+# way, and let AppRun pick up only the ones the host turns out to lack.
+INTERNAL="${APPDIR}/usr/lib/${APP_NAME}/_internal"
+for soname in libpipewire-0.3.so.0 libasound.so.2 libjack.so.0; do
+    [ -f "${INTERNAL}/${soname}" ] || continue
+    mkdir -p "${INTERNAL}/host-libs/${soname}"
+    mv "${INTERNAL}/${soname}" "${INTERNAL}/host-libs/${soname}/"
+    echo "Left to the host: ${soname}"
+done
+
 # Create AppRun with proper environment setup
 cat > "${APPDIR}/AppRun" << 'EOF'
 #!/bin/bash
@@ -250,7 +269,54 @@ BUNDLEDIR="${APPDIR}/usr/lib/Surveillance"
 # without an RPATH. It currently works because the bootloader prepends
 # _internal itself, but ffmpeg is a child process of ours, not of the
 # bootloader's making, so don't lean on that.
-export LD_LIBRARY_PATH="${BUNDLEDIR}/_internal:${BUNDLEDIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+LIBPATH="${BUNDLEDIR}/_internal:${BUNDLEDIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# The libraries build-appimage.sh parked under host-libs, one directory
+# per soname. They belong to the host and are carried only so libmpv still
+# has something to link against where the host has none of its own, so ask
+# the loader which ones the host cannot answer for and append just those.
+# ldd -r resolves every relocation the way libmpv's own BIND_NOW load does
+# and names what it could not find, but it exits 0 either way, so its
+# output is what counts. Only libmpv is probed: it is the one that has to
+# load or there is no video at all.
+HOSTLIBS="${BUNDLEDIR}/_internal/host-libs"
+PARKED=""
+SONAMES=""
+for dir in "${HOSTLIBS}"/*; do
+    [ -d "${dir}" ] || continue
+    PARKED="${PARKED}:${dir}"
+    SONAMES="${SONAMES}${SONAMES:+|}${dir##*/}"
+done
+
+# A bundle this size draws unrelated loader complaints, so keep to the
+# ones naming a parked library or a symbol out of its namespace.
+unresolved() {
+    LC_ALL=C LD_LIBRARY_PATH="$1" ldd -r "${BUNDLEDIR}/_internal/libmpv.so.2" 2>&1 |
+        grep -E "not found|undefined symbol|error while loading" |
+        grep -E "${SONAMES}|undefined symbol: (pw_|snd_|jack_)"
+}
+
+FALLBACK=""
+if [ -n "${PARKED}" ] && [ -f "${BUNDLEDIR}/_internal/libmpv.so.2" ] &&
+   command -v ldd > /dev/null 2>&1; then
+    COMPLAINTS=$(unresolved "${LIBPATH}")
+    for dir in "${HOSTLIBS}"/*; do
+        [ -d "${dir}" ] || continue
+        case "${COMPLAINTS}" in
+        *"${dir##*/}"*) FALLBACK="${FALLBACK}:${dir}" ;;
+        esac
+    done
+    # Still complaining after that means a host copy that is there but too
+    # old for what we ship. No single library can be blamed for it, so take
+    # all of them back, which is what the AppImage did before this check.
+    if [ -n "${COMPLAINTS}" ] && [ -n "$(unresolved "${LIBPATH}${FALLBACK}")" ]; then
+        FALLBACK="${PARKED}"
+    fi
+else
+    FALLBACK="${PARKED}"
+fi
+
+export LD_LIBRARY_PATH="${LIBPATH}${FALLBACK}"
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 # Bundled ffmpeg binary (see BINARIES above) -- appended, not prepended, so
 # the subprocess lookup in ws_bridge.py finds it on a system with no ffmpeg

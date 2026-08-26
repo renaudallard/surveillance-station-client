@@ -231,6 +231,10 @@ error. The most common cases:
 Almost always a mismatch between python-mpv, libmpv, and the OpenGL driver,
 or a GPU driver crash (especially NVIDIA on Wayland).
 
+On the AppImage, read the section below first. A crash that lands the
+moment a camera's audio starts has a different cause, and none of this
+helps it.
+
 Try:
 
 ```sh
@@ -244,6 +248,81 @@ sudo apt install nvidia-driver-550
 nvidia-smi
 ```
 
+## The AppImage dies as soon as a camera's audio starts
+
+The process takes a SIGSEGV the moment a camera with audio comes up. The
+kernel log names a PipeWire module:
+
+```
+segfault at 10 ip ... error 4 in libpipewire-module-client-node.so
+```
+
+and `coredumpctl` puts that module under the copy of libpipewire inside
+the bundle:
+
+```
+#0  libpipewire-module-client-node.so + 0x2ba1e
+#1  libpipewire-module-client-node.so + 0x13a86
+#2  .../_internal/libpipewire-0.3.so.0 + 0x3d0c0
+```
+
+Under `--debug` the last thing mpv reports is its PipeWire output opening,
+with a version gap that looks like the cause and is not:
+
+```
+[ao/pipewire] Library version: 1.4.2
+[ao/pipewire] Core version: 1.0.5
+[ao/pipewire] Stream state changed: old_state=unconnected state=connecting
+```
+
+"Library version" is the libpipewire loaded into this process and "Core
+version" is the daemon, so the daemon really is older. The daemon is not
+what crashes, though. Every frame in that backtrace is in code this
+process loaded itself, reached before anything goes on the wire.
+
+The mismatch is inside the one process. libmpv links against libpipewire,
+so PyInstaller collects it into the bundle along with everything else
+libmpv needs, and what lands there is whatever the build container had.
+PipeWire then loads its own modules by dlopen at run time, from a
+directory compiled into the library:
+
+```sh
+strings -a _internal/libpipewire-0.3.so.0 | grep 'pipewire-0.3$'
+/usr/lib/x86_64-linux-gnu/pipewire-0.3
+```
+
+No modules are bundled, and Debian and Ubuntu spell that directory the
+same way, so the bundled core finds the host's modules where it expects
+its own and loads them. They call back into the core already in the
+process, which is the other release, and the first structure whose layout
+moved between the two is then read at the wrong offset. libpipewire
+carries no symbol versioning and no module ABI check, so nothing catches
+it. Running from source does not crash because nothing is bundled: the
+host's libmpv loads the host's libpipewire, which loads the host's
+modules.
+
+`libasound.so.2` was bundled the same way and looks for its plugins in
+`/usr/lib/x86_64-linux-gnu/alsa-lib`, so the same fault was waiting on the
+ALSA route, which on a PipeWire desktop leads straight back into
+libpipewire through `pcm.!default`.
+
+The AppImage now uses the host's own `libpipewire-0.3.so.0`,
+`libasound.so.2` and `libjack.so.0`, and falls back to the copies it
+carries only where the host has none. On 0.9.0 and earlier, take the
+bundled copy away by hand:
+
+```sh
+./Surveillance-0.9.0-x86_64.AppImage --appimage-extract
+rm squashfs-root/usr/lib/Surveillance/_internal/libpipewire-0.3.so.0
+./squashfs-root/AppRun
+```
+
+Any machine that hits this crash has PipeWire installed by definition, and
+the 36 symbols libmpv needs from it are all present in the 1.0.5 Ubuntu
+24.04 ships. A host still on PipeWire 0.3 (Ubuntu 22.04, Debian 12, Mint
+21) is missing one or two of them, so there the bundled copy is kept and
+the crash stays.
+
 ## Ubuntu 24.04 / AppImage
 
 - PyGObject >= 3.50 is required for `Gtk.AlertDialog`. Ubuntu 24.04 ships
@@ -251,6 +330,9 @@ nvidia-smi
   pip, install into a venv that pulls `PyGObject>=3.50`.
 - Do not mix the system `python3-mpv` with the AppImage. The AppImage uses
   its own bundled Python and GTK.
+- The AppImage uses the host's PipeWire, ALSA and JACK libraries wherever
+  the host has them. Carrying its own over a host that already had them is
+  what caused the crash in the section above.
 
 ## Collecting debug logs
 

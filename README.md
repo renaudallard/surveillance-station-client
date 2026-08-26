@@ -54,6 +54,12 @@ chmod +x Surveillance-*-x86_64.AppImage
 Available for **x86_64** and **aarch64**. A new release with AppImages is built
 automatically every time the version is bumped.
 
+The AppImage carries its own Python, GTK and mpv, but uses the host's
+PipeWire, ALSA and JACK libraries wherever the host has them. Those load
+plugins from fixed system directories, so a bundled copy picks up the
+host's plugins and crashes on them. Nothing to install for that, it is
+what the bundle does on its own.
+
 ### From source
 
 1. Install [system dependencies](#system-packages) for your distro
@@ -463,6 +469,14 @@ This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
 Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
 `libfuse2` on the build machine.
 
+After PyInstaller runs, `libpipewire-0.3.so.0`, `libasound.so.2` and
+`libjack.so.0` are moved out of `_internal/` into
+`_internal/host-libs/<soname>/`, one directory each, and AppRun puts one
+back on `LD_LIBRARY_PATH` only where the host has no copy of that library.
+They dlopen their plugins from paths compiled into them at build time, so
+a bundled copy running on another distribution loads that distribution's
+plugins into itself and crashes. Keep them out of `_internal/`.
+
 ---
 
 ## Synology API Reference
@@ -496,7 +510,7 @@ Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common problems
 (HTTP 502, recording playback never starts, download failures, segfaults,
-Ubuntu 24.04 / AppImage notes).
+AppImage audio crashes, Ubuntu 24.04 / AppImage notes).
 
 ---
 

@@ -189,10 +189,14 @@ not just a UI setting. Running a high speed across a full 4x4 grid at once
 has been observed to crash the app outright, and to be heavy enough on the
 system as a whole to affect other running applications too.
 
-If a high speed causes instability, drop to a smaller layout (2x2 or 1x1).
+The dropdown greys out the speeds a layout cannot afford, on a fixed budget
+of (speed × active slots): 1×1 keeps the full range up to 100x, 2×2 stops at
+16x, 3×3 at 8x, and 4×4 at 4x. To go faster, switch to a smaller layout.
 
-There is no guard against this yet — high-speed playback under load is
-still being characterized.
+That budget is a guard, not a measurement — high-speed playback under load
+is still being characterized, and the ceiling may move once it is. If a
+speed the dropdown does allow still causes instability, drop to a smaller
+layout and please report it.
 
 ## Recording playback never starts
 

@@ -758,6 +758,9 @@ class LiveView(Gtk.Box):
 
         self.timeline = Timeline()
         self.timeline.set_visible(self.app.config.timeline_visible)
+        # _apply_layout above ran before this existed, so it could not
+        # do this itself.
+        self.timeline.set_active_slot_count(len(self._active))
         self.timeline.canvas.set_hover_callback(self._on_timeline_hover)
         self.timeline.canvas.set_hover_leave_callback(self._on_timeline_hover_leave)
         self.timeline.canvas.set_seek_callback(self._on_timeline_seek)
@@ -893,6 +896,12 @@ class LiveView(Gtk.Box):
                     slot.stop_ptt()
 
         self._active = new_active
+        if hasattr(self, "timeline"):
+            # How many slots would decode at once caps the playback
+            # speeds on offer -- see Timeline.set_active_slot_count.
+            # _return_all_to_live above has already reset the speed to
+            # 1x, which every layout allows.
+            self.timeline.set_active_slot_count(len(new_active))
         self._set_timeline_focus_slot(new_active[0])
 
     def register_timeline_activity(self) -> None:

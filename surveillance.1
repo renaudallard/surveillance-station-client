@@ -89,7 +89,10 @@ as long as it stays paused; resuming a History slot paused for under
 the edge. A playback-speed dropdown (History mode only) offers 1/8x
 through 100x plus a Fwd/Rev direction toggle, applied to every active
 History slot at once; it resets to 1x/Fwd whenever a slot returns to
-Live or the layout switches. Real motion/alarm events are overlaid on
+Live or the layout switches. The higher speeds are greyed out on the
+larger layouts, since DSM really does send that many more frames per
+second and every slot has to decode them: 1x1 offers the full range,
+2x2 stops at 16x, 3x3 at 8x, and 4x4 at 4x. Real motion/alarm events are overlaid on
 the same two presence rows as orange markers.
 .B Previous event
 and

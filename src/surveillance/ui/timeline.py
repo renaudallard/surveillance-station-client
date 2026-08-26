@@ -155,6 +155,22 @@ _SPEED_OPTIONS: list[tuple[str, str]] = [
 ]
 _SPEED_LABELS: dict[str, str] = dict(_SPEED_OPTIONS)
 
+# Ceiling on (playback speed x slots playing at it). DSM really does
+# deliver frames that many times faster rather than hinting at a rate
+# for mpv to interpret, so a multiplier is that much more video to
+# decode per second, on every active slot at once. A high speed across
+# a full 4x4 grid has been observed to take the whole app down and to
+# weigh on other applications with it (see TROUBLESHOOTING.md), with
+# nothing stopping it being picked.
+#
+# 100 is the smallest budget that leaves 1x1 -- one slot, where no
+# instability has been seen -- its full range. It works out to 16x on
+# 2x2, 8x on 3x3 and 4x on 4x4, which matches where the load starts
+# being reported as real. A budget, not a measurement: high-speed
+# playback under load is still being characterized, and this is the
+# guard to revisit once it is.
+_MAX_SPEED_SLOT_PRODUCT = 100.0
+
 
 def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
     """New window-right-edge timestamp for a drag of *dx* pixels.
@@ -917,6 +933,33 @@ class Timeline(Gtk.Box):
     def set_speed_callback(self, callback: Callable[[str], None]) -> None:
         self._speed_callback = callback
 
+    def set_active_slot_count(self, count: int) -> None:
+        """Offer only the speeds *count* simultaneous History slots can
+        be asked to decode at once -- see _MAX_SPEED_SLOT_PRODUCT for
+        the budget and why there is one.
+
+        Greyed out rather than removed, with a tooltip saying why: a
+        speed that silently vanished from the list on a layout switch
+        would read as a bug rather than a limit.
+        """
+        self._max_speed = _MAX_SPEED_SLOT_PRODUCT / count if count > 0 else _MAX_SPEED_SLOT_PRODUCT
+        available = [value for value in self._speed_radios if float(value) <= self._max_speed]
+        for value, radio in self._speed_radios.items():
+            allowed = value in available
+            radio.set_sensitive(allowed)
+            radio.set_tooltip_text(
+                None if allowed else f"Too much to decode across {count} cameras at once"
+            )
+        current = next((v for v, r in self._speed_radios.items() if r.get_active()), "1")
+        if float(current) > self._max_speed and available:
+            # Not suppressed, unlike set_speed's own display sync: the
+            # speed genuinely changes here, so LiveView has to hear
+            # about it and push it to every bridge. Unreachable as
+            # things stand -- a layout switch resets the speed to 1x
+            # before this runs -- but the clamp is what makes that an
+            # ordering detail rather than a correctness one.
+            self._speed_radios[max(available, key=float)].set_active(True)
+
     def set_reverse_callback(self, callback: Callable[[bool], None]) -> None:
         self._reverse_callback = callback
 
@@ -1435,6 +1478,9 @@ class Timeline(Gtk.Box):
         self._speed_btn = Gtk.MenuButton(label="1x")
         self._speed_btn.set_tooltip_text("Playback speed")
         self._speed_radios: dict[str, Gtk.CheckButton] = {}
+        # Every speed, until LiveView says how many slots are active
+        # (see set_active_slot_count).
+        self._max_speed = _MAX_SPEED_SLOT_PRODUCT
         self._speed_btn.set_popover(self._build_speed_popover())
         button_cluster.append(self._speed_btn)
 

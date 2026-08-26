@@ -1846,6 +1846,39 @@ class LiveView(Gtk.Box):
         if slot.index == self._timeline_focus_slot:
             self.timeline.canvas.set_history_position(position)
 
+    def _clear_slot(self, slot: CameraSlot) -> None:
+        """Clear *slot*, and tell the timeline about it.
+
+        CameraSlot.clear() drops the slot's own History position, but
+        the shared canvas marker is LiveView's to update. Without this,
+        clearing the slot the timeline happens to be tracking leaves
+        its marker, date/time bubble and grey History ruler frozen at
+        the last position that slot played, with nothing left running
+        to ever move them again -- not even the Live button, which only
+        resets slots that still have a History bridge to return.
+        """
+        slot.clear()
+        self._set_history_position(slot, None)
+        self._sync_history_active()
+
+    def _sync_history_active(self) -> None:
+        """Reflect whether any active slot is still playing recorded
+        video.
+
+        The toolbar's History-only controls are switched on by whatever
+        seek entered History and off by the Live button. A slot that
+        leaves History without going through either -- cleared, or
+        restarted live by resume_streams after a page switch -- left
+        them on with nothing behind them. Deliberately not used in
+        _return_all_to_live, which turns them off while the outgoing
+        bridges are still alive (their replacement is staggered), and
+        so would read as still-in-History here.
+        """
+        if not hasattr(self, "timeline"):
+            return  # still constructing -- see _return_all_to_live
+        bridges = (self._slots[i]._ws_bridge for i in self._active)
+        self.timeline.set_history_active(any(b is not None and b.is_history for b in bridges))
+
     def _focus_reference_time(self) -> float:
         """The focus slot's current History position, or wall-clock
         "now" if it's on Live -- shared reference point for Back/Forward
@@ -2168,7 +2201,7 @@ class LiveView(Gtk.Box):
                 # Saved state says this slot is empty (or a stale duplicate),
                 # so clear it explicitly: hidden slots from other layouts keep
                 # their camera in memory rather than resetting it.
-                self._slots[phys].clear()
+                self._clear_slot(self._slots[phys])
         # The layout-accumulated row's own camera set just changed.
         self._request_presence_refresh()
 
@@ -2204,7 +2237,7 @@ class LiveView(Gtk.Box):
     def _do_clear_all(self) -> None:
         """Actually clear all streams and camera assignments."""
         for slot in self._slots:
-            slot.clear()
+            self._clear_slot(slot)
         self._select_slot(None)
         self._save_session()
 
@@ -2240,7 +2273,7 @@ class LiveView(Gtk.Box):
             self._save_layout_cameras()
             # Clear visible slots and switch to 1x1
             for i in self._active:
-                self._slots[i].clear()
+                self._clear_slot(self._slots[i])
             self._current_layout = "1x1"
             self.window.sync_grid_layout("1x1")
             self._apply_layout()
@@ -2255,7 +2288,7 @@ class LiveView(Gtk.Box):
         """Clear the camera assigned to the currently selected slot, if any."""
         if self._selected_slot is None:
             return
-        self._slots[self._selected_slot].clear()
+        self._clear_slot(self._slots[self._selected_slot])
         self._select_slot(None)
         self._save_session()
 
@@ -2492,7 +2525,7 @@ class LiveView(Gtk.Box):
         """Right-click menu action: clear this specific slot's camera
         assignment, regardless of which slot (if any) is currently
         selected."""
-        self._slots[slot_idx].clear()
+        self._clear_slot(self._slots[slot_idx])
         if self._selected_slot == slot_idx:
             self._select_slot(None)
         self._save_session()
@@ -2502,7 +2535,7 @@ class LiveView(Gtk.Box):
         # Remove camera from its current slot if displayed elsewhere
         for slot in self._slots:
             if slot.camera and slot.camera.id == camera.id and slot.index != slot_idx:
-                slot.clear()
+                self._clear_slot(slot)
                 break
 
         target = self._slots[slot_idx]
@@ -2518,7 +2551,7 @@ class LiveView(Gtk.Box):
         )
 
         # Clear the target slot and assign
-        target.clear()
+        self._clear_slot(target)
         target.assign(camera)
         self._restore_saved_audio_state(target, camera)
         self._update_slot_audio(target, camera)
@@ -2912,13 +2945,21 @@ class LiveView(Gtk.Box):
                 slot.stop_ptt()
 
     def resume_streams(self) -> None:
-        """Restart streams for all visible slots that have a camera assigned."""
+        """Restart streams for all visible slots that have a camera
+        assigned.
+
+        Always on the live stream, History or not -- pause_streams tore
+        every bridge down on the way out -- so the timeline's
+        History-only controls have to come back off with them.
+        """
         self._streams_paused = False
         for i in self._active:
             slot = self._slots[i]
             if slot.camera:
                 self._restore_saved_audio_state(slot, slot.camera)
+                self._set_history_position(slot, None)
                 self._start_stream(i, slot.camera)
+        self._sync_history_active()
 
     def stop_all(self) -> None:
         """Stop all streams."""

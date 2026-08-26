@@ -274,6 +274,20 @@ and
 .B [camera_muted]
 sections hold the Live View volume (0-100) and mute state per camera, as set
 from the slot's hover toolbar. Cameras start muted.
+.PP
+The
+.B [event_type_history]
+section caches which event types each camera has ever produced, as
+discovered by the Live View timeline's
+.B Filter events
+popover. Each camera's entry holds
+.IR types ,
+a list of (event type flag, reserved) pairs, and
+.IR checked_until ,
+the unix time its recording history has been scanned up to, so a later
+open only scans forward from there rather than repeating the whole
+history. Written automatically; deleting a camera's entry forces a full
+rescan the next time the popover is opened.
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q

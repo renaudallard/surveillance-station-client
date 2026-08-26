@@ -151,6 +151,7 @@ specification:
 default_profile = "home-nas"
 theme = "auto"                  # "auto" (follow OS), "dark", or "light"
 sidebar_visible = true          # camera sidebar shown at startup
+timeline_visible = true         # Live View timeline strip shown at startup
 dismissed_update_version = ""   # release tag whose update notice was dismissed
 poll_interval_cameras = 30      # seconds, minimum 5; also how often a lost stream is retried
 poll_interval_alerts = 30
@@ -186,6 +187,15 @@ last_page = "live"             # last active page
 [camera_muted]
 # Live View mute state per camera ID. Cameras start muted.
 # 5 = false
+
+[event_type_history]
+# Event types each camera has ever produced, discovered by the Live View
+# timeline's "Filter events" popover and kept so a later open only has to
+# scan forward from checked_until instead of the whole history again.
+# Written automatically; delete a camera's entry to force a full rescan.
+# [event_type_history.5]
+# types = [[3, 0], [33554435, 2]]  # (event type flag, reserved) pairs
+# checked_until = 1771200000       # unix time this camera was scanned up to
 
 [camera_protocols]
 # Stream protocol per camera ID:

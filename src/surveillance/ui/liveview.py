@@ -926,13 +926,21 @@ class LiveView(Gtk.Box):
         if slot_idx != self._timeline_focus_slot:
             self._slots[self._timeline_focus_slot].set_timeline_focus(False)
             self._timeline_focus_slot = slot_idx
-            # The shared marker follows whichever slot the timeline
-            # focuses on (see _set_history_position) — switching focus
-            # has to resync it to the new slot's own position, History
-            # or not, rather than leaving the previous slot's marker up.
-            self.timeline.canvas.set_history_position(self._slots[slot_idx]._history_position)
-            # The presence bar's own focus row follows the same switch.
-            self._request_presence_refresh()
+            if hasattr(self, "timeline"):
+                # __init__ calls _apply_layout() before self.timeline
+                # exists, same as _return_all_to_live guards for. Only
+                # unreachable today because every layout's first visible
+                # slot happens to be the one this starts on, which is
+                # not something the rest of this file should depend on.
+                #
+                # The shared marker follows whichever slot the timeline
+                # focuses on (see _set_history_position) — switching
+                # focus has to resync it to the new slot's own position,
+                # History or not, rather than leaving the previous
+                # slot's marker up.
+                self.timeline.canvas.set_history_position(self._slots[slot_idx]._history_position)
+                # The presence bar's own focus row follows the same switch.
+                self._request_presence_refresh()
         self.register_timeline_activity()
 
     def _tick_history_positions(self) -> bool:

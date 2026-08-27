@@ -620,7 +620,7 @@ with the publicly documented Synology Web API. Use it at your own risk.
 
 ## License
 
-BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/surveillance-station-client/blob/main/pyproject.toml) for details.
+BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/surveillance-station-client/blob/main/LICENSE) for details.
 
 ```
 Copyright (c) 2026, Renaud Allard <renaud@allard.it>

@@ -317,6 +317,17 @@ else
 fi
 
 export LD_LIBRARY_PATH="${LIBPATH}${FALLBACK}"
+
+# With our own libpipewire in play, mpv must not use its PipeWire output:
+# that pairing is the one that crashes. Its ALSA output is no safer, since
+# a PipeWire desktop routes that back through the same library, so leave
+# PulseAudio, which pipewire-pulse answers over a negotiated protocol.
+case "${FALLBACK}:" in
+*":${HOSTLIBS}/libpipewire-0.3.so.0:"*)
+    export SURVEILLANCE_AO="${SURVEILLANCE_AO:-pulse}"
+    ;;
+esac
+
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 # Bundled ffmpeg binary (see BINARIES above) -- appended, not prepended, so
 # the subprocess lookup in ws_bridge.py finds it on a system with no ffmpeg

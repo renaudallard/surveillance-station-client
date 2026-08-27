@@ -31,6 +31,7 @@ import contextlib
 import ctypes
 import ctypes.util
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -137,6 +138,17 @@ class MpvGLArea(Gtk.GLArea):
         try:
             import mpv
 
+            # Audio output driver, left to mpv's own autoprobe unless
+            # SURVEILLANCE_AO names one. The AppImage sets it to pulse where
+            # it had to keep its own libpipewire, since mpv's PipeWire output
+            # would then pair that copy with the host's modules and take the
+            # process down with it (see TROUBLESHOOTING.md).
+            ao_option: dict[str, str] = {}
+            ao = os.environ.get("SURVEILLANCE_AO", "").strip()
+            if ao:
+                ao_option["ao"] = ao
+                log.info("Audio output driver set to %s", ao)
+
             self._mpv = mpv.MPV(
                 vo="libmpv",
                 hwdec="auto",
@@ -156,6 +168,7 @@ class MpvGLArea(Gtk.GLArea):
                 tls_verify=self._tls_verify,
                 mute=self._muted,
                 volume=self._volume,
+                **ao_option,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches

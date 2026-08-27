@@ -320,8 +320,23 @@ rm squashfs-root/usr/lib/Surveillance/_internal/libpipewire-0.3.so.0
 Any machine that hits this crash has PipeWire installed by definition, and
 the 36 symbols libmpv needs from it are all present in the 1.0.5 Ubuntu
 24.04 ships. A host still on PipeWire 0.3 (Ubuntu 22.04, Debian 12, Mint
-21) is missing one or two of them, so there the bundled copy is kept and
-the crash stays.
+21) is missing one or two of them, so there the bundled copy is kept:
+preferring the host's would leave libmpv unable to load at all, costing
+video as well as audio. On those hosts the AppImage sends mpv to
+PulseAudio, which both PulseAudio and pipewire-pulse answer over a
+negotiated protocol. Its ALSA output would not do, since a PipeWire
+desktop routes that straight back into the same library.
+
+`SURVEILLANCE_AO` picks the output driver by hand, taking any name mpv's
+`--ao` accepts, on the AppImage or from source:
+
+```sh
+SURVEILLANCE_AO=pulse surveillance
+```
+
+Set explicitly it overrides what the AppImage would have chosen; unset,
+mpv picks for itself. Push-to-talk is not covered either way, since it
+goes through libportaudio and the host's ALSA library rather than mpv.
 
 ## Ubuntu 24.04 / AppImage
 

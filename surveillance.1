@@ -316,6 +316,20 @@ Application configuration file.
 .TP
 .I ~/.local/share/surveillance-station/snapshots/
 Default snapshot download directory.
+.SH ENVIRONMENT
+.TP
+.B SURVEILLANCE_AO
+Audio output driver handed to mpv, taking any name
+.B mpv \-\-ao
+accepts, for example
+.IR pulse ,
+.I pipewire
+or
+.IR alsa .
+Left unset, mpv chooses for itself. The AppImage sets it to
+.I pulse
+where it has to run its own bundled PipeWire library, whose output driver
+would crash there; setting it explicitly overrides that.
 .SH TROUBLESHOOTING
 See
 .I TROUBLESHOOTING.md

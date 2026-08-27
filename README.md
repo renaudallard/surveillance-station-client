@@ -58,7 +58,9 @@ The AppImage carries its own Python, GTK and mpv, but uses the host's
 PipeWire, ALSA and JACK libraries wherever the host has them. Those load
 plugins from fixed system directories, so a bundled copy picks up the
 host's plugins and crashes on them. Nothing to install for that, it is
-what the bundle does on its own.
+what the bundle does on its own. Where it does have to fall back to its
+own PipeWire, it sends mpv to PulseAudio for the same reason; set
+`SURVEILLANCE_AO` to any driver name `mpv --ao` takes to choose yourself.
 
 ### From source
 

@@ -7,10 +7,16 @@ on:
     types: [created, edited]
 
 jobs:
-  check-logs-issue:
+  # One job for both events so the patterns below exist in a single copy.
+  # An issue is judged on its Debug logs field; once labelled, any later
+  # comment can clear the label, including one that only attaches a file.
+  check-logs:
     if: >-
-      github.event_name == 'issues' &&
-      contains(github.event.issue.labels.*.name, 'bug')
+      (github.event_name == 'issues' &&
+       contains(github.event.issue.labels.*.name, 'bug')) ||
+      (github.event_name == 'issue_comment' &&
+       !github.event.issue.pull_request &&
+       contains(github.event.issue.labels.*.name, 'needs-debug-logs'))
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -19,55 +25,48 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const body = context.payload.issue.body || '';
-
-            // Extract debug logs section (between ### Debug logs and next ###)
-            const match = body.match(/### Debug logs\s*\n([\s\S]*?)(?=\n### |$)/);
-            const logsSection = match ? match[1].trim() : '';
-
-            // Patterns that indicate real debug logs
+            // Markers specific enough to stand on their own. Every line the
+            // app logs carries its own logger name, but a report is just as
+            // often a slice of mpv's output with that prefix trimmed off, a
+            // coredumpctl backtrace or a kernel line, none of which mention
+            // this app at all. A log level is deliberately not a marker:
+            // "error" turns up in ordinary prose.
             const logPatterns = [
-              /\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b/,   // log level
-              /surveillance\.\w+/,                          // app logger
-              /httpx: HTTP Request:/,                       // API call
+              /surveillance\.\w+/,                                             // app logger
+              /httpx: HTTP Request:/,                                          // API call
+              /\[(?:ao|vo|cplayer|ffmpeg|demux|stream)[/\]]/,                   // mpv subsystem
+              /\bsegfault at [0-9a-f]+|\bSignal: \d+ \(SIG|^#\d+ +\S+ \+ 0x/m,  // crash trace
+              /^Traceback \(most recent call last\)/m,                          // python traceback
             ];
+            const logAttachmentPattern = /github\.com\/user-attachments\/files\/\d+\/[^\s)]+\.log\b/i;
 
-            const hasLabel = context.payload.issue.labels.some(l => l.name === 'needs-debug-logs');
-            const matchCount = logPatterns.filter(p => p.test(logsSection)).length;
-            const isValid = logsSection.length > 100 && matchCount >= 2;
+            const hasLogs = (text) =>
+              text.length > 100 && logPatterns.some(p => p.test(text));
 
-            if (!isValid) {
-              // Add label if not present
-              if (!hasLabel) {
-                await github.rest.issues.addLabels({
+            const issue = context.payload.issue;
+            const hasLabel = issue.labels.some(l => l.name === 'needs-debug-logs');
+
+            let isValid;
+            if (context.eventName === 'issues') {
+              // Debug logs section, between "### Debug logs" and the next "###"
+              const match = (issue.body || '').match(/### Debug logs\s*\n([\s\S]*?)(?=\n### |$)/);
+              isValid = hasLogs(match ? match[1].trim() : '');
+            } else {
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  labels: ['needs-debug-logs']
-                });
+                }
+              );
+              isValid = comments.some(c => {
+                const body = c.body || '';
+                return logAttachmentPattern.test(body) || hasLogs(body);
+              });
+            }
 
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  body: [
-                    '**The debug logs section does not appear to contain valid debug logs.**',
-                    '',
-                    'Please run the application with `--debug` and capture the output:',
-                    '',
-                    '```sh',
-                    'surveillance --debug 2> /tmp/debug.log',
-                    '```',
-                    '',
-                    'Then reproduce the issue and paste the contents of `/tmp/debug.log` in the **Debug logs** field.',
-                    'Passwords and session tokens are automatically redacted in the log output.',
-                    '',
-                    'This issue will remain labeled `needs-debug-logs` until valid logs are provided.',
-                  ].join('\n')
-                });
-              }
-            } else if (hasLabel) {
-              // Valid logs found and label exists — remove it
+            if (isValid && hasLabel) {
               try {
                 await github.rest.issues.removeLabel({
                   owner: context.repo.owner,
@@ -78,54 +77,31 @@ jobs:
               } catch (e) {
                 // Label might already be removed
               }
-            }
-
-  check-logs-comment:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      !github.event.issue.pull_request &&
-      contains(github.event.issue.labels.*.name, 'needs-debug-logs')
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Check comment for debug logs
-        uses: actions/github-script@v9
-        with:
-          script: |
-            // Fetch all comments on the issue
-            const comments = await github.paginate(
-              github.rest.issues.listComments,
-              {
+            } else if (!isValid && !hasLabel && context.eventName === 'issues') {
+              await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-              }
-            );
+                labels: ['needs-debug-logs']
+              });
 
-            const logAttachmentPattern = /github\.com\/user-attachments\/files\/\d+\/[^\s)]+\.log\b/i;
-            const logPatterns = [
-              /\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b/,   // log level
-              /surveillance\.\w+/,                          // app logger
-              /httpx: HTTP Request:/,                       // API call
-            ];
-
-            const hasLogs = comments.some(c => {
-              const body = c.body || '';
-              if (logAttachmentPattern.test(body)) return true;
-              const matchCount = logPatterns.filter(p => p.test(body)).length;
-              return body.length > 100 && matchCount >= 2;
-            });
-
-            if (hasLogs) {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  name: 'needs-debug-logs'
-                });
-              } catch (e) {
-                // Label might already be removed
-              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: [
+                  '**The debug logs section does not appear to contain valid debug logs.**',
+                  '',
+                  'Please run the application with `--debug` and capture the output:',
+                  '',
+                  '```sh',
+                  'surveillance --debug 2> /tmp/debug.log',
+                  '```',
+                  '',
+                  'Then reproduce the issue and paste the contents of `/tmp/debug.log` in the **Debug logs** field.',
+                  'Passwords and session tokens are automatically redacted in the log output.',
+                  '',
+                  'This issue will remain labeled `needs-debug-logs` until valid logs are provided.',
+                ].join('\n')
+              });
             }

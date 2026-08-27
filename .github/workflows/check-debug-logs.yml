@@ -95,7 +95,7 @@ jobs:
                   'Please run the application with `--debug` and capture the output:',
                   '',
                   '```sh',
-                  'surveillance --debug --log-file 2>&1 | tee ~/surveillance-debug.log',
+                  'surveillance --debug --log-file=~/surveillance-debug.log',
                   '```',
                   '',
                   'Then reproduce the issue and paste the contents of `~/surveillance-debug.log` in the **Debug logs** field.',

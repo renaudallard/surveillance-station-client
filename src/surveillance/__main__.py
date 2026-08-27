@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from types import TracebackType
 
 from surveillance import logfile
 
@@ -99,6 +100,47 @@ def main() -> None:
         # dropped, and it is the only place the auto-generated name is
         # ever shown. stderr is line buffered even when redirected.
         print(f"Logging to {log_path}", file=sys.stderr)
+
+        # An uncaught exception's traceback and every GLib/GTK warning
+        # (g_warning, g_critical, ...) go straight to stderr by default,
+        # bypassing `logging` entirely, so neither ever reaches this file
+        # on its own; routing both through `logging` here closes that
+        # gap. The stderr handler basicConfig() already installed still
+        # shows them on the terminal, just in this app's own format.
+        from gi.repository import GLib
+
+        def _log_uncaught_exception(
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            logging.getLogger("surveillance.crash").critical(
+                "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
+            )
+
+        sys.excepthook = _log_uncaught_exception
+
+        _glib_level_to_py = {
+            GLib.LogLevelFlags.LEVEL_ERROR: logging.CRITICAL,
+            GLib.LogLevelFlags.LEVEL_CRITICAL: logging.ERROR,
+            GLib.LogLevelFlags.LEVEL_WARNING: logging.WARNING,
+            GLib.LogLevelFlags.LEVEL_MESSAGE: logging.INFO,
+            GLib.LogLevelFlags.LEVEL_INFO: logging.INFO,
+            GLib.LogLevelFlags.LEVEL_DEBUG: logging.DEBUG,
+        }
+
+        def _log_glib_message(
+            log_level: GLib.LogLevelFlags, fields: list, _n_fields: int, _user_data: object
+        ) -> GLib.LogWriterOutput:
+            level = _glib_level_to_py.get(
+                log_level & GLib.LogLevelFlags.LEVEL_MASK, logging.WARNING
+            )
+            logging.getLogger("surveillance.glib").log(
+                level, GLib.log_writer_format_fields(log_level, fields, False)
+            )
+            return GLib.LogWriterOutput.HANDLED
+
+        GLib.log_set_writer_func(_log_glib_message, None)
 
     # Suppress chatty third-party loggers in debug mode
     for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):

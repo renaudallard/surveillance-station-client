@@ -352,15 +352,7 @@ goes through libportaudio and the host's ALSA library rather than mpv.
 ## Collecting debug logs
 
 ```sh
-surveillance --debug 2>&1 | tee ~/surveillance-debug.log
-```
-
-`--log-file` writes the same records to a file without the redirection,
-which helps when a session may end before you get to save the terminal.
-Keep stderr as well where you can: crash tracebacks and GTK's own
-warnings go straight there and never reach the log file.
-```sh
-surveillance --debug --log-file 2>&1 | tee ~/surveillance-debug.log
+surveillance --debug --log-file=~/surveillance-debug.log
 ```
 
 Useful log namespaces:
@@ -371,6 +363,8 @@ Useful log namespaces:
 - `surveillance.ui.mpv_widget` - mpv option / render errors, and mpv's own
   messages, which it reports only through this logger
 - `surveillance.ui.player` - playback start failures
+- `surveillance.crash` - uncaught exception
+- `surveillance.glib` - GTK/GLib/GIO
 
 On a debug run the bridge also pipes the muxing ffmpeg's stderr and
 re-logs each line under `surveillance.services.ws_bridge` as

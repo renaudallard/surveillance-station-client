@@ -1387,15 +1387,27 @@ class Timeline(Gtk.Box):
     def _on_speed_radio_toggled(self, radio: Gtk.CheckButton, value: str) -> None:
         if not radio.get_active():
             return
-        self._speed_btn.set_label(_SPEED_LABELS[value])
+        self._update_speed_label()
         if self._speed_callback is not None and not self._suppress_playback_callback:
             self._speed_callback(value)
 
     def _on_direction_toggled(self, btn: Gtk.ToggleButton, reverse: bool) -> None:
         if not btn.get_active():
             return
+        self._update_speed_label()
         if self._reverse_callback is not None and not self._suppress_playback_callback:
             self._reverse_callback(reverse)
+
+    def _update_speed_label(self) -> None:
+        """Show _speed_btn's own current speed, signed negative while
+        _reverse_btn is the active direction -- the popover's radios
+        stay unsigned (magnitude is all a speed choice ever means),
+        so the sign is entirely this label's own doing."""
+        value = next((v for v, r in self._speed_radios.items() if r.get_active()), "1")
+        label = _SPEED_LABELS[value]
+        if self._reverse_btn.get_active():
+            label = f"-{label}"
+        self._speed_btn.set_label(label)
 
     def _update_clock(self) -> bool:
         now = datetime.now()

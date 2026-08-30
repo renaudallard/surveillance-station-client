@@ -31,6 +31,7 @@ import contextlib
 import ctypes
 import ctypes.util
 import logging
+import math
 import os
 from collections.abc import Callable
 from typing import Any
@@ -77,6 +78,89 @@ _ZOOM_MAX = 3.0  # 2**3 = 800%
 # Clamp so scrolling can't pan the video entirely out of view.
 _PAN_MAX = 0.8
 
+# Adaptive playback-speed control keeps mpv's demuxer cache near its
+# configured target instead of drifting unbounded in either direction:
+# growing when decode falls behind, or draining during a network stall.
+# Meaningful only for a profile with a timed cache at all (RTSP/default
+# and muxed_audio); low_latency runs with the cache off entirely.
+_CACHE_CONTROL_INTERVAL_MS = 500
+_CACHE_CONTROL_SPEED_UP = 1.2
+_CACHE_CONTROL_SPEED_DOWN = 0.8
+_CACHE_CONTROL_SPEED_UP_ENTER = 1.5  # x target - reaches _SPEED_UP here
+_CACHE_CONTROL_SPEED_DOWN_ENTER = 0.5  # x target - reaches _SPEED_DOWN here
+# Periodic visibility into cache depth
+_CACHE_LOG_INTERVAL_TICKS = round(2000 / _CACHE_CONTROL_INTERVAL_MS)  # ~2s
+
+# Baseline cache target (seconds) for each playback profile, before
+# _cache_target_seconds's own (not yet speed-aware) adjustment.
+# low_latency's is inert today (its cache stays off in Live mode; see
+# _apply_playback_options), but needed once a high-speed History stream
+# without audio takes this profile and needs a real buffer too.
+_CACHE_SECONDS_DEFAULT = 0.5
+_CACHE_SECONDS_MUXED_AUDIO = 0.5
+_CACHE_SECONDS_LOW_LATENCY = 0.0
+
+# Extra cache _high_speed_cache_seconds adds on top of a profile's
+# baseline at a high History speed: 0 below _CACHE_HIGH_SPEED_ENTER,
+# growing exponentially to _CACHE_HIGH_SPEED_MAX_SECONDS at a 100x
+# factor (the fastest option Timeline's speed dropdown offers).
+_CACHE_HIGH_SPEED_ENTER = 2.0  # x history speed - extra cache starts here
+_CACHE_HIGH_SPEED_MAX_SECONDS = 8.0  # ~seconds added at a 100x factor
+_CACHE_HIGH_SPEED_GROWTH = math.log(_CACHE_HIGH_SPEED_MAX_SECONDS) / (
+    100.0 - _CACHE_HIGH_SPEED_ENTER
+)
+
+
+def _high_speed_cache_seconds(high_playback_speed_factor: float) -> float:
+    """Extra cache (seconds) to add on top of a profile's baseline once
+    DSM is delivering frames at *high_playback_speed_factor* or faster:
+    0 below _CACHE_HIGH_SPEED_ENTER, exactly 1.0 at
+    _CACHE_HIGH_SPEED_ENTER, growing exponentially to
+    _CACHE_HIGH_SPEED_MAX_SECONDS at a 100x factor: a low-speed/Live
+    stream keeps the profile's own small baseline untouched, while a
+    high-speed History stream gets real margin to swallow the increased
+    traffic.
+    """
+    if high_playback_speed_factor < _CACHE_HIGH_SPEED_ENTER:
+        return 0.0
+    return math.exp(
+        _CACHE_HIGH_SPEED_GROWTH * (high_playback_speed_factor - _CACHE_HIGH_SPEED_ENTER)
+    )
+
+
+def _cache_target_seconds(default_seconds: float, high_playback_speed_factor: float) -> float:
+    """Cache target (seconds) to actually use, given a profile's own
+    baseline *default_seconds* (one of the _CACHE_SECONDS_* constants)
+    plus whatever _high_speed_cache_seconds adds for
+    *high_playback_speed_factor* (DSM's own History-speed multiplier).
+    """
+    return default_seconds + _high_speed_cache_seconds(high_playback_speed_factor)
+
+
+def _cache_control_speed(
+    cache_seconds: float, target_seconds: float, high_playback_speed_factor: float
+) -> float:
+    """Playback-speed correction for a cache sitting at *cache_seconds*
+    against *target_seconds*: 1.0x exactly on target, ramping linearly
+    toward _CACHE_CONTROL_SPEED_UP as the ratio reaches
+    _CACHE_CONTROL_SPEED_UP_ENTER, or toward _CACHE_CONTROL_SPEED_DOWN
+    at _CACHE_CONTROL_SPEED_DOWN_ENTER.
+
+    *high_playback_speed_factor* (DSM's own History-speed multiplier)
+    scales the speed-up correction only, deliberately unbounded rather
+    than clamped to _CACHE_CONTROL_SPEED_UP the way the speed-down side
+    is: a cache overrun is worse the faster DSM is already delivering
+    frames, but a cache running low is never symmetrically wrong the
+    other way at high History speed, so no equivalent factor applies
+    on that side.
+    """
+    ratio = cache_seconds / target_seconds
+    if ratio >= 1.0:
+        fraction = min(1.0, (ratio - 1.0) / (_CACHE_CONTROL_SPEED_UP_ENTER - 1.0))
+        return 1.0 + fraction * (_CACHE_CONTROL_SPEED_UP - 1.0) * high_playback_speed_factor
+    fraction = min(1.0, (1.0 - ratio) / (1.0 - _CACHE_CONTROL_SPEED_DOWN_ENTER))
+    return 1.0 - fraction * (1.0 - _CACHE_CONTROL_SPEED_DOWN)
+
 
 def _get_gl_proc_address(_ctx: ctypes.c_void_p, name: bytes) -> int:
     """Get OpenGL procedure address via native GL library.
@@ -118,6 +202,15 @@ class MpvGLArea(Gtk.GLArea):
         self._pan_y: float = 0.0
         self._muted = False
         self._volume = 100
+        self._cache_control_enabled = False
+        self._cache_control_source: int | None = None
+        self._cache_log_tick = 0
+        # DSM's own History-speed multiplier (Live View's timeline speed
+        # dropdown — see Timeline._SPEED_OPTIONS), already baked into how
+        # fast DSM delivers frames. Used for additional throttling of
+        # self._mpv.speed and so _tick_cache_control can report the true
+        # playback multiplier.
+        self._history_speed: float = 1.0
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -149,6 +242,15 @@ class MpvGLArea(Gtk.GLArea):
                 ao_option["ao"] = ao
                 log.info("Audio output driver set to %s", ao)
 
+            osd_option: dict[str, str] = {}
+            if log.isEnabledFor(logging.DEBUG):
+                # Corner osd-msg1 lands in for the adaptive-speed readout
+                # _tick_cache_control keeps live; top-left sits over
+                # video least often, and this only ever runs under
+                # --debug, so it costs nothing otherwise.
+                osd_option["osd-align-x"] = "left"
+                osd_option["osd-align-y"] = "top"
+
             self._mpv = mpv.MPV(
                 vo="libmpv",
                 hwdec="auto",
@@ -169,6 +271,7 @@ class MpvGLArea(Gtk.GLArea):
                 mute=self._muted,
                 volume=self._volume,
                 **ao_option,
+                **osd_option,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches
@@ -189,6 +292,7 @@ class MpvGLArea(Gtk.GLArea):
             # If URL was set before realization, apply options and start playing
             if self._url:
                 self._apply_playback_options()
+                self._restart_cache_control()
                 self._mpv["start"] = str(self._start_offset) if self._start_offset else "0"
                 self._mpv.play(self._url)
 
@@ -306,10 +410,11 @@ class MpvGLArea(Gtk.GLArea):
             # cap, and a small but nonzero readahead buffer to absorb
             # normal scheduling jitter that would otherwise show up as
             # audible micro-cuts with zero buffer margin.
+            target_seconds = _cache_target_seconds(_CACHE_SECONDS_MUXED_AUDIO, self._history_speed)
             self._mpv["cache"] = "yes"
             self._mpv["demuxer-max-bytes"] = "32MiB"
-            self._mpv["demuxer-readahead-secs"] = 2
-            self._mpv["cache-secs"] = 2
+            self._mpv["demuxer-readahead-secs"] = target_seconds
+            self._mpv["cache-secs"] = target_seconds
             # This widget's other profile's analyzeduration=0 + large
             # probesize (tuned for RTSP/local files, below) causes a
             # real, reproducible multi-second demuxer stall on a live
@@ -325,36 +430,123 @@ class MpvGLArea(Gtk.GLArea):
             self._mpv["untimed"] = False
             self._mpv["container-fps-override"] = 0
         elif self._low_latency:
+            target_seconds = _cache_target_seconds(_CACHE_SECONDS_LOW_LATENCY, self._history_speed)
             self._mpv["cache"] = "no"
             self._mpv["demuxer-max-bytes"] = "512KiB"
-            self._mpv["demuxer-readahead-secs"] = 0
+            self._mpv["demuxer-readahead-secs"] = target_seconds
             # Inert while the cache is off (mpv only raises the readahead
             # to cache-secs when the cache is on), but written anyway so
             # every profile states the same set of options.
-            self._mpv["cache-secs"] = 0
+            self._mpv["cache-secs"] = target_seconds
             self._mpv["demuxer-lavf-analyzeduration"] = 0
             self._mpv["demuxer-lavf-probesize"] = 32
             self._mpv["correct-pts"] = False
             self._mpv["untimed"] = True
             self._mpv["container-fps-override"] = 25
         else:
-            # Explicit mpv defaults so a widget that previously played a
-            # low-latency stream does not inherit probesize=32 and
-            # container-fps-override=25 here.
+            # demuxer-max-bytes and cache-secs are a deliberate cap
+            # matching muxed_audio's, not mpv's own (much larger)
+            # defaults: RTSP has no other buffer layer, but a stable
+            # LAN doesn't need mpv's generous defaults either. The rest
+            # restate mpv's own defaults so a widget reused from a
+            # low-latency stream doesn't inherit its probesize=32 /
+            # container-fps-override=25.
+            target_seconds = _cache_target_seconds(_CACHE_SECONDS_DEFAULT, self._history_speed)
             self._mpv["cache"] = "auto"
-            self._mpv["demuxer-max-bytes"] = "150MiB"
-            self._mpv["demuxer-readahead-secs"] = 1
-            # mpv's own default. With the cache on, mpv reads ahead by
-            # whichever of this and demuxer-readahead-secs is larger, so
-            # leaving it at the muxed profile's 2 would quietly cap an
-            # RTSP stream's buffer at two seconds instead of letting
-            # demuxer-max-bytes above govern it.
-            self._mpv["cache-secs"] = 1000 * 60 * 60
+            self._mpv["demuxer-max-bytes"] = "32MiB"
+            self._mpv["demuxer-readahead-secs"] = target_seconds
+            self._mpv["cache-secs"] = target_seconds
             self._mpv["demuxer-lavf-analyzeduration"] = 0
             self._mpv["demuxer-lavf-probesize"] = 5000000
             self._mpv["correct-pts"] = True
             self._mpv["untimed"] = False
             self._mpv["container-fps-override"] = 0
+
+        self._cache_control_enabled = self._mpv["cache-secs"] > 0
+
+    def _restart_cache_control(self) -> None:
+        """(Re)start the cache-speed ticker for the profile just applied
+        by _apply_playback_options, stopping any previous one first.
+        Called on every play()/profile change so a widget reused across
+        streams doesn't keep ticking against a target or speed state left
+        over from what it played before."""
+        self._stop_cache_control()
+        if self._cache_control_enabled:
+            self._cache_control_source = GLib.timeout_add(
+                _CACHE_CONTROL_INTERVAL_MS, self._tick_cache_control
+            )
+
+    def _stop_cache_control(self) -> None:
+        """Cancel the ticker and reset playback to normal speed."""
+        if self._cache_control_source is not None:
+            GLib.source_remove(self._cache_control_source)
+            self._cache_control_source = None
+        if self._mpv is not None:
+            with contextlib.suppress(Exception):
+                self._mpv.speed = 1.0
+                self._mpv["osd-msg1"] = ""
+
+    def _tick_cache_control(self) -> bool:
+        """Nudge playback speed to keep the demuxer cache near its
+        target depth rather than drifting: growing without bound when
+        decode falls behind, or draining to nothing during a network
+        stall, both of which would otherwise mean the app silently
+        lagging further behind real time. See _cache_control_speed for
+        the ramp itself.
+        """
+        if not self._mpv or not self._url:
+            self._cache_control_source = None
+            return False
+        with contextlib.suppress(Exception):
+            if self._mpv.pause:
+                return True
+        # Attribute access, not mpv[name]: mpv[name] reads options/*, not
+        # this runtime property, so it would silently read back None
+        # instead of the live cache duration.
+        cache_seconds: float | None = None
+        with contextlib.suppress(Exception):
+            cache_seconds = getattr(self._mpv, "demuxer_cache_duration", None)
+        if cache_seconds is None:
+            return True
+        # Dict access here, not attribute: the inverse of the gotcha
+        # above. cache-secs is an option _apply_playback_options wrote,
+        # not a runtime property, so mpv[name] reads back exactly what
+        # was set instead of options/* silently returning nothing.
+        target_seconds: float | None = None
+        with contextlib.suppress(Exception):
+            target_seconds = self._mpv["cache-secs"]
+        if not target_seconds:
+            return True
+
+        mpv_playback_speed = _cache_control_speed(
+            cache_seconds, target_seconds, self._history_speed
+        )
+        with contextlib.suppress(Exception):
+            self._mpv.speed = mpv_playback_speed
+        # The number shown/logged is the true playback multiplier against
+        # real time: DSM already delivers frames self._history_speed
+        # times faster, and mpv_playback_speed is only cache control's own
+        # correction on top of that, so self._mpv.speed alone would
+        # understate it.
+        effective_speed = mpv_playback_speed * self._history_speed
+        if log.isEnabledFor(logging.DEBUG):
+            with contextlib.suppress(Exception):
+                self._mpv["osd-msg1"] = (
+                    f"cache {cache_seconds:.2f}secs, target {target_seconds:.2f}secs, "
+                    f"speed {effective_speed:.2f}X"
+                )
+
+        self._cache_log_tick += 1
+        due = self._cache_log_tick % _CACHE_LOG_INTERVAL_TICKS == 0
+        if due:
+            log.debug(
+                "Cache control: url=%s cache=%.2fs target=%.2fs speed=%.2f",
+                self._url,
+                cache_seconds,
+                target_seconds,
+                effective_speed,
+            )
+        return True
 
     def play(
         self,
@@ -363,6 +555,7 @@ class MpvGLArea(Gtk.GLArea):
         low_latency: bool = False,
         muxed_audio: bool = False,
         start_offset: float = 0,
+        history_speed: float = 1.0,
     ) -> None:
         """Start playing a stream URL.
 
@@ -377,22 +570,34 @@ class MpvGLArea(Gtk.GLArea):
 
         *start_offset* seeks to that position (seconds) as the file loads,
         for playing a moment within a much longer recording file.
+
+        *history_speed* is DSM's own History-speed multiplier already in
+        effect for this stream (1.0 for Live, which has no speed concept);
+        see set_history_speed for updating it on an already-playing
+        History stream.
         """
         self._url = url
         self._low_latency = low_latency
         self._muxed_audio = muxed_audio
         self._start_offset = start_offset
+        self._history_speed = history_speed
         if self._initialized and self._mpv:
             try:
                 self._apply_playback_options()
+                self._restart_cache_control()
                 self._mpv["start"] = str(start_offset) if start_offset else "0"
                 self._mpv.play(url)
             except Exception:
                 log.exception("Failed to play %s", url)
+                # _restart_cache_control() above already started the
+                # ticker; without this it would keep polling and nudging
+                # speed against a URL that never actually started playing.
+                self._stop_cache_control()
 
     def stop(self) -> None:
         """Stop playback."""
         self._url = ""
+        self._stop_cache_control()
         if self._mpv:
             with contextlib.suppress(Exception):
                 self._mpv.command("stop")
@@ -413,6 +618,16 @@ class MpvGLArea(Gtk.GLArea):
         if self._mpv:
             with contextlib.suppress(Exception):
                 self._mpv.pause = paused
+
+    def set_history_speed(self, value: float) -> None:
+        """Update DSM's own History-speed multiplier for an already-
+        playing stream (Live View's timeline speed dropdown, changed
+        mid-session); see play()'s *history_speed* for the value set
+        when a stream starts. Re-applies playback options, then
+        restarts cache control and resets OSD message."""
+        self._history_speed = value
+        self._apply_playback_options()
+        self._restart_cache_control()
 
     def _letterbox_fraction(self, width: int, height: int) -> tuple[float, float]:
         """Fraction of the widget's width/height the fitted (unzoomed)

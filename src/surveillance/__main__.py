@@ -144,8 +144,10 @@ def main() -> None:
             level = _glib_level_to_py.get(
                 log_level & GLib.LogLevelFlags.LEVEL_MASK, logging.WARNING
             )
+            # stripped: GLib opens a warning with a blank line, which
+            # would split every one of these across two records.
             logging.getLogger("surveillance.glib").log(
-                level, GLib.log_writer_format_fields(log_level, fields, False)
+                level, GLib.log_writer_format_fields(log_level, fields, False).strip()
             )
             return GLib.LogWriterOutput.HANDLED
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Surveillance Station Client &mdash; native GTK4 desktop client for Synology Surveillance Station on Linux and BSD" width="100%">
+  <img src="assets/banner.svg" alt="Surveillance Station Client &mdash; native GTK4 desktop client for Synology Surveillance Station on Linux and BSD, showing the Live View grid" width="100%">
 </p>
 
 <p align="center">
@@ -16,31 +16,89 @@
   management &mdash; all from a lightweight native desktop application.
 </p>
 
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
 ## Features
 
-- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Audio reaches the player over the RTSP-family protocols (`rtsp`, `rtsp_over_http`, `multicast`, `direct`), or over the default `auto`/`websocket` protocol when the camera's audio codec is PCMU or AAC (muxed in via ffmpeg); otherwise the mute button stays greyed out until the protocol is changed (or DSM reports a different codec) by right-clicking the camera in the sidebar. A camera with no audio track gets no mute button at all. A muxed camera that stops sending audio for three seconds while its video keeps arriving keeps playing without sound until its stream is restarted, rather than holding up its own video. Cameras with a speaker also get a push-to-talk microphone button &mdash; tap to start talking, tap again to stop. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The client sends a periodic keepalive to hold each WebSocket session open; if a session is ever interrupted anyway (a network blip, a NAS restart), it reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
-- **Live View Timeline** &mdash; A shared timeline strip below the grid, toggled from the header bar (persists across restarts). Scroll or use the zoom buttons to zoom the time scale (centered on the cursor), click-and-drag to pan; a thin blue border marks which slot's camera the timeline is currently tracking &mdash; it follows the last-clicked slot, defaults to the upper-left slot on layout load, and fades after 10 seconds of no activity anywhere in the window. Hovering the ruler shows a small preview thumbnail of that camera at the hovered time, with its date/time overlaid. In History mode, a date/time bubble follows the marker as it moves. Below the ruler, a recording-presence bar shows two rows: where the tracked slot's own camera has a recording, and where any camera in the current layout does. Clicking a point on the ruler switches every slot in the current layout into History mode, each playing its own camera's recorded video from that time; a **Live** button returns every slot to the real-time stream. Picking a different camera into a slot already in History mode keeps playing recorded video, for the newly picked camera, at the same point in time, rather than dropping back to live; switching grid layout always returns to live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are unavailable while a slot shows recorded video (mute/volume and Snapshot remain available). Jump &plusmn;10s buttons seek every slot in the current layout the same way clicking the ruler does, coalescing a burst of rapid clicks into a single request rather than firing one per click. A **Pause** button freezes every active slot in place &mdash; a live slot just freezes locally without leaving Live mode, while a History slot asks DSM to actually stop sending, so the gap behind wall clock grows for as long as it stays paused; resuming a History slot paused for under 10 seconds lands at least 10 seconds behind live rather than right at the edge. A playback-speed dropdown (History mode only) offers 1/8x through 100x plus a Fwd/Rev direction toggle, applied to every active History slot at once; it resets to 1x/Fwd whenever a slot returns to Live or the layout switches. The higher speeds are greyed out on the larger layouts, since DSM really does send that many more frames per second and every slot has to decode them: 1&times;1 offers the full range, 2&times;2 stops at 16x, 3&times;3 at 8x, and 4&times;4 at 4x. Real motion/alarm events are overlaid on the same two presence rows as orange markers. **Previous event**/**Next event** jump to the nearest one on either side of the current position, across every camera in the layout; Previous stays available in Live mode (dropping into History first, like Back 10s), while Next is History-only, like Forward 10s. Events within 10 seconds of wall clock are skipped, since a seek that close would just be clamped back to the live edge anyway. A calendar button opens a date/time picker, its own days marked and any day without a recording (across the current layout) refused, and its **Jump** button greyed out until the exact date/time selected falls within a real recording; jumping there re-centers the timeline at its default zoom, while Back/Forward 10s and Previous/Next event instead just pan (at whatever zoom is already set) if their own target would otherwise land off-screen. A **Filter events** button narrows the presence bar's event markers and Previous/Next event navigation down to chosen event types (Any or All of a multi-select, decoded per camera brand &mdash; see `EVENT_BITMASK.md`); opening it scans each layout camera's full recording history for the types it has ever produced (a persisted, incrementally-updated cache, so only the first scan and any time elapsed since the last one cost real seconds), showing a per-camera progress checklist meanwhile. A **Download** button opens a popup with a camera picker (only cameras currently assigned to a slot in the layout, since some may be empty, and defaulting to the tracked slot's own camera), above two tabs: Quick Save, whose three one-click buttons immediately prompt for a save location and download around the tracked slot's current position &mdash; **Download last 1/2/5 min** up to it in Live mode, or **Download &minus;1/2/5 to +1/2/5 min** centered on it in History mode, since both directions are already available once paused on a moment of interest &mdash; and Custom Save, with Start/End date-time fields (defaulting to a short clip ending at the same point) for an exact range.
-- **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume, scroll-to-zoom, click-and-drag pan), and download to disk. Quick date presets (Today, Yesterday, Last 24 hrs, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
-- **PTZ Control** &mdash; Pan/Tilt, Zoom, Focus, Preset, and Patrol controls for PTZ-capable cameras, in the same per-slot hover toolbar as Live View's audio controls. Picking a patrol asks Surveillance Station to run that saved route; the NAS drives the camera, so it keeps going after you switch cameras or quit. Routes are created and edited in Surveillance Station itself, and there is no stop control, the same as Synology's own clients.
-- **Snapshots** &mdash; Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy. The full-size viewer supports scroll-to-zoom and click-and-drag panning.
-- **Time Lapse** &mdash; Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.
-- **Events & Alerts** &mdash; Browse real events decoded from each camera's own detected categories (motion, audio, tampering, person/vehicle/pet, and more, brand-dependent &mdash; see `EVENT_BITMASK.md`) with their type and time, filter by event type (quick filter plus a multi-select in advanced search, matching Any or All of the selected types) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
-- **Home Mode** &mdash; Toggle Surveillance Station home mode directly from the header bar.
-- **License Management** &mdash; View, add, and delete camera licenses. Online and offline activation.
-- **Session Persistence** &mdash; Grid layout, active page, camera assignments, sidebar visibility, and recording search filters (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
-- **Two-Factor Authentication** &mdash; MFA/OTP login support. When 2FA is enabled on your Synology account, the client prompts for a 6-digit authenticator code and optionally registers as a trusted device to skip OTP on future logins.
-- **Multi-Profile** &mdash; Save multiple NAS connection profiles and switch between them from the login screen.
-- **Secure Credentials** &mdash; Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain).
-- **Theming** &mdash; Auto (follow OS), dark, or light theme selectable from the header bar.
-- **About & Updates** &mdash; An About page shows the version, license, and repository links. On login the client checks the GitHub releases page once for a newer version and, if one exists, marks the About entry until you have seen it.
+<details>
+<summary><b>Live View</b></summary>
 
----
+Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Audio reaches the player over the RTSP-family protocols (`rtsp`, `rtsp_over_http`, `multicast`, `direct`), or over the default `auto`/`websocket` protocol when the camera's audio codec is PCMU or AAC (muxed in via ffmpeg); otherwise the mute button stays greyed out until the protocol is changed (or DSM reports a different codec) by right-clicking the camera in the sidebar. A camera with no audio track gets no mute button at all. A muxed camera that stops sending audio for three seconds while its video keeps arriving keeps playing without sound until its stream is restarted, rather than holding up its own video. Cameras with a speaker also get a push-to-talk microphone button &mdash; tap to start talking, tap again to stop. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The client sends a periodic keepalive to hold each WebSocket session open; if a session is ever interrupted anyway (a network blip, a NAS restart), it reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
+</details>
+<details>
+<summary><b>Timeline</b></summary>
 
-## Quick Start
+A shared timeline strip below the video grid, toggled from the header bar (persists across restarts). Scroll or use the zoom buttons to zoom the time scale (centered on the cursor), click-and-drag to pan; a thin blue border marks which slot's camera the timeline is currently tracking &mdash; it follows the last-clicked slot, defaults to the upper-left slot on layout load, and fades after 10 seconds of no activity anywhere in the window. Hovering the ruler shows a small preview thumbnail of that camera at the hovered time, with its date/time overlaid. In History mode, a date/time bubble follows the marker as it moves. Below the ruler, a recording-presence bar shows two rows: where the tracked slot's own camera has a recording, and where any camera in the current layout does. Clicking a point on the ruler switches every slot in the current layout into History mode, each playing its own camera's recorded video from that time; a **Live** button returns every slot to the real-time stream. Picking a different camera into a slot already in History mode keeps playing recorded video, for the newly picked camera, at the same point in time, rather than dropping back to live; switching grid layout always returns to live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are unavailable while a slot shows recorded video (mute/volume and Snapshot remain available). Jump &plusmn;10s buttons seek every slot in the current layout the same way clicking the ruler does, coalescing a burst of rapid clicks into a single request rather than firing one per click. A **Pause** button freezes every active slot in place &mdash; a live slot just freezes locally without leaving Live mode, while a History slot asks DSM to actually stop sending, so the gap behind wall clock grows for as long as it stays paused; resuming a History slot paused for under 10 seconds lands at least 10 seconds behind live rather than right at the edge. A playback-speed dropdown (History mode only) offers 1/8x through 100x plus a Fwd/Rev direction toggle, applied to every active History slot at once; it resets to 1x/Fwd whenever a slot returns to Live or the layout switches. The higher speeds are greyed out on the larger layouts, since DSM really does send that many more frames per second and every slot has to decode them: 1&times;1 offers the full range, 2&times;2 stops at 16x, 3&times;3 at 8x, and 4&times;4 at 4x. Real motion/alarm events are overlaid on the same two presence rows as orange markers. **Previous event**/**Next event** jump to the nearest one on either side of the current position, across every camera in the layout; Previous stays available in Live mode (dropping into History first, like Back 10s), while Next is History-only, like Forward 10s. Events within 10 seconds of wall clock are skipped, since a seek that close would just be clamped back to the live edge anyway. A calendar button opens a date/time picker, its own days marked and any day without a recording (across the current layout) refused, and its **Jump** button greyed out until the exact date/time selected falls within a real recording; jumping there re-centers the timeline at its default zoom, while Back/Forward 10s and Previous/Next event instead just pan (at whatever zoom is already set) if their own target would otherwise land off-screen. A **Filter events** button narrows the presence bar's event markers and Previous/Next event navigation down to chosen event types (Any or All of a multi-select, decoded per camera brand &mdash; see `EVENT_BITMASK.md`); opening it scans each layout camera's full recording history for the types it has ever produced (a persisted, incrementally-updated cache, so only the first scan and any time elapsed since the last one cost real seconds), showing a per-camera progress checklist meanwhile. A **Download** button opens a popup with a camera picker (only cameras currently assigned to a slot in the layout, since some may be empty, and defaulting to the tracked slot's own camera), above two tabs: Quick Save, whose three one-click buttons immediately prompt for a save location and download around the tracked slot's current position &mdash; **Download last 1/2/5 min** up to it in Live mode, or **Download &minus;1/2/5 to +1/2/5 min** centered on it in History mode, since both directions are already available once paused on a moment of interest &mdash; and Custom Save, with Start/End date-time fields (defaulting to a short clip ending at the same point) for an exact range.
+</details>
+<details>
+<summary><b>Recordings</b></summary>
 
-### AppImage (Linux, no install needed)
+Browse, filter by camera, play back with full transport controls (seek, pause, volume, scroll-to-zoom, click-and-drag pan), and download to disk. Quick date presets (Today, Yesterday, Last 24 hrs, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
+</details>
+<details>
+<summary><b>PTZ Control</b></summary>
+
+Pan/Tilt, Zoom, Focus, Preset, and Patrol controls for PTZ-capable cameras, in the same per-slot hover toolbar as Live View's audio controls. Picking a patrol asks Surveillance Station to run that saved route; the NAS drives the camera, so it keeps going after you switch cameras or quit. Routes are created and edited in Surveillance Station itself, and there is no stop control, the same as Synology's own clients.
+</details>
+<details>
+<summary><b>Snapshots</b></summary>
+
+Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy. The full-size viewer supports scroll-to-zoom and click-and-drag panning.
+</details>
+<details>
+<summary><b>Time Lapse</b></summary>
+
+Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.
+</details>
+<details>
+<summary><b>Events & Alerts</b></summary>
+
+Browse real events decoded from each camera's own detected categories (motion, audio, tampering, person/vehicle/pet, and more, brand-dependent &mdash; see `EVENT_BITMASK.md`) with their type and time, filter by event type (quick filter plus a multi-select in advanced search, matching Any or All of the selected types) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
+</details>
+<details>
+<summary><b>Home Mode</b></summary>
+
+Toggle Surveillance Station home mode directly from the header bar.
+</details>
+<details>
+<summary><b>License Management</b></summary>
+
+View, add, and delete camera licenses. Online and offline activation.
+</details>
+<details>
+<summary><b>Session Persistence</b></summary>
+
+Grid layout, active page, camera assignments, sidebar visibility, and recording search filters (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
+</details>
+<details>
+<summary><b>Two-Factor Authentication</b></summary>
+
+MFA/OTP login support. When 2FA is enabled on your Synology account, the client prompts for a 6-digit authenticator code and optionally registers as a trusted device to skip OTP on future logins.
+</details>
+<details>
+<summary><b>Multi-Profile</b></summary>
+
+Save multiple NAS connection profiles and switch between them from the login screen.
+</details>
+<details>
+<summary><b>Secure Credentials</b></summary>
+
+Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain).
+</details>
+<details>
+<summary><b>Theming</b></summary>
+
+Auto (follow OS), dark, or light theme selectable from the header bar.
+</details>
+<details>
+<summary><b>About & Updates</b></summary>
+
+An About page shows the version, license, and repository links. On login the client checks the GitHub releases page once for a newer version and, if one exists, marks the About entry until you have seen it.
+</details>
+
+<img src="assets/divider.svg" width="100%" height="8" alt="">
+
+## Quick Start (Linux, no install needed)
 
 Download the latest AppImage for your architecture from the
 [Releases](https://github.com/renaudallard/surveillance-station-client/releases/latest)
@@ -62,32 +120,12 @@ what the bundle does on its own. Where it does have to fall back to its
 own PipeWire, it sends mpv to PulseAudio for the same reason; set
 `SURVEILLANCE_AO` to any driver name `mpv --ao` takes to choose yourself.
 
-### From source
-
-1. Install [system dependencies](#system-packages) for your distro
-2. Clone and install:
-
-```sh
-git clone https://github.com/renaudallard/surveillance-station-client.git
-cd surveillance-station-client
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-pip install .
-```
-
-> **Note:** `--system-site-packages` is required so the venv can access the
-> system-installed PyGObject and cairo bindings, which cannot be built via pip
-> without extensive C development headers.
-
-3. Run:
-
-```sh
-surveillance
-```
-
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
 ## Usage
+
+<details>
+<summary><b>Application startup arguments</b></summary>
 
 ```sh
 surveillance                                  # launch the application
@@ -106,6 +144,10 @@ timestamped file under `$XDG_STATE_HOME/surveillance-station/logs/` (or
 set) and marks it complete on a clean exit. Files marked complete are
 deleted by the next run that also passes a bare `--log-file`. Unmarked
 files left over from crashes are kept for inspection.
+</details>
+
+<details>
+<summary><b>Login to your Surveillance Station (DSM)</b></summary>
 
 On launch, a login dialog asks for your NAS connection details:
 
@@ -119,6 +161,10 @@ On launch, a login dialog asks for your NAS connection details:
 | **Username** | DSM user with Surveillance Station permissions | &mdash; |
 | **Password** | DSM password | &mdash; |
 | **Remember credentials** | Store in system keyring | on |
+</details>
+
+<details>
+<summary><b>Basic usage</b></summary>
 
 After connecting, the camera list appears in the sidebar. Click a camera to
 start its live stream. Use the navigation buttons at the bottom of the sidebar
@@ -133,16 +179,19 @@ it, or click **Empty Slot** at the bottom of the camera list to empty it again.
 Clicking a camera with no slot selected switches to 1&times;1 and shows only
 that camera. Right-click a slot for **Take Snapshot**, **Open in 1x1 Layout**,
 and **Clear Slot**.
+</details>
 
-### Keyboard shortcuts
+<details>
+<summary><b>Keyboard shortcuts</b></summary>
 
 | Key | Action |
 |---|---|
 | `Ctrl+Q` | Quit |
+</details>
 
----
 
-## Configuration
+<details>
+<summary><b>Configuration</b></summary>
 
 Configuration is stored in TOML format following the XDG base directory
 specification:
@@ -151,8 +200,7 @@ specification:
 ~/.config/surveillance-station/config.toml
 ```
 
-<details>
-<summary><b>Example configuration</b></summary>
+#### Example configuration
 
 ```toml
 [general]
@@ -221,7 +269,6 @@ port = 5001
 https = true
 verify_ssl = false
 ```
-</details>
 
 The `[session]` section is managed automatically &mdash; the application
 restores the grid layout, active page, and camera assignments from the previous
@@ -238,17 +285,22 @@ client will prompt for a 6-digit OTP code after entering credentials. Checking
 "Trust this device" stores a device token in the profile so subsequent logins
 skip the OTP step. If the trust is revoked on the NAS, the client will prompt
 for OTP again automatically.
+</details>
 
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
-## Dependencies
+## Development
+
+<a id="install-dependencies"></a>
+<details>
+<summary><b>Install dependencies</b></summary>
 
 ### System packages
 
-These must be installed **before** the Python dependencies.
+Identify, download and install the packages that match your distro. These
+must be installed **before** the Python dependencies.
 
-<details>
-<summary><b>Debian / Ubuntu</b></summary>
+#### Debian / Ubuntu
 
 ```sh
 sudo apt install \
@@ -262,18 +314,12 @@ sudo apt install \
     python3-gi-cairo \
     python3-cairo
 ```
-</details>
-
-<details>
-<summary><b>Arch Linux</b></summary>
+#### Arch Linux
 
 ```sh
 sudo pacman -S gtk4 mpv portaudio ffmpeg python-gobject python-cairo
 ```
-</details>
-
-<details>
-<summary><b>Fedora</b></summary>
+#### Fedora
 
 ```sh
 sudo dnf install \
@@ -284,10 +330,7 @@ sudo dnf install \
     python3-gobject \
     python3-cairo
 ```
-</details>
-
-<details>
-<summary><b>openSUSE</b></summary>
+#### openSUSE
 
 ```sh
 sudo zypper install \
@@ -298,23 +341,16 @@ sudo zypper install \
     python3-gobject \
     python3-gobject-cairo
 ```
-</details>
-
-<details>
-<summary><b>FreeBSD</b></summary>
+#### FreeBSD
 
 ```sh
 pkg install gtk4 mpv portaudio ffmpeg py311-gobject3 py311-cairo
 ```
-</details>
-
-<details>
-<summary><b>OpenBSD</b></summary>
+#### OpenBSD
 
 ```sh
 pkg_add gtk4 mpv portaudio ffmpeg py3-gobject3 py3-cairo
 ```
-</details>
 
 ### Python packages
 
@@ -331,10 +367,80 @@ pkg_add gtk4 mpv portaudio ffmpeg py3-gobject3 py3-cairo
 | `websockets` >= 13.0 | WebSocket stream bridge for live view |
 | `sounddevice` >= 0.5 | PortAudio bindings for push-to-talk mic capture |
 | `cryptography` >= 42.0 | AES for offline license activation |
+</details>
 
----
+<details>
+<summary><b>Install source code</b></summary>
 
-## Architecture
+1. Make sure you have installed [system dependencies](#install-dependencies) for your distro
+2. Clone and install:
+
+```sh
+git clone https://github.com/renaudallard/surveillance-station-client.git
+cd surveillance-station-client
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install .
+```
+
+> **Note:** `--system-site-packages` is required so the venv can access the
+> system-installed PyGObject and cairo bindings, which cannot be built via pip
+> without extensive C development headers.
+
+3. Run:
+
+```sh
+surveillance
+```
+</details>
+
+<details>
+<summary><b>Building, testing and CI</b></summary>
+
+### Building an AppImage locally
+
+```sh
+./build-appimage.sh
+```
+
+This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
+Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
+`libfuse2` on the build machine.
+
+After PyInstaller runs, `libpipewire-0.3.so.0`, `libasound.so.2` and
+`libjack.so.0` are moved out of `_internal/` into
+`_internal/host-libs/<soname>/`, one directory each, and AppRun puts one
+back on `LD_LIBRARY_PATH` only where the host has no copy of that library.
+They dlopen their plugins from paths compiled into them at build time, so
+a bundled copy running on another distribution loads that distribution's
+plugins into itself and crashes. Keep them out of `_internal/`.
+
+### Running checks locally
+
+```sh
+pip install -e ".[dev]"
+
+ruff check src/ tests/       # lint (rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
+ruff format src/ tests/       # format
+mypy src/surveillance/        # type check
+pytest tests/ -v              # tests
+```
+
+### Automated build pipeline
+
+CI runs automatically on push and pull requests to `main`:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy |
+| [`release.yml`](.github/workflows/release.yml) | version bump on `main` | Build AppImages (x86_64 + aarch64), create GitHub release |
+
+</details>
+
+<details>
+<summary><b>Architecture</b></summary>
+
+### Design overview
 
 ```
 ┌─────────────────────────────────────────┐
@@ -363,128 +469,111 @@ Three event systems are integrated:
 Video is rendered through mpv's OpenGL render API into a `Gtk.GLArea` widget,
 which works on both X11 and Wayland without window ID embedding.
 
-<details>
-<summary><b>Project structure</b></summary>
+### Project structure
 
 ```
 surveillance-station-client/
 ├── pyproject.toml
 ├── README.md
-├── surveillance.1                      man page
-├── EVENT_BITMASK.md                    event_map bitmask reverse-engineering reference
-├── build-appimage.sh                   AppImage build script
-├── appimage_entry.py                   PyInstaller entry point
+├── LICENSE
+├── TROUBLESHOOTING.md                   troubleshooting guide
+├── surveillance.1                       man page
+├── EVENT_BITMASK.md                     event_map bitmask reverse-engineering reference
+├── build-appimage.sh                    AppImage build script
+├── appimage_entry.py                    PyInstaller entry point
+├── assets/
+│   └── banner.svg                       README banner image
 ├── scripts/
-│   └── dump_event_map.py               diagnostic tool for extending EVENT_BITMASK.md
+│   └── dump_event_map.py                diagnostic tool for extending EVENT_BITMASK.md
 ├── data/
 │   └── org.surveillance.desktop
+├── .github/ISSUE_TEMPLATE/
+│   ├── bug_report.yml                   bug report form
+│   └── config.yml                       issue template config
 ├── .github/workflows/
-│   ├── lint.yml                        CI: ruff + mypy
-│   └── release.yml                     AppImage build + GitHub release
+│   ├── lint.yml                         CI: ruff + mypy
+│   ├── check-debug-logs.yml             CI: validates bug-report debug logs
+│   ├── stale-issues.yml                 CI: closes stale issues
+│   └── release.yml                      AppImage build + GitHub release
 ├── src/surveillance/
-│   ├── __main__.py                     entry point
-│   ├── app.py                          Gtk.Application
-│   ├── config.py                       TOML config + XDG paths
-│   ├── credentials.py                  keyring wrapper
+│   ├── __main__.py                      entry point
+│   ├── app.py                           Gtk.Application
+│   ├── config.py                        TOML config + XDG paths
+│   ├── credentials.py                   keyring wrapper
+│   ├── logfile.py                       --log-file handling + redaction
 │   ├── data/
 │   │   ├── style.css
-│   │   └── event_bits.json             event_map bit -> label table (see EVENT_BITMASK.md)
+│   │   └── event_bits.json              event_map bit -> label table (see EVENT_BITMASK.md)
 │   ├── api/
-│   │   ├── client.py                   SurveillanceAPI (httpx)
-│   │   ├── auth.py                     login / logout / SID
-│   │   └── models.py                   dataclasses
+│   │   ├── client.py                    SurveillanceAPI (httpx)
+│   │   ├── auth.py                      login / logout / SID
+│   │   └── models.py                    dataclasses
 │   ├── services/
-│   │   ├── camera.py                   camera list
-│   │   ├── live.py                     stream URL resolution
-│   │   ├── ws_bridge.py               WebSocket-to-pipe bridge
-│   │   ├── recording.py               recording management
-│   │   ├── ptz.py                      PTZ commands
-│   │   ├── ptt.py                      push-to-talk session (AudioOut WebSocket)
-│   │   ├── g711.py                     G.711 mu-law encoder
-│   │   ├── aac.py                      AAC frame recovery + ADTS headers
-│   │   ├── snapshot.py                 snapshot management
-│   │   ├── event.py                    events + alerts
-│   │   ├── event_bits.py               event_map bitmask decoder (see EVENT_BITMASK.md)
-│   │   ├── homemode.py                 home mode toggle
-│   │   ├── license.py                  license management
-│   │   └── timelapse.py                time lapse management
+│   │   ├── camera.py                    camera list
+│   │   ├── live.py                      stream URL resolution
+│   │   ├── ws_bridge.py                 WebSocket-to-pipe bridge
+│   │   ├── recording.py                 recording management
+│   │   ├── download.py                  recording/snapshot download helpers
+│   │   ├── ptz.py                       PTZ commands
+│   │   ├── ptt.py                       push-to-talk session (AudioOut WebSocket)
+│   │   ├── g711.py                      G.711 mu-law encoder
+│   │   ├── aac.py                       AAC frame recovery + ADTS headers
+│   │   ├── snapshot.py                  snapshot management
+│   │   ├── event.py                     events + alerts
+│   │   ├── event_bits.py                event_map bitmask decoder (see EVENT_BITMASK.md)
+│   │   ├── homemode.py                  home mode toggle
+│   │   ├── license.py                   license management
+│   │   ├── timelapse.py                 time lapse management
+│   │   └── update_check.py              GitHub release version check
 │   ├── ui/
-│   │   ├── window.py                   main window
-│   │   ├── login.py                    login dialog
-│   │   ├── headerbar.py                header bar controls
-│   │   ├── sidebar.py                  camera list sidebar
-│   │   ├── liveview.py                 live stream grid
-│   │   ├── slot_toolbar.py             per-slot hover toolbar (audio, PTT, PTZ, snapshot)
-│   │   ├── mpv_widget.py               GLArea + mpv render
-│   │   ├── recordings.py               recording browser
-│   │   ├── advanced_search.py          advanced search dialog (shared by Recordings/Snapshots/Events)
-│   │   ├── player.py                   playback controls
-│   │   ├── snapshots.py                snapshot browser
-│   │   ├── events.py                   event list
-│   │   ├── licenses.py                 license management
-│   │   ├── timelapse.py                time lapse browser
-│   │   ├── notifications.py            alert popover
-│   │   └── labels.py                   combo label helpers shared by the browser pages
+│   │   ├── window.py                    main window
+│   │   ├── about.py                     About page
+│   │   ├── login.py                     login dialog
+│   │   ├── headerbar.py                 header bar controls
+│   │   ├── sidebar.py                   camera list sidebar
+│   │   ├── liveview.py                  live stream grid
+│   │   ├── layouts.py                   grid layout definitions
+│   │   ├── timeline.py                  Live View timeline strip
+│   │   ├── date_time_picker.py          calendar date/time picker
+│   │   ├── event_type_filter.py         Filter-events popover
+│   │   ├── slot_toolbar.py              per-slot hover toolbar (audio, PTT, PTZ, snapshot)
+│   │   ├── mpv_widget.py                GLArea + mpv render
+│   │   ├── rtsp_health.py               RTSP stream stall/health monitor
+│   │   ├── recordings.py                recording browser
+│   │   ├── advanced_search.py           advanced search dialog (shared by Recordings/Snapshots/Events)
+│   │   ├── player.py                    playback controls
+│   │   ├── snapshots.py                 snapshot browser
+│   │   ├── events.py                    event list
+│   │   ├── licenses.py                  license management
+│   │   ├── timelapse.py                 time lapse browser
+│   │   ├── notifications.py             alert popover
+│   │   ├── icons.py                     icon loading helpers
+│   │   └── labels.py                    combo label helpers shared by the browser pages
 │   └── util/
-│       └── async_bridge.py             GLib + asyncio bridge
+│       └── async_bridge.py              GLib + asyncio bridge
 └── tests/
     ├── conftest.py
+    ├── test_aac.py
     ├── test_api_client.py
     ├── test_config.py
     ├── test_event_bits.py
     ├── test_liveview_persistence.py
+    ├── test_logging.py
     ├── test_models.py
+    ├── test_mpv_profiles.py
+    ├── test_rtsp_health.py
     ├── test_services.py
-    └── test_ui_behavior.py
+    ├── test_timeline.py
+    ├── test_ui_behavior.py
+    ├── test_update_check.py
+    └── test_ws_bridge.py
 ```
 </details>
 
----
-
-## Development
-
-CI runs automatically on push and pull requests to `main`:
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy |
-| [`release.yml`](.github/workflows/release.yml) | version bump on `main` | Build AppImages (x86_64 + aarch64), create GitHub release |
-
-### Running checks locally
-
-```sh
-pip install -e ".[dev]"
-
-ruff check src/ tests/       # lint (rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
-ruff format src/ tests/       # format
-mypy src/surveillance/        # type check
-pytest tests/ -v              # tests
-```
-
-### Building an AppImage locally
-
-```sh
-./build-appimage.sh
-```
-
-This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
-Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
-`libfuse2` on the build machine.
-
-After PyInstaller runs, `libpipewire-0.3.so.0`, `libasound.so.2` and
-`libjack.so.0` are moved out of `_internal/` into
-`_internal/host-libs/<soname>/`, one directory each, and AppRun puts one
-back on `LD_LIBRARY_PATH` only where the host has no copy of that library.
-They dlopen their plugins from paths compiled into them at build time, so
-a bundled copy running on another distribution loads that distribution's
-plugins into itself and crashes. Keep them out of `_internal/`.
-
----
-
-## Synology API Reference
-
 <details>
-<summary><b>Endpoints used by this client</b></summary>
+<summary><b>Synology API Reference</b></summary>
+
+### Endpoints used by this client
 
 | API | Purpose |
 |---|---|
@@ -506,15 +595,11 @@ plugins into itself and crashes. Keep them out of `_internal/`.
 
 </details>
 
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
-## Troubleshooting
+## [Troubleshooting](TROUBLESHOOTING.md)
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common problems
-(HTTP 502, recording playback never starts, download failures, segfaults,
-AppImage audio crashes, Ubuntu 24.04 / AppImage notes).
-
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
 ## Support
 
@@ -522,7 +607,7 @@ If you find this project useful, you can support its development:
 
 [![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?logo=paypal)](https://www.paypal.me/RenaudAllard)
 
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
 ## Disclaimer
 
@@ -531,11 +616,11 @@ Synology, Surveillance Station, and DiskStation Manager (DSM) are trademarks of
 Synology Inc. This software is an independent, third-party client that interacts
 with the publicly documented Synology Web API. Use it at your own risk.
 
----
+<img src="assets/divider.svg" width="100%" height="8" alt="">
 
 ## License
 
-BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/surveillance-station-client/blob/main/pyproject.toml) for details.
+BSD-2-Clause &mdash; see [LICENSE](https://github.com/renaudallard/surveillance-station-client/blob/main/LICENSE) for details.
 
 ```
 Copyright (c) 2026, Renaud Allard <renaud@allard.it>

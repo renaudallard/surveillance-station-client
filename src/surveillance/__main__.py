@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import threading
 from types import TracebackType
 
 from surveillance import logfile
@@ -119,6 +120,18 @@ def main() -> None:
             )
 
         sys.excepthook = _log_uncaught_exception
+
+        def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+            # sys.excepthook covers the main loop only. The asyncio bridge
+            # runs on a thread of its own, and threading prints what dies
+            # there through its own hook.
+            logging.getLogger("surveillance.crash").critical(
+                "Uncaught exception in thread %s",
+                args.thread.name if args.thread else "?",
+                exc_info=args.exc_value,
+            )
+
+        threading.excepthook = _log_thread_exception
 
         _glib_level_to_py = {
             GLib.LogLevelFlags.LEVEL_ERROR: logging.CRITICAL,

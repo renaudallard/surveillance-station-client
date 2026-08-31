@@ -138,8 +138,11 @@ python -m surveillance                        # run directly from the source tre
 Debug logs automatically redact passwords, session tokens, and usernames.
 
 `--log-file` writes at the same level as stderr (WARNING, or DEBUG with
-`--debug`). Given a path, it writes there. Without one, it writes to a fresh,
-timestamped file under `$XDG_STATE_HOME/surveillance-station/logs/` (or
+`--debug`), and additionally captures the traceback of an uncaught exception
+and the messages GTK and GLib print themselves, neither of which reaches
+stderr through the log. Given a path, it writes there. Without one, it
+writes to a fresh, timestamped file under
+`$XDG_STATE_HOME/surveillance-station/logs/` (or
 `~/.local/state/surveillance-station/logs/` if `$XDG_STATE_HOME` isn't
 set) and marks it complete on a clean exit. Files marked complete are
 deleted by the next run that also passes a bare `--log-file`. Unmarked

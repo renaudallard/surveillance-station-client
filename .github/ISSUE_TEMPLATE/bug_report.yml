@@ -65,7 +65,7 @@ body:
         Passwords and session tokens are automatically redacted in the log output.
 
         ```sh
-        surveillance --debug 2> /tmp/debug.log
+        surveillance --debug --log-file=/tmp/debug.log
         ```
       render: text
     validations:

@@ -485,7 +485,8 @@ surveillance-station-client/
 ├── build-appimage.sh                    AppImage build script
 ├── appimage_entry.py                    PyInstaller entry point
 ├── assets/
-│   └── banner.svg                       README banner image
+│   ├── banner.svg                       README banner image
+│   └── divider.svg                      README section divider
 ├── scripts/
 │   └── dump_event_map.py                diagnostic tool for extending EVENT_BITMASK.md
 ├── data/

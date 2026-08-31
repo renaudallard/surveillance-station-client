@@ -132,6 +132,15 @@ def main() -> None:
         def _log_glib_message(
             log_level: GLib.LogLevelFlags, fields: list, _n_fields: int, _user_data: object
         ) -> GLib.LogWriterOutput:
+            # Replacing the writer also replaces the filtering GLib does
+            # in its own: without this, every debug and info message the
+            # libraries under us emit is logged, and under --debug that
+            # buries this app's records under GIO, dconf and GTK
+            # internals. None as the domain because the value in fields
+            # is a raw pointer, which only matters for a G_MESSAGES_DEBUG
+            # naming one domain rather than all.
+            if GLib.log_writer_default_would_drop(log_level, None):
+                return GLib.LogWriterOutput.HANDLED
             level = _glib_level_to_py.get(
                 log_level & GLib.LogLevelFlags.LEVEL_MASK, logging.WARNING
             )

@@ -30,6 +30,8 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import threading
+from types import TracebackType
 
 from surveillance import logfile
 
@@ -99,6 +101,70 @@ def main() -> None:
         # dropped, and it is the only place the auto-generated name is
         # ever shown. stderr is line buffered even when redirected.
         print(f"Logging to {log_path}", file=sys.stderr)
+
+        # An uncaught exception's traceback and every GLib/GTK warning
+        # (g_warning, g_critical, ...) go straight to stderr by default,
+        # bypassing `logging` entirely, so neither ever reaches this file
+        # on its own; routing both through `logging` here closes that
+        # gap. The stderr handler basicConfig() already installed still
+        # shows them on the terminal, just in this app's own format.
+        from gi.repository import GLib
+
+        def _log_uncaught_exception(
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            logging.getLogger("surveillance.crash").critical(
+                "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
+            )
+
+        sys.excepthook = _log_uncaught_exception
+
+        def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+            # sys.excepthook covers the main loop only. The asyncio bridge
+            # runs on a thread of its own, and threading prints what dies
+            # there through its own hook.
+            logging.getLogger("surveillance.crash").critical(
+                "Uncaught exception in thread %s",
+                args.thread.name if args.thread else "?",
+                exc_info=args.exc_value,
+            )
+
+        threading.excepthook = _log_thread_exception
+
+        _glib_level_to_py = {
+            GLib.LogLevelFlags.LEVEL_ERROR: logging.CRITICAL,
+            GLib.LogLevelFlags.LEVEL_CRITICAL: logging.ERROR,
+            GLib.LogLevelFlags.LEVEL_WARNING: logging.WARNING,
+            GLib.LogLevelFlags.LEVEL_MESSAGE: logging.INFO,
+            GLib.LogLevelFlags.LEVEL_INFO: logging.INFO,
+            GLib.LogLevelFlags.LEVEL_DEBUG: logging.DEBUG,
+        }
+
+        def _log_glib_message(
+            log_level: GLib.LogLevelFlags, fields: list, _n_fields: int, _user_data: object
+        ) -> GLib.LogWriterOutput:
+            # Replacing the writer also replaces the filtering GLib does
+            # in its own: without this, every debug and info message the
+            # libraries under us emit is logged, and under --debug that
+            # buries this app's records under GIO, dconf and GTK
+            # internals. None as the domain because the value in fields
+            # is a raw pointer, which only matters for a G_MESSAGES_DEBUG
+            # naming one domain rather than all.
+            if GLib.log_writer_default_would_drop(log_level, None):
+                return GLib.LogWriterOutput.HANDLED
+            level = _glib_level_to_py.get(
+                log_level & GLib.LogLevelFlags.LEVEL_MASK, logging.WARNING
+            )
+            # stripped: GLib opens a warning with a blank line, which
+            # would split every one of these across two records.
+            logging.getLogger("surveillance.glib").log(
+                level, GLib.log_writer_format_fields(log_level, fields, False).strip()
+            )
+            return GLib.LogWriterOutput.HANDLED
+
+        GLib.log_set_writer_func(_log_glib_message, None)
 
     # Suppress chatty third-party loggers in debug mode
     for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):

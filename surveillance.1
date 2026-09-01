@@ -1,4 +1,4 @@
-.TH SURVEILLANCE 1 "2026-08-27" "0.9.3" "User Commands"
+.TH SURVEILLANCE 1 "2026-08-31" "0.9.4" "User Commands"
 .SH NAME
 surveillance \- Synology Surveillance Station client
 .SH SYNOPSIS
@@ -197,7 +197,10 @@ exception tracebacks.
 .TP
 .BR \-\-log\-file [\fB=\fPPATH]
 Also write logs to a file, at the same redacted content and level
-(WARNING, or DEBUG if \-\-debug is also given) as stderr. With
+(WARNING, or DEBUG if \-\-debug is also given) as stderr, plus the two
+things that reach stderr without going through the log at all: the
+traceback of an uncaught exception, on the main thread or a worker one,
+and the messages GTK and GLib print themselves. With
 .I PATH
 given, writes there, truncated on every run. Without it, writes to an
 automatically named file under

@@ -92,10 +92,11 @@ _CACHE_CONTROL_SPEED_DOWN_ENTER = 0.5  # x target - reaches _SPEED_DOWN here
 _CACHE_LOG_INTERVAL_TICKS = round(2000 / _CACHE_CONTROL_INTERVAL_MS)  # ~2s
 
 # Baseline cache target (seconds) for each playback profile, before
-# _cache_target_seconds's own (not yet speed-aware) adjustment.
-# low_latency's is inert today (its cache stays off in Live mode; see
-# _apply_playback_options), but needed once a high-speed History stream
-# without audio takes this profile and needs a real buffer too.
+# _cache_target_seconds's own speed-aware adjustment. low_latency's
+# cache stays off (see _apply_playback_options) whenever this ends up
+# 0 (Live, or a History speed below _CACHE_HIGH_SPEED_ENTER), and
+# turns on automatically once it isn't, for the extra buffer a fast
+# History rewind needs.
 _CACHE_SECONDS_DEFAULT = 0.5
 _CACHE_SECONDS_MUXED_AUDIO = 0.5
 _CACHE_SECONDS_LOW_LATENCY = 0.0
@@ -109,6 +110,65 @@ _CACHE_HIGH_SPEED_MAX_SECONDS = 8.0  # ~seconds added at a 100x factor
 _CACHE_HIGH_SPEED_GROWTH = math.log(_CACHE_HIGH_SPEED_MAX_SECONDS) / (
     100.0 - _CACHE_HIGH_SPEED_ENTER
 )
+
+# Demuxer byte cap shared by all three playback profiles (see
+# _apply_playback_options): mpv reads ahead by whichever of this and
+# the seconds-based cache-secs/demuxer-readahead-secs above is larger,
+# so too small a cap here can bottleneck a cache that's otherwise
+# sized generously (e.g. low_latency's at a high History speed).
+_DEMUXER_MAX_BYTES_MIB = 32.0
+
+
+# Runtime setters for the constants above, used by the Settings page's
+# player-settings registry (surveillance.settings_registry) to override
+# them without a restart. Each constant is read fresh wherever it's
+# used in this module, so reassigning it here takes effect on the very
+# next stream tick. Clamped to a sane floor: a hand-edited config file
+# could otherwise hand these a negative (or, for the high-speed one,
+# zero) value that mpv or math.log would reject.
+def set_cache_seconds_default(value: float) -> None:
+    global _CACHE_SECONDS_DEFAULT
+    _CACHE_SECONDS_DEFAULT = max(value, 0.0)
+
+
+def set_cache_seconds_muxed_audio(value: float) -> None:
+    global _CACHE_SECONDS_MUXED_AUDIO
+    _CACHE_SECONDS_MUXED_AUDIO = max(value, 0.0)
+
+
+def set_demuxer_max_bytes_mib(value: float) -> None:
+    global _DEMUXER_MAX_BYTES_MIB
+    _DEMUXER_MAX_BYTES_MIB = max(value, 0.1)
+
+
+def set_cache_seconds_low_latency(value: float) -> None:
+    global _CACHE_SECONDS_LOW_LATENCY
+    _CACHE_SECONDS_LOW_LATENCY = max(value, 0.0)
+
+
+def set_high_speed_cache_max_seconds(value: float) -> None:
+    """Update _CACHE_HIGH_SPEED_MAX_SECONDS and the growth rate derived
+    from it together, since the growth rate is only ever computed once
+    (not read fresh like the plain constants above) and would otherwise
+    go stale."""
+    global _CACHE_HIGH_SPEED_MAX_SECONDS, _CACHE_HIGH_SPEED_GROWTH
+    value = max(value, 0.1)  # math.log below is undefined at or below 0
+    _CACHE_HIGH_SPEED_MAX_SECONDS = value
+    _CACHE_HIGH_SPEED_GROWTH = math.log(value) / (100.0 - _CACHE_HIGH_SPEED_ENTER)
+
+
+# Whether _tick_cache_control draws its cache/target/speed readout as
+# mpv OSD text: off by default, toggled from the Settings page (see
+# set_osd_enabled). Checked fresh every tick, so toggling this takes
+# effect within one tick (_CACHE_CONTROL_INTERVAL_MS) on an
+# already-playing stream; only the corner it lands in (set once at
+# realize time, see _on_realize) waits for the next stream/widget.
+_OSD_ENABLED = False
+
+
+def set_osd_enabled(value: bool) -> None:
+    global _OSD_ENABLED
+    _OSD_ENABLED = value
 
 
 def _high_speed_cache_seconds(high_playback_speed_factor: float) -> float:
@@ -243,11 +303,10 @@ class MpvGLArea(Gtk.GLArea):
                 log.info("Audio output driver set to %s", ao)
 
             osd_option: dict[str, str] = {}
-            if log.isEnabledFor(logging.DEBUG):
+            if _OSD_ENABLED:
                 # Corner osd-msg1 lands in for the adaptive-speed readout
                 # _tick_cache_control keeps live; top-left sits over
-                # video least often, and this only ever runs under
-                # --debug, so it costs nothing otherwise.
+                # video least often.
                 osd_option["osd-align-x"] = "left"
                 osd_option["osd-align-y"] = "top"
 
@@ -402,65 +461,60 @@ class MpvGLArea(Gtk.GLArea):
             return
         if self._muxed_audio:
             # A live-piped Matroska stream from our own ffmpeg mux (see
-            # ws_bridge.py's audio muxing) -- unlike the raw-NAL
-            # low_latency profile below, mpv is demuxing a properly
-            # headered container here, so it doesn't need probesize
-            # tuned for raw H.264/H.265 stream sync. It does still need a
-            # live-stream-appropriate (bounded, non-file-sized) max byte
-            # cap, and a small but nonzero readahead buffer to absorb
-            # normal scheduling jitter that would otherwise show up as
-            # audible micro-cuts with zero buffer margin.
+            # ws_bridge.py's audio muxing): unlike the other two
+            # profiles' analyzeduration=0, this needs an explicit small
+            # cap: 0 on a live (never-ending) pipe left libavformat
+            # waiting well past any reasonable duration for "enough"
+            # data to feel confident, a real, reproducible multi-second
+            # stall. A well-formed MKV header (ffmpeg has already
+            # resolved codec/timing info by the time mpv sees it) needs
+            # nowhere near that.
             target_seconds = _cache_target_seconds(_CACHE_SECONDS_MUXED_AUDIO, self._history_speed)
-            self._mpv["cache"] = "yes"
-            self._mpv["demuxer-max-bytes"] = "32MiB"
-            self._mpv["demuxer-readahead-secs"] = target_seconds
-            self._mpv["cache-secs"] = target_seconds
-            # This widget's other profile's analyzeduration=0 + large
-            # probesize (tuned for RTSP/local files, below) causes a
-            # real, reproducible multi-second demuxer stall on a live
-            # pipe: a never-ending source can leave libavformat waiting
-            # well past any reasonable duration for "enough" data to
-            # feel confident, unlike a normal file/RTSP source. A
-            # well-formed MKV header (ffmpeg has already resolved
-            # codec/timing info by the time mpv sees it) needs nowhere
-            # near this much probing margin.
             self._mpv["demuxer-lavf-analyzeduration"] = 0.3
-            self._mpv["demuxer-lavf-probesize"] = 32768
-            self._mpv["correct-pts"] = True
-            self._mpv["untimed"] = False
-            self._mpv["container-fps-override"] = 0
         elif self._low_latency:
+            # A silent camera's raw H.264/H.265 WebSocket pipe (video
+            # only, no container at all to probe). demuxer-lavf-probesize,
+            # in the shared block below, drops to the smallest value
+            # libmpv accepts whenever this stream also stays untimed
+            # (Live, or History below _CACHE_HIGH_SPEED_ENTER), shaving
+            # startup latency off Live, where it matters most.
             target_seconds = _cache_target_seconds(_CACHE_SECONDS_LOW_LATENCY, self._history_speed)
-            self._mpv["cache"] = "no"
-            self._mpv["demuxer-max-bytes"] = "512KiB"
-            self._mpv["demuxer-readahead-secs"] = target_seconds
-            # Inert while the cache is off (mpv only raises the readahead
-            # to cache-secs when the cache is on), but written anyway so
-            # every profile states the same set of options.
-            self._mpv["cache-secs"] = target_seconds
             self._mpv["demuxer-lavf-analyzeduration"] = 0
-            self._mpv["demuxer-lavf-probesize"] = 32
-            self._mpv["correct-pts"] = False
-            self._mpv["untimed"] = True
-            self._mpv["container-fps-override"] = 25
         else:
-            # demuxer-max-bytes and cache-secs are a deliberate cap
-            # matching muxed_audio's, not mpv's own (much larger)
-            # defaults: RTSP has no other buffer layer, but a stable
-            # LAN doesn't need mpv's generous defaults either. The rest
-            # restate mpv's own defaults so a widget reused from a
-            # low-latency stream doesn't inherit its probesize=32 /
-            # container-fps-override=25.
+            # RTSP/local file: 0 is mpv's own default for
+            # analyzeduration, not a deliberate RTSP-specific tuning;
+            # restated explicitly since every profile states its own
+            # value for every option here (see
+            # test_every_profile_writes_the_same_options).
             target_seconds = _cache_target_seconds(_CACHE_SECONDS_DEFAULT, self._history_speed)
-            self._mpv["cache"] = "auto"
-            self._mpv["demuxer-max-bytes"] = "32MiB"
-            self._mpv["demuxer-readahead-secs"] = target_seconds
-            self._mpv["cache-secs"] = target_seconds
             self._mpv["demuxer-lavf-analyzeduration"] = 0
-            self._mpv["demuxer-lavf-probesize"] = 5000000
-            self._mpv["correct-pts"] = True
-            self._mpv["untimed"] = False
-            self._mpv["container-fps-override"] = 0
+
+        # Shared by all three profiles: cache-secs is a deliberate cap
+        # everywhere, not mpv's own (much larger) default, and both it
+        # and demuxer-max-bytes are actual live buffer sizing;
+        # demuxer-max-bytes only matters once the cache is genuinely
+        # sized to use it, which is exactly when target_seconds is
+        # nonzero. Always true for muxed_audio/default's own nonzero
+        # baseline, but only true for low_latency once a fast History
+        # rewind's extra cache (_high_speed_cache_seconds) actually
+        # needs a real buffer; correct-pts/untimed/
+        # container-fps-override switch together with it, since they're
+        # only meaningful once there's real per-frame timing to trust.
+        # demuxer-lavf-probesize switches too: 32 (libmpv's own minimum)
+        # only while low_latency is prioritizing the fastest possible
+        # Live startup over everything else, 32768 otherwise; reliable
+        # for format/stream detection across every other case, well
+        # below mpv's old inherited probesize=5000000 default this
+        # replaces.
+        cache_enabled = target_seconds > 0
+        self._mpv["cache"] = "yes" if cache_enabled else "no"
+        self._mpv["demuxer-max-bytes"] = f"{_DEMUXER_MAX_BYTES_MIB:g}MiB"
+        self._mpv["demuxer-readahead-secs"] = target_seconds
+        self._mpv["cache-secs"] = target_seconds
+        self._mpv["correct-pts"] = cache_enabled
+        self._mpv["untimed"] = not cache_enabled
+        self._mpv["container-fps-override"] = 0 if cache_enabled else 25
+        self._mpv["demuxer-lavf-probesize"] = 32768 if cache_enabled else 32
 
         self._cache_control_enabled = self._mpv["cache-secs"] > 0
 
@@ -529,12 +583,19 @@ class MpvGLArea(Gtk.GLArea):
         # correction on top of that, so self._mpv.speed alone would
         # understate it.
         effective_speed = mpv_playback_speed * self._history_speed
-        if log.isEnabledFor(logging.DEBUG):
-            with contextlib.suppress(Exception):
-                self._mpv["osd-msg1"] = (
-                    f"cache {cache_seconds:.2f}secs, target {target_seconds:.2f}secs, "
+        with contextlib.suppress(Exception):
+            # Cleared rather than left as-is when disabled, so toggling
+            # the setting off clears an already-playing stream's OSD
+            # within one tick instead of leaving stale text on screen.
+            self._mpv["osd-msg1"] = (
+                (
+                    f"cache {cache_seconds:.2f}secs\n"
+                    f"target {target_seconds:.2f}secs\n"
                     f"speed {effective_speed:.2f}X"
                 )
+                if _OSD_ENABLED
+                else ""
+            )
 
         self._cache_log_tick += 1
         due = self._cache_log_tick % _CACHE_LOG_INTERVAL_TICKS == 0

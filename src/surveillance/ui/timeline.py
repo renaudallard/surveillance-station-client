@@ -172,6 +172,18 @@ _SPEED_LABELS: dict[str, str] = dict(_SPEED_OPTIONS)
 _MAX_SPEED_SLOT_PRODUCT = 100.0
 
 
+def set_max_speed_slot_product(value: float) -> None:
+    """Update _MAX_SPEED_SLOT_PRODUCT at runtime, used by the Settings
+    page's timeline-settings registry (surveillance.settings_registry).
+    Read fresh by set_active_slot_count() on every layout/slot-count
+    change, so reassigning it here takes effect from the next one.
+    Clamped to 1.0: below that, every speed but 1x would grey out on
+    any layout with more than one slot, an unusable state a hand-edited
+    config file could otherwise produce."""
+    global _MAX_SPEED_SLOT_PRODUCT
+    _MAX_SPEED_SLOT_PRODUCT = max(value, 1.0)
+
+
 def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
     """New window-right-edge timestamp for a drag of *dx* pixels.
 

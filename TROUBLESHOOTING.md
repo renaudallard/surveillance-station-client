@@ -189,14 +189,52 @@ not just a UI setting. Running a high speed across a full 4x4 grid at once
 has been observed to crash the app outright, and to be heavy enough on the
 system as a whole to affect other running applications too.
 
-The dropdown greys out the speeds a layout cannot afford, on a fixed budget
-of (speed × active slots): 1×1 keeps the full range up to 100x, 2×2 stops at
-16x, 3×3 at 8x, and 4×4 at 4x. To go faster, switch to a smaller layout.
+The dropdown greys out the speeds a layout cannot afford, on a budget of
+(speed × active slots): by default, 1×1 keeps the full range up to 100x,
+2×2 stops at 16x, 3×3 at 8x, and 4×4 at 4x. To go faster, switch to a
+smaller layout, or raise the budget itself from the Settings page (see
+"Tuning playback buffering for your setup" below).
 
 That budget is a guard, not a measurement — high-speed playback under load
-is still being characterized, and the ceiling may move once it is. If a
+is still being characterized, and the default may move once it is. If a
 speed the dropdown does allow still causes instability, drop to a smaller
-layout and please report it.
+layout (or lower the budget back down) and please report it.
+
+## Tuning playback buffering for your setup
+
+The **Settings** page (Licenses → Settings → About in the sidebar) exposes
+the demuxer cache sizes this client uses per streaming profile, plus the
+speed×slots budget above — no single set of defaults is right for every
+DSM/network/client combination, so these are meant to be tuned rather than
+treated as fixed:
+
+- **Cache sizes** (per profile: plain RTSP, WebSocket muxed-audio, silent
+  WebSocket) and the **max high-speed History cache** control how much
+  video mpv buffers before playback starts adjusting speed to compensate.
+  Raise these if you see frequent stutter or the client's own adaptive
+  speed correction kicking in a lot (visible via the on-screen readout
+  below) on a slow or congested network; lower them for less latency on a
+  fast, stable LAN.
+- **Demuxer byte cap** is a hard ceiling alongside the cache sizes above —
+  raising a cache size has no effect once this cap is reached first, so
+  the two need to move together for a high-bitrate camera or a high
+  History playback speed.
+- **Show stream cache details overlaid on video** draws a small live
+  readout (cache depth, target, and effective playback speed) in the
+  corner of each video slot, for seeing what the numbers above actually
+  do while you tune them, rather than guessing from stutter alone.
+- **Max limit for (playback speed × number of slots)** is the same budget
+  described above for the History speed dropdown; raise it if your NAS
+  and network can handle more concurrent high-speed decoding than the
+  default assumes, lower it if the default already causes instability on
+  your setup.
+
+Each setting has its own reset-to-default button, plus one that resets
+the whole page at once. Changes apply to the next stream that starts (the
+on-screen readout takes effect immediately, even on an already-playing
+stream) and persist across restarts, in
+`~/.config/surveillance-station/config.toml`'s `[setting_overrides]`/
+`[setting_overrides_bool]` sections.
 
 ## Recording playback never starts
 

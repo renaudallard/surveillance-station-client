@@ -38,6 +38,7 @@ from surveillance.ui.mpv_widget import (
     _CACHE_HIGH_SPEED_ENTER,
     _CACHE_HIGH_SPEED_MAX_SECONDS,
     _CACHE_SECONDS_DEFAULT,
+    _DEMUXER_MAX_BYTES_MIB,
     MpvGLArea,
     _cache_control_speed,
     _cache_target_seconds,
@@ -111,6 +112,53 @@ class TestPlaybackProfiles:
         history = _applied(low_latency=False, muxed_audio=False, history_speed=100.0)
         assert live["cache-secs"] == pytest.approx(_CACHE_SECONDS_DEFAULT)
         assert history["cache-secs"] > live["cache-secs"]
+
+    def test_low_latency_cache_stays_off_in_live(self) -> None:
+        """A silent camera's Live stream keeps the lowest possible
+        latency: no cache at all."""
+        live = _applied(low_latency=True, muxed_audio=False, history_speed=1.0)
+        assert live["cache"] == "no"
+        assert live["cache-secs"] == 0.0
+
+    def test_low_latency_cache_turns_on_at_high_history_speed(self) -> None:
+        """Once a fast History rewind needs a real buffer (cache-secs > 0
+        via the high-speed addition), the cache actually turns on;
+        otherwise cache-secs/demuxer-readahead-secs stay inert and the
+        setting does nothing, which is the bug this profile branch used
+        to have."""
+        history = _applied(low_latency=True, muxed_audio=False, history_speed=100.0)
+        assert history["cache"] == "yes"
+        assert history["cache-secs"] > 0.0
+
+    def test_demuxer_max_bytes_is_shared_across_all_three_profiles(self) -> None:
+        expected = f"{_DEMUXER_MAX_BYTES_MIB:g}MiB"
+        muxed = _applied(low_latency=False, muxed_audio=True)
+        low_latency = _applied(low_latency=True, muxed_audio=False, history_speed=100.0)
+        default = _applied(low_latency=False, muxed_audio=False)
+        assert muxed["demuxer-max-bytes"] == expected
+        assert low_latency["demuxer-max-bytes"] == expected
+        assert default["demuxer-max-bytes"] == expected
+
+    def test_timing_options_track_cache_enabled_for_every_profile(self) -> None:
+        """correct-pts/untimed/container-fps-override switch together
+        with the cache turning on, for all three profiles alike; see
+        _apply_playback_options's shared block."""
+        for kwargs in (
+            {"low_latency": False, "muxed_audio": True},
+            {"low_latency": True, "muxed_audio": False, "history_speed": 100.0},
+            {"low_latency": False, "muxed_audio": False},
+        ):
+            options = _applied(**kwargs)
+            assert options["cache"] == "yes"
+            assert options["correct-pts"] is True
+            assert options["untimed"] is False
+            assert options["container-fps-override"] == 0
+
+        off = _applied(low_latency=True, muxed_audio=False, history_speed=1.0)
+        assert off["cache"] == "no"
+        assert off["correct-pts"] is False
+        assert off["untimed"] is True
+        assert off["container-fps-override"] == 25
 
 
 class TestCacheControlSpeed:

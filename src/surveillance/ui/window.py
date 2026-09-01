@@ -88,6 +88,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("events", "Events", "Connect to view events")
         self._add_placeholder("timelapse", "Time Lapse", "Connect to browse time lapse recordings")
         self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
+        self._add_placeholder("settings", "Settings", "Connect to configure app settings")
         self._add_placeholder("about", "About", "Connect to view app info")
 
         self.stack.set_visible_child_name("live")
@@ -275,6 +276,7 @@ class MainWindow(Gtk.ApplicationWindow):
         from surveillance.ui.licenses import LicensesView
         from surveillance.ui.liveview import LiveView
         from surveillance.ui.recordings import RecordingsView
+        from surveillance.ui.settings import SettingsView
         from surveillance.ui.snapshots import SnapshotsView
         from surveillance.ui.timelapse import TimeLapseView
 
@@ -286,6 +288,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("events", EventsView),
             ("timelapse", TimeLapseView),
             ("licenses", LicensesView),
+            ("settings", SettingsView),
             ("about", AboutView),
         ]:
             old = self.stack.get_child_by_name(name)

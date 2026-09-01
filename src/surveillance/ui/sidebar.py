@@ -115,7 +115,8 @@ class CameraSidebar(Gtk.Box):
             ("camera-photo-symbolic", "Snapshots", "snapshots"),
             ("dialog-warning-symbolic", "Events", "events"),
             ("camera-video-symbolic", "Time Lapse", "timelapse"),
-            ("emblem-system-symbolic", "Licenses", "licenses"),
+            ("dialog-password-symbolic", "Licenses", "licenses"),
+            ("preferences-system-symbolic", "Settings", "settings"),
             ("help-about-symbolic", "About", "about"),
         ]:
             # A shared toggle group makes these behave like radio buttons —

@@ -695,7 +695,14 @@ class MpvGLArea(Gtk.GLArea):
         playing stream (Live View's timeline speed dropdown, changed
         mid-session); see play()'s *history_speed* for the value set
         when a stream starts. Re-applies playback options, then
-        restarts cache control and resets OSD message."""
+        restarts cache control against the new target.
+
+        The cache options land on the running stream; the demuxer ones
+        (demuxer-lavf-probesize/analyzeduration) are read when the
+        demuxer is created, so if crossing _CACHE_HIGH_SPEED_ENTER
+        changes them, the stream keeps the values it started with until
+        the next play().
+        """
         self._history_speed = value
         self._apply_playback_options()
         self._restart_cache_control()

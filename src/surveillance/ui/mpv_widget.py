@@ -489,32 +489,37 @@ class MpvGLArea(Gtk.GLArea):
             target_seconds = _cache_target_seconds(_CACHE_SECONDS_DEFAULT, self._history_speed)
             self._mpv["demuxer-lavf-analyzeduration"] = 0
 
-        # Shared by all three profiles: cache-secs is a deliberate cap
-        # everywhere, not mpv's own (much larger) default, and both it
-        # and demuxer-max-bytes are actual live buffer sizing;
-        # demuxer-max-bytes only matters once the cache is genuinely
-        # sized to use it, which is exactly when target_seconds is
-        # nonzero. Always true for muxed_audio/default's own nonzero
-        # baseline, but only true for low_latency once a fast History
-        # rewind's extra cache (_high_speed_cache_seconds) actually
-        # needs a real buffer; correct-pts/untimed/
-        # container-fps-override switch together with it, since they're
-        # only meaningful once there's real per-frame timing to trust.
-        # demuxer-lavf-probesize switches too: 32 (libmpv's own minimum)
-        # only while low_latency is prioritizing the fastest possible
-        # Live startup over everything else, 32768 otherwise; reliable
-        # for format/stream detection across every other case, well
-        # below mpv's old inherited probesize=5000000 default this
-        # replaces.
+        # Shared by all three profiles. cache-secs is a deliberate cap
+        # everywhere, not mpv's own (much larger) default, and the
+        # cache is on for as long as one is asked for at all: always
+        # for muxed_audio/default's own nonzero baseline, and for
+        # low_latency once a fast History rewind's extra cache
+        # (_high_speed_cache_seconds) gives it one.
+        #
+        # The timing options key off the profile, not off the cache.
+        # Only low_latency reads a headerless H.264/H.265 pipe, and
+        # only it can be played untimed off a fixed frame rate with
+        # libmpv's minimum probesize; muxed_audio has a real MKV
+        # header and RTSP a real container, both with per-frame timing
+        # worth trusting however deep their buffer happens to be. A
+        # cache size of 0, which the Settings page accepts for either,
+        # must not turn them into raw-NAL streams. The untimed pairing
+        # still tracks the cache within low_latency itself: once a fast
+        # rewind buffers, there is real timing to keep.
         cache_enabled = target_seconds > 0
+        timed = cache_enabled or not self._low_latency
         self._mpv["cache"] = "yes" if cache_enabled else "no"
         self._mpv["demuxer-max-bytes"] = f"{_DEMUXER_MAX_BYTES_MIB:g}MiB"
         self._mpv["demuxer-readahead-secs"] = target_seconds
         self._mpv["cache-secs"] = target_seconds
-        self._mpv["correct-pts"] = cache_enabled
-        self._mpv["untimed"] = not cache_enabled
-        self._mpv["container-fps-override"] = 0 if cache_enabled else 25
-        self._mpv["demuxer-lavf-probesize"] = 32768 if cache_enabled else 32
+        self._mpv["correct-pts"] = timed
+        self._mpv["untimed"] = not timed
+        self._mpv["container-fps-override"] = 0 if timed else 25
+        # 32 is libmpv's own minimum, for the fastest possible Live
+        # startup on a raw pipe; 32768 is reliable for format/stream
+        # detection everywhere else, and well below the probesize of
+        # 5000000 the default profile used to inherit.
+        self._mpv["demuxer-lavf-probesize"] = 32768 if timed else 32
 
         self._cache_control_enabled = self._mpv["cache-secs"] > 0
 

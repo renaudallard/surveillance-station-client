@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from surveillance.ui import mpv_widget
 from surveillance.ui.mpv_widget import (
     _CACHE_CONTROL_SPEED_DOWN,
     _CACHE_CONTROL_SPEED_UP,
@@ -139,26 +140,47 @@ class TestPlaybackProfiles:
         assert low_latency["demuxer-max-bytes"] == expected
         assert default["demuxer-max-bytes"] == expected
 
-    def test_timing_options_track_cache_enabled_for_every_profile(self) -> None:
-        """correct-pts/untimed/container-fps-override switch together
-        with the cache turning on, for all three profiles alike; see
-        _apply_playback_options's shared block."""
+    def test_only_low_latency_is_ever_untimed(self) -> None:
+        """correct-pts/untimed/container-fps-override/probesize describe
+        what the source is, not how deep the buffer is: only the raw
+        H.264/H.265 pipe is played untimed off a fixed frame rate, and
+        only while it has no cache to keep timing for."""
         for kwargs in (
             {"low_latency": False, "muxed_audio": True},
             {"low_latency": True, "muxed_audio": False, "history_speed": 100.0},
             {"low_latency": False, "muxed_audio": False},
         ):
             options = _applied(**kwargs)
-            assert options["cache"] == "yes"
             assert options["correct-pts"] is True
             assert options["untimed"] is False
             assert options["container-fps-override"] == 0
+            assert options["demuxer-lavf-probesize"] == 32768
 
         off = _applied(low_latency=True, muxed_audio=False, history_speed=1.0)
-        assert off["cache"] == "no"
         assert off["correct-pts"] is False
         assert off["untimed"] is True
         assert off["container-fps-override"] == 25
+        assert off["demuxer-lavf-probesize"] == 32
+
+    def test_a_zero_cache_does_not_make_a_container_stream_raw(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Settings page accepts 0 for either container profile's
+        cache size. That turns the cache off, and must do nothing else:
+        probesize=32 and a fixed 25fps would wreck an MKV or an RTSP
+        stream."""
+        monkeypatch.setattr(mpv_widget, "_CACHE_SECONDS_MUXED_AUDIO", 0.0)
+        monkeypatch.setattr(mpv_widget, "_CACHE_SECONDS_DEFAULT", 0.0)
+        for kwargs in (
+            {"low_latency": False, "muxed_audio": True},
+            {"low_latency": False, "muxed_audio": False},
+        ):
+            options = _applied(**kwargs)
+            assert options["cache"] == "no"
+            assert options["correct-pts"] is True
+            assert options["untimed"] is False
+            assert options["container-fps-override"] == 0
+            assert options["demuxer-lavf-probesize"] == 32768
 
 
 class TestCacheControlSpeed:

@@ -172,8 +172,9 @@ def set_high_speed_cache_max_seconds(value: float) -> None:
 # mpv OSD text: off by default, toggled from the Settings page (see
 # set_osd_enabled). Checked fresh every tick, so toggling this takes
 # effect within one tick (_CACHE_CONTROL_INTERVAL_MS) on an
-# already-playing stream; only the corner it lands in (set once at
-# realize time, see _on_realize) waits for the next stream/widget.
+# already-playing stream. The readout lands top-left, which is mpv's
+# own default corner for osd-msg1 and the one sitting over video least
+# often, so nothing has to ask for it.
 _OSD_ENABLED = False
 
 
@@ -313,14 +314,6 @@ class MpvGLArea(Gtk.GLArea):
                 ao_option["ao"] = ao
                 log.info("Audio output driver set to %s", ao)
 
-            osd_option: dict[str, str] = {}
-            if _OSD_ENABLED:
-                # Corner osd-msg1 lands in for the adaptive-speed readout
-                # _tick_cache_control keeps live; top-left sits over
-                # video least often.
-                osd_option["osd-align-x"] = "left"
-                osd_option["osd-align-y"] = "top"
-
             self._mpv = mpv.MPV(
                 vo="libmpv",
                 hwdec="auto",
@@ -341,7 +334,6 @@ class MpvGLArea(Gtk.GLArea):
                 mute=self._muted,
                 volume=self._volume,
                 **ao_option,
-                **osd_option,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches

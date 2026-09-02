@@ -91,8 +91,9 @@ through 100x plus a Fwd/Rev direction toggle, applied to every active
 History slot at once; it resets to 1x/Fwd whenever a slot returns to
 Live or the layout switches. The higher speeds are greyed out on the
 larger layouts, since DSM really does send that many more frames per
-second and every slot has to decode them: 1x1 offers the full range,
-2x2 stops at 16x, 3x3 at 8x, and 4x4 at 4x. Real motion/alarm events are overlaid on
+second and every slot has to decode them: by default, 1x1 offers the
+full range, 2x2 stops at 16x, 3x3 at 8x, and 4x4 at 4x (adjustable from
+the Settings page). Real motion/alarm events are overlaid on
 the same two presence rows as orange markers.
 .B Previous event
 and
@@ -182,6 +183,17 @@ logins.
 .TP
 .B License Management
 View, add, and delete camera licenses. Supports online and offline activation.
+.TP
+.B Settings
+Tune the demuxer cache sizes used for each streaming profile (plain RTSP,
+WebSocket muxed-audio, and silent WebSocket), the extra buffer added
+automatically at high History playback speeds, the shared demuxer byte
+cap, and the speed-times-active-slots budget the Live View timeline's
+History speed dropdown enforces, plus an on-screen readout of cache
+depth/target/effective speed for diagnosing buffering. Each setting has
+its own reset-to-default button, plus one that resets everything on the
+page at once. Changes apply to the next stream that starts (the
+on-screen readout takes effect immediately) and persist across restarts.
 .TP
 .B About
 Shows the version, license, and repository links, and checks the GitHub
@@ -294,6 +306,18 @@ the unix time its recording history has been scanned up to, so a later
 open only scans forward from there rather than repeating the whole
 history. Written automatically; deleting a camera's entry forces a full
 rescan the next time the popover is opened.
+.PP
+The
+.B [setting_overrides]
+and
+.B [setting_overrides_bool]
+sections hold every value changed from its default on the
+.B Settings
+page (player cache sizes, the demuxer byte cap, the on-screen cache/speed
+readout, and the History speed dropdown's speed-times-slots budget), split
+by value type since TOML distinguishes numbers from booleans. Written by
+the Settings page itself; use its own reset buttons rather than
+hand-editing these.
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q

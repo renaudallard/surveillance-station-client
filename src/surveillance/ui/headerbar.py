@@ -51,6 +51,7 @@ PAGE_TITLES: dict[str, str] = {
     "events": "Events",
     "timelapse": "Time Lapse",
     "licenses": "Licenses",
+    "settings": "Settings",
     "about": "About",
 }
 

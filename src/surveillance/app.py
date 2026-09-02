@@ -96,6 +96,12 @@ class SurveillanceApp(Gtk.Application):
         setup_async()
         self.config = load_config()
 
+        # Before any window/stream exists, so a saved override is already
+        # in effect the first time a camera plays.
+        from surveillance.settings_registry import apply_persisted_settings
+
+        apply_persisted_settings(self.config)
+
     def apply_theme(self, theme: str) -> None:
         """Apply theme: 'auto' follows OS, 'dark' forces dark, 'light' forces light."""
         settings = Gtk.Settings.get_default()

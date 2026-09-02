@@ -172,6 +172,18 @@ _SPEED_LABELS: dict[str, str] = dict(_SPEED_OPTIONS)
 _MAX_SPEED_SLOT_PRODUCT = 100.0
 
 
+def set_max_speed_slot_product(value: float) -> None:
+    """Update _MAX_SPEED_SLOT_PRODUCT at runtime, used by the Settings
+    page's timeline-settings registry (surveillance.settings_registry).
+    Read fresh by set_active_slot_count() on every layout/slot-count
+    change, so reassigning it here takes effect from the next one.
+    Clamped to 1.0: below that, every speed but 1x would grey out on
+    any layout with more than one slot, an unusable state a hand-edited
+    config file could otherwise produce."""
+    global _MAX_SPEED_SLOT_PRODUCT
+    _MAX_SPEED_SLOT_PRODUCT = max(value, 1.0)
+
+
 def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
     """New window-right-edge timestamp for a drag of *dx* pixels.
 
@@ -1387,15 +1399,27 @@ class Timeline(Gtk.Box):
     def _on_speed_radio_toggled(self, radio: Gtk.CheckButton, value: str) -> None:
         if not radio.get_active():
             return
-        self._speed_btn.set_label(_SPEED_LABELS[value])
+        self._update_speed_label()
         if self._speed_callback is not None and not self._suppress_playback_callback:
             self._speed_callback(value)
 
     def _on_direction_toggled(self, btn: Gtk.ToggleButton, reverse: bool) -> None:
         if not btn.get_active():
             return
+        self._update_speed_label()
         if self._reverse_callback is not None and not self._suppress_playback_callback:
             self._reverse_callback(reverse)
+
+    def _update_speed_label(self) -> None:
+        """Show _speed_btn's own current speed, signed negative while
+        _reverse_btn is the active direction -- the popover's radios
+        stay unsigned (magnitude is all a speed choice ever means),
+        so the sign is entirely this label's own doing."""
+        value = next((v for v, r in self._speed_radios.items() if r.get_active()), "1")
+        label = _SPEED_LABELS[value]
+        if self._reverse_btn.get_active():
+            label = f"-{label}"
+        self._speed_btn.set_label(label)
 
     def _update_clock(self) -> bool:
         now = datetime.now()

@@ -2070,6 +2070,8 @@ class LiveView(Gtk.Box):
             if slot.camera is None or slot._ws_bridge is None:
                 continue
             camera_name = slot.camera.name
+            if slot._ws_bridge.is_history:
+                slot.player.set_history_speed(float(value))
             run_async(
                 slot._ws_bridge.set_speed(value),
                 error_callback=lambda exc, name=camera_name: log.error(
@@ -2782,7 +2784,10 @@ class LiveView(Gtk.Box):
                 )
                 s.set_status("")
                 s.player.play(
-                    pipe_url, low_latency=not bridge.audio_active, muxed_audio=bridge.audio_active
+                    pipe_url,
+                    low_latency=not bridge.audio_active,
+                    muxed_audio=bridge.audio_active,
+                    history_speed=float(self._timeline_speed) if bridge.is_history else 1.0,
                 )
                 # Corrects the optimistic has_audio-based guess from
                 # _update_slot_audio() now that whether DSM's audio codec

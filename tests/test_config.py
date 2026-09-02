@@ -168,6 +168,69 @@ class TestEventTypeHistory:
         )
 
 
+class TestSettingOverrides:
+    """setting_overrides holds Settings-page overrides keyed by
+    Setting.key (see surveillance.settings_registry) — a generic
+    str -> float map, unlike every other AppConfig field, so a new
+    Setting needs no new AppConfig field or load/save code of its own.
+    """
+
+    def test_defaults_to_empty(self) -> None:
+        cfg = _config_from_data({})
+        assert cfg.setting_overrides == {}
+
+    def test_loads_values(self) -> None:
+        cfg = _config_from_data({"setting_overrides": {"cache_seconds_default": 3.3}})
+        assert cfg.setting_overrides == {"cache_seconds_default": 3.3}
+
+    def test_malformed_entry_is_dropped_not_fatal(self) -> None:
+        cfg = _config_from_data(
+            {"setting_overrides": {"cache_seconds_default": "not-a-number", "other_key": 1.5}}
+        )
+        assert cfg.setting_overrides == {"other_key": 1.5}
+
+    def test_round_trips_through_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
+        import surveillance.config as cfg
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(cfg, "CONFIG_FILE", config_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+
+        config = AppConfig()
+        config.setting_overrides["cache_seconds_default"] = 3.3
+        _write_config(config)
+        loaded = load_config()
+        assert loaded.setting_overrides == {"cache_seconds_default": 3.3}
+
+
+class TestBoolSettingOverrides:
+    """setting_overrides_bool is setting_overrides' bool-valued twin, for
+    the Settings page's on/off toggles (BoolSetting.key -> value) —
+    separate since TOML (and this dataclass) distinguishes bool from
+    float."""
+
+    def test_defaults_to_empty(self) -> None:
+        cfg = _config_from_data({})
+        assert cfg.setting_overrides_bool == {}
+
+    def test_loads_values(self) -> None:
+        cfg = _config_from_data({"setting_overrides_bool": {"osd_enabled": True}})
+        assert cfg.setting_overrides_bool == {"osd_enabled": True}
+
+    def test_round_trips_through_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
+        import surveillance.config as cfg
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(cfg, "CONFIG_FILE", config_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+
+        config = AppConfig()
+        config.setting_overrides_bool["osd_enabled"] = True
+        _write_config(config)
+        loaded = load_config()
+        assert loaded.setting_overrides_bool == {"osd_enabled": True}
+
+
 class TestEventsSearchEventTypesMigration:
     """events_search_event_types switched from raw int flag values to
     string filter keys (see services.event_bits) — a config saved before

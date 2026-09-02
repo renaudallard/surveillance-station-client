@@ -30,7 +30,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from surveillance.ui.mpv_widget import MpvGLArea
+import pytest
+
+from surveillance.ui.mpv_widget import (
+    _CACHE_CONTROL_SPEED_DOWN,
+    _CACHE_CONTROL_SPEED_UP,
+    _CACHE_HIGH_SPEED_ENTER,
+    _CACHE_HIGH_SPEED_MAX_SECONDS,
+    _CACHE_SECONDS_DEFAULT,
+    _DEMUXER_MAX_BYTES_MIB,
+    MpvGLArea,
+    _cache_control_speed,
+    _cache_target_seconds,
+    _high_speed_cache_seconds,
+)
 
 
 class _Recorder:
@@ -49,14 +62,17 @@ class _Recorder:
     def __setitem__(self, name: str, value: Any) -> None:
         self.options[name] = value
 
+    def __getitem__(self, name: str) -> Any:
+        return self.options[name]
+
     def __setattr__(self, name: str, value: Any) -> None:
         self.options[name.replace("_", "-")] = value
 
 
-def _applied(*, low_latency: bool, muxed_audio: bool) -> dict[str, Any]:
+def _applied(*, low_latency: bool, muxed_audio: bool, history_speed: float = 1.0) -> dict[str, Any]:
     """The options one profile writes.
 
-    _apply_playback_options only reads three attributes, so it runs
+    _apply_playback_options only reads four attributes, so it runs
     against a stand-in rather than a real widget, which would need a GL
     context and libmpv.
     """
@@ -66,6 +82,7 @@ def _applied(*, low_latency: bool, muxed_audio: bool) -> dict[str, Any]:
             self._mpv = _Recorder()
             self._low_latency = low_latency
             self._muxed_audio = muxed_audio
+            self._history_speed = history_speed
 
     widget = _Widget()
     MpvGLArea._apply_playback_options(widget)  # type: ignore[arg-type]
@@ -88,10 +105,122 @@ class TestPlaybackProfiles:
         both = _applied(low_latency=True, muxed_audio=True)
         assert both == _applied(low_latency=False, muxed_audio=True)
 
-    def test_default_profile_does_not_cap_the_rtsp_buffer(self) -> None:
-        """cache-secs raises the readahead above demuxer-readahead-secs
-        whenever the cache is on, so the muxed profile's small value must
-        not survive into an RTSP stream on the same widget."""
-        default = _applied(low_latency=False, muxed_audio=False)
+    def test_high_history_speed_raises_the_default_profiles_cache(self) -> None:
+        """Live (1x) keeps the profile's own small baseline; a
+        high-speed History stream gets real margin on top of it."""
+        live = _applied(low_latency=False, muxed_audio=False, history_speed=1.0)
+        history = _applied(low_latency=False, muxed_audio=False, history_speed=100.0)
+        assert live["cache-secs"] == pytest.approx(_CACHE_SECONDS_DEFAULT)
+        assert history["cache-secs"] > live["cache-secs"]
+
+    def test_low_latency_cache_stays_off_in_live(self) -> None:
+        """A silent camera's Live stream keeps the lowest possible
+        latency: no cache at all."""
+        live = _applied(low_latency=True, muxed_audio=False, history_speed=1.0)
+        assert live["cache"] == "no"
+        assert live["cache-secs"] == 0.0
+
+    def test_low_latency_cache_turns_on_at_high_history_speed(self) -> None:
+        """Once a fast History rewind needs a real buffer (cache-secs > 0
+        via the high-speed addition), the cache actually turns on;
+        otherwise cache-secs/demuxer-readahead-secs stay inert and the
+        setting does nothing, which is the bug this profile branch used
+        to have."""
+        history = _applied(low_latency=True, muxed_audio=False, history_speed=100.0)
+        assert history["cache"] == "yes"
+        assert history["cache-secs"] > 0.0
+
+    def test_demuxer_max_bytes_is_shared_across_all_three_profiles(self) -> None:
+        expected = f"{_DEMUXER_MAX_BYTES_MIB:g}MiB"
         muxed = _applied(low_latency=False, muxed_audio=True)
-        assert default["cache-secs"] > muxed["cache-secs"]
+        low_latency = _applied(low_latency=True, muxed_audio=False, history_speed=100.0)
+        default = _applied(low_latency=False, muxed_audio=False)
+        assert muxed["demuxer-max-bytes"] == expected
+        assert low_latency["demuxer-max-bytes"] == expected
+        assert default["demuxer-max-bytes"] == expected
+
+    def test_timing_options_track_cache_enabled_for_every_profile(self) -> None:
+        """correct-pts/untimed/container-fps-override switch together
+        with the cache turning on, for all three profiles alike; see
+        _apply_playback_options's shared block."""
+        for kwargs in (
+            {"low_latency": False, "muxed_audio": True},
+            {"low_latency": True, "muxed_audio": False, "history_speed": 100.0},
+            {"low_latency": False, "muxed_audio": False},
+        ):
+            options = _applied(**kwargs)
+            assert options["cache"] == "yes"
+            assert options["correct-pts"] is True
+            assert options["untimed"] is False
+            assert options["container-fps-override"] == 0
+
+        off = _applied(low_latency=True, muxed_audio=False, history_speed=1.0)
+        assert off["cache"] == "no"
+        assert off["correct-pts"] is False
+        assert off["untimed"] is True
+        assert off["container-fps-override"] == 25
+
+
+class TestCacheControlSpeed:
+    def test_on_target_is_1x(self) -> None:
+        assert _cache_control_speed(2.0, 2.0, 1.0) == 1.0
+
+    def test_ramps_up_toward_speed_up_at_history_speed_1x(self) -> None:
+        """Halfway from target to _SPEED_UP_ENTER (1.25x target) should
+        land halfway between 1.0x and _CACHE_CONTROL_SPEED_UP."""
+        speed = _cache_control_speed(2.5, 2.0, 1.0)
+        assert speed == pytest.approx(1.0 + (_CACHE_CONTROL_SPEED_UP - 1.0) / 2)
+
+    def test_ramps_down_toward_speed_down(self) -> None:
+        """Halfway from target to _SPEED_DOWN_ENTER (0.75x target) should
+        land halfway between 1.0x and _CACHE_CONTROL_SPEED_DOWN."""
+        speed = _cache_control_speed(1.5, 2.0, 1.0)
+        assert speed == pytest.approx(1.0 - (1.0 - _CACHE_CONTROL_SPEED_DOWN) / 2)
+
+    def test_clamps_at_speed_up_when_history_speed_is_1x(self) -> None:
+        """Beyond _SPEED_UP_ENTER, a Live/1x stream stays capped at
+        _CACHE_CONTROL_SPEED_UP -- the unbounded scaling below is only
+        meant to kick in at a real History speed."""
+        assert _cache_control_speed(100.0, 2.0, 1.0) == _CACHE_CONTROL_SPEED_UP
+
+    def test_clamps_at_speed_down_regardless_of_history_speed(self) -> None:
+        """The speed-down side has no high_playback_speed_factor term at
+        all (see _cache_control_speed's own docstring for why), so it
+        stays capped at _CACHE_CONTROL_SPEED_DOWN even at a high History
+        speed."""
+        assert _cache_control_speed(0.0, 2.0, 16.0) == _CACHE_CONTROL_SPEED_DOWN
+
+    def test_high_history_speed_scales_past_the_speed_up_ceiling(self) -> None:
+        """Deliberately unbounded/asymmetric: a cache overrun is worse
+        the faster DSM is already delivering frames, so a high History
+        speed can push the correction well past _CACHE_CONTROL_SPEED_UP."""
+        speed = _cache_control_speed(100.0, 2.0, 16.0)
+        assert speed == pytest.approx(1.0 + (_CACHE_CONTROL_SPEED_UP - 1.0) * 16.0)
+        assert speed > _CACHE_CONTROL_SPEED_UP
+
+
+class TestHighSpeedCacheSeconds:
+    def test_below_enter_threshold_adds_nothing(self) -> None:
+        assert _high_speed_cache_seconds(1.0) == 0.0
+        assert _high_speed_cache_seconds(_CACHE_HIGH_SPEED_ENTER - 0.01) == 0.0
+
+    def test_at_enter_threshold_adds_about_one_second(self) -> None:
+        assert _high_speed_cache_seconds(_CACHE_HIGH_SPEED_ENTER) == pytest.approx(1.0)
+
+    def test_at_100x_hits_the_configured_max(self) -> None:
+        assert _high_speed_cache_seconds(100.0) == pytest.approx(_CACHE_HIGH_SPEED_MAX_SECONDS)
+
+    def test_grows_monotonically_between_the_endpoints(self) -> None:
+        low = _high_speed_cache_seconds(4.0)
+        mid = _high_speed_cache_seconds(32.0)
+        high = _high_speed_cache_seconds(64.0)
+        assert 0.0 < low < mid < high < _CACHE_HIGH_SPEED_MAX_SECONDS
+
+
+class TestCacheTargetSeconds:
+    def test_live_speed_keeps_the_bare_baseline(self) -> None:
+        assert _cache_target_seconds(0.5, 1.0) == 0.5
+
+    def test_high_history_speed_adds_the_high_speed_term(self) -> None:
+        target = _cache_target_seconds(0.5, 100.0)
+        assert target == pytest.approx(0.5 + _CACHE_HIGH_SPEED_MAX_SECONDS)

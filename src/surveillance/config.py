@@ -182,6 +182,14 @@ class AppConfig:
     # all at once), which is why it's never done all at once; see
     # ui.event_type_filter.
     event_type_history: dict[int, EventTypeHistory] = field(default_factory=dict)
+    # Runtime-tunable constants overridden from the Settings page, keyed by
+    # Setting.key (see surveillance.settings_registry): generic, so a new
+    # setting added there needs no new AppConfig field of its own.
+    setting_overrides: dict[str, float] = field(default_factory=dict)
+    # Same, for the Settings page's on/off toggles (BoolSetting.key ->
+    # overridden value); kept apart from setting_overrides since TOML
+    # (and this dataclass) distinguishes bool from float.
+    setting_overrides_bool: dict[str, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
@@ -294,6 +302,18 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
                 types=types, checked_until=int(entry.get("checked_until", 0))
             )
 
+    # setting_overrides: maps Setting.key (str) -> overridden value
+    setting_overrides: dict[str, float] = {}
+    for key, value in data.get("setting_overrides", {}).items():
+        with contextlib.suppress(ValueError, TypeError):
+            setting_overrides[str(key)] = float(value)
+
+    # setting_overrides_bool: maps BoolSetting.key (str) -> overridden value
+    setting_overrides_bool: dict[str, bool] = {}
+    for key, value in data.get("setting_overrides_bool", {}).items():
+        with contextlib.suppress(ValueError, TypeError):
+            setting_overrides_bool[str(key)] = bool(value)
+
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
@@ -331,6 +351,8 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         snapshots_search_from_time=session.get("snapshots_search_from_time", ""),
         snapshots_search_to_time=session.get("snapshots_search_to_time", ""),
         snapshots_search_time_preset=session.get("snapshots_search_time_preset", ""),
+        setting_overrides=setting_overrides,
+        setting_overrides_bool=setting_overrides_bool,
     )
 
 
@@ -416,6 +438,8 @@ def _write_config(config: AppConfig) -> None:
             }
             for cam_id, hist in config.event_type_history.items()
         },
+        "setting_overrides": dict(config.setting_overrides),
+        "setting_overrides_bool": dict(config.setting_overrides_bool),
         "profiles": {},
     }
 

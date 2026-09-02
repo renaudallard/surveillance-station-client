@@ -81,8 +81,9 @@ _PAN_MAX = 0.8
 # Adaptive playback-speed control keeps mpv's demuxer cache near its
 # configured target instead of drifting unbounded in either direction:
 # growing when decode falls behind, or draining during a network stall.
-# Meaningful only for a profile with a timed cache at all (RTSP/default
-# and muxed_audio); low_latency runs with the cache off entirely.
+# Meaningful only for a profile actually running a cache: RTSP/default
+# and muxed_audio always, low_latency only once a fast History rewind
+# gives it one.
 _CACHE_CONTROL_INTERVAL_MS = 500
 _CACHE_CONTROL_SPEED_UP = 1.2
 _CACHE_CONTROL_SPEED_DOWN = 0.8
@@ -209,27 +210,28 @@ def _cache_target_seconds(default_seconds: float, high_playback_speed_factor: fl
     return default_seconds + _high_speed_cache_seconds(high_playback_speed_factor)
 
 
-def _cache_control_speed(
-    cache_seconds: float, target_seconds: float, high_playback_speed_factor: float
-) -> float:
+def _cache_control_speed(cache_seconds: float, target_seconds: float) -> float:
     """Playback-speed correction for a cache sitting at *cache_seconds*
     against *target_seconds*: 1.0x exactly on target, ramping linearly
     toward _CACHE_CONTROL_SPEED_UP as the ratio reaches
     _CACHE_CONTROL_SPEED_UP_ENTER, or toward _CACHE_CONTROL_SPEED_DOWN
     at _CACHE_CONTROL_SPEED_DOWN_ENTER.
 
-    *high_playback_speed_factor* (DSM's own History-speed multiplier)
-    scales the speed-up correction only, deliberately unbounded rather
-    than clamped to _CACHE_CONTROL_SPEED_UP the way the speed-down side
-    is: a cache overrun is worse the faster DSM is already delivering
-    frames, but a cache running low is never symmetrically wrong the
-    other way at high History speed, so no equivalent factor applies
-    on that side.
+    Bounded by those two either way, and deliberately unaware of DSM's
+    History-speed multiplier. A high History speed is delivery rate,
+    not a clock this correction sits on top of: DSM scales the frame
+    rate and the msec header together and the client just relays what
+    arrives (see WebSocketBridge._history_play_params' own "speed"
+    bullet), so mpv's own speed is never already running that many
+    times faster. Scaling this by the multiplier would make it a
+    fast-forward rather than a correction -- 21x at 100x History --
+    which empties the cache inside one tick and swings straight to the
+    floor.
     """
     ratio = cache_seconds / target_seconds
     if ratio >= 1.0:
         fraction = min(1.0, (ratio - 1.0) / (_CACHE_CONTROL_SPEED_UP_ENTER - 1.0))
-        return 1.0 + fraction * (_CACHE_CONTROL_SPEED_UP - 1.0) * high_playback_speed_factor
+        return 1.0 + fraction * (_CACHE_CONTROL_SPEED_UP - 1.0)
     fraction = min(1.0, (1.0 - ratio) / (1.0 - _CACHE_CONTROL_SPEED_DOWN_ENTER))
     return 1.0 - fraction * (1.0 - _CACHE_CONTROL_SPEED_DOWN)
 
@@ -582,9 +584,7 @@ class MpvGLArea(Gtk.GLArea):
         if not target_seconds:
             return True
 
-        mpv_playback_speed = _cache_control_speed(
-            cache_seconds, target_seconds, self._history_speed
-        )
+        mpv_playback_speed = _cache_control_speed(cache_seconds, target_seconds)
         with contextlib.suppress(Exception):
             self._mpv.speed = mpv_playback_speed
         # The number shown/logged is the true playback multiplier against

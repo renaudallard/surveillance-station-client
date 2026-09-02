@@ -194,40 +194,32 @@ class TestPlaybackProfiles:
 
 class TestCacheControlSpeed:
     def test_on_target_is_1x(self) -> None:
-        assert _cache_control_speed(2.0, 2.0, 1.0) == 1.0
+        assert _cache_control_speed(2.0, 2.0) == 1.0
 
-    def test_ramps_up_toward_speed_up_at_history_speed_1x(self) -> None:
+    def test_ramps_up_toward_speed_up(self) -> None:
         """Halfway from target to _SPEED_UP_ENTER (1.25x target) should
         land halfway between 1.0x and _CACHE_CONTROL_SPEED_UP."""
-        speed = _cache_control_speed(2.5, 2.0, 1.0)
+        speed = _cache_control_speed(2.5, 2.0)
         assert speed == pytest.approx(1.0 + (_CACHE_CONTROL_SPEED_UP - 1.0) / 2)
 
     def test_ramps_down_toward_speed_down(self) -> None:
         """Halfway from target to _SPEED_DOWN_ENTER (0.75x target) should
         land halfway between 1.0x and _CACHE_CONTROL_SPEED_DOWN."""
-        speed = _cache_control_speed(1.5, 2.0, 1.0)
+        speed = _cache_control_speed(1.5, 2.0)
         assert speed == pytest.approx(1.0 - (1.0 - _CACHE_CONTROL_SPEED_DOWN) / 2)
 
-    def test_clamps_at_speed_up_when_history_speed_is_1x(self) -> None:
-        """Beyond _SPEED_UP_ENTER, a Live/1x stream stays capped at
-        _CACHE_CONTROL_SPEED_UP -- the unbounded scaling below is only
-        meant to kick in at a real History speed."""
-        assert _cache_control_speed(100.0, 2.0, 1.0) == _CACHE_CONTROL_SPEED_UP
+    def test_clamps_at_speed_up(self) -> None:
+        assert _cache_control_speed(100.0, 2.0) == _CACHE_CONTROL_SPEED_UP
 
-    def test_clamps_at_speed_down_regardless_of_history_speed(self) -> None:
-        """The speed-down side has no high_playback_speed_factor term at
-        all (see _cache_control_speed's own docstring for why), so it
-        stays capped at _CACHE_CONTROL_SPEED_DOWN even at a high History
-        speed."""
-        assert _cache_control_speed(0.0, 2.0, 16.0) == _CACHE_CONTROL_SPEED_DOWN
+    def test_clamps_at_speed_down(self) -> None:
+        assert _cache_control_speed(0.0, 2.0) == _CACHE_CONTROL_SPEED_DOWN
 
-    def test_high_history_speed_scales_past_the_speed_up_ceiling(self) -> None:
-        """Deliberately unbounded/asymmetric: a cache overrun is worse
-        the faster DSM is already delivering frames, so a high History
-        speed can push the correction well past _CACHE_CONTROL_SPEED_UP."""
-        speed = _cache_control_speed(100.0, 2.0, 16.0)
-        assert speed == pytest.approx(1.0 + (_CACHE_CONTROL_SPEED_UP - 1.0) * 16.0)
-        assert speed > _CACHE_CONTROL_SPEED_UP
+    def test_stays_a_correction_at_every_depth(self) -> None:
+        """Both ends are hard bounds: nothing this returns is a
+        fast-forward, whatever the cache is doing."""
+        for cache_seconds in (0.0, 0.1, 1.0, 2.0, 3.0, 20.0, 1000.0):
+            speed = _cache_control_speed(cache_seconds, 2.0)
+            assert _CACHE_CONTROL_SPEED_DOWN <= speed <= _CACHE_CONTROL_SPEED_UP
 
 
 class TestHighSpeedCacheSeconds:

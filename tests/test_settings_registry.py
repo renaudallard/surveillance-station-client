@@ -133,14 +133,16 @@ class TestUpdateAndReset:
         finally:
             setting.set(setting.default)
 
-    def test_reset_setting_restores_the_default(self) -> None:
+    def test_reset_setting_drops_the_override(self) -> None:
+        """Reset applies the default and removes the key, rather than
+        saving the default back as an explicit override."""
         setting = _find("cache_seconds_default")
         config = AppConfig()
         try:
             update_setting(config, setting, 3.3)
             reset_setting(config, setting)
             assert setting.get() == setting.default
-            assert config.setting_overrides["cache_seconds_default"] == setting.default
+            assert "cache_seconds_default" not in config.setting_overrides
         finally:
             setting.set(setting.default)
 
@@ -154,18 +156,20 @@ class TestUpdateAndReset:
         finally:
             setting.set(setting.default)
 
-    def test_reset_bool_setting_restores_the_default(self) -> None:
+    def test_reset_bool_setting_drops_the_override(self) -> None:
+        """Same as test_reset_setting_drops_the_override, for a
+        switch."""
         setting = _find_bool("osd_enabled")
         config = AppConfig()
         try:
             update_bool_setting(config, setting, not setting.default)
             reset_bool_setting(config, setting)
             assert setting.get() is setting.default
-            assert config.setting_overrides_bool["osd_enabled"] is setting.default
+            assert "osd_enabled" not in config.setting_overrides_bool
         finally:
             setting.set(setting.default)
 
-    def test_reset_all_settings_restores_every_default(self) -> None:
+    def test_reset_all_settings_drops_every_override(self) -> None:
         config = AppConfig()
         originals: dict[str, float] = {}
         bool_originals: dict[str, bool] = {}
@@ -181,10 +185,10 @@ class TestUpdateAndReset:
             for section in SECTIONS:
                 for setting in section.settings:
                     assert setting.get() == setting.default
-                    assert config.setting_overrides[setting.key] == setting.default
+                    assert setting.key not in config.setting_overrides
                 for bool_setting in section.bool_settings:
                     assert bool_setting.get() is bool_setting.default
-                    assert config.setting_overrides_bool[bool_setting.key] is bool_setting.default
+                    assert bool_setting.key not in config.setting_overrides_bool
         finally:
             for section in SECTIONS:
                 for setting in section.settings:

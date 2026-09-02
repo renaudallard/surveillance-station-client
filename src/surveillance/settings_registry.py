@@ -247,13 +247,22 @@ def update_bool_setting(config: AppConfig, setting: BoolSetting, value: bool) ->
 
 
 def reset_setting(config: AppConfig, setting: Setting) -> None:
-    """Reset one setting to its default and persist that."""
-    update_setting(config, setting, setting.default)
+    """Apply one setting's default and drop its override.
+
+    Dropped rather than saved back as an explicit value: writing the
+    default in would pin today's number in the config file for good, so
+    a later release that retunes the constant would never reach anyone
+    who had ever pressed Reset.
+    """
+    setting.set(setting.default)
+    config.setting_overrides.pop(setting.key, None)
 
 
 def reset_bool_setting(config: AppConfig, setting: BoolSetting) -> None:
-    """Reset one on/off setting to its default and persist that."""
-    update_bool_setting(config, setting, setting.default)
+    """Apply one on/off setting's default and drop its override, for
+    the same reason as reset_setting."""
+    setting.set(setting.default)
+    config.setting_overrides_bool.pop(setting.key, None)
 
 
 def reset_all_settings(config: AppConfig) -> None:

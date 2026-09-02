@@ -152,8 +152,8 @@ def _player_settings() -> list[Setting]:
             key="demuxer_max_bytes_mib",
             label="Demuxer byte cap (MiB)",
             tooltip=(
-                "Byte-size cap on the demuxer cache, same for all "
-                "three streaming profiles above. Player reads ahead by "
+                "Byte-size cap on the demuxer cache, same for every "
+                "streaming profile above that runs one. Player reads ahead by "
                 "whichever of this and the seconds-based cache targets "
                 "above is larger, so too small a value here can "
                 "bottleneck a cache otherwise sized generously (e.g. the "

@@ -40,6 +40,7 @@ from surveillance.ui.mpv_widget import (
     _CACHE_HIGH_SPEED_MAX_SECONDS,
     _CACHE_SECONDS_DEFAULT,
     _DEMUXER_MAX_BYTES_MIB,
+    _DEMUXER_MAX_BYTES_UNCACHED,
     MpvGLArea,
     _cache_control_speed,
     _cache_target_seconds,
@@ -131,7 +132,7 @@ class TestPlaybackProfiles:
         assert history["cache"] == "yes"
         assert history["cache-secs"] > 0.0
 
-    def test_demuxer_max_bytes_is_shared_across_all_three_profiles(self) -> None:
+    def test_demuxer_max_bytes_is_shared_by_every_cached_profile(self) -> None:
         expected = f"{_DEMUXER_MAX_BYTES_MIB:g}MiB"
         muxed = _applied(low_latency=False, muxed_audio=True)
         low_latency = _applied(low_latency=True, muxed_audio=False, history_speed=100.0)
@@ -139,6 +140,14 @@ class TestPlaybackProfiles:
         assert muxed["demuxer-max-bytes"] == expected
         assert low_latency["demuxer-max-bytes"] == expected
         assert default["demuxer-max-bytes"] == expected
+
+    def test_an_uncached_profile_keeps_the_tight_byte_cap(self) -> None:
+        """demuxer-max-bytes is the ceiling the demuxer buffers up to
+        while playback is stalled, so a cacheless Live stream keeps its
+        own small bound rather than the shared one sized for a cache."""
+        off = _applied(low_latency=True, muxed_audio=False, history_speed=1.0)
+        assert off["cache"] == "no"
+        assert off["demuxer-max-bytes"] == _DEMUXER_MAX_BYTES_UNCACHED
 
     def test_only_low_latency_is_ever_untimed(self) -> None:
         """correct-pts/untimed/container-fps-override/probesize describe

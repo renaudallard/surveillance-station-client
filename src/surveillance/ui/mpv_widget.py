@@ -111,12 +111,23 @@ _CACHE_HIGH_SPEED_GROWTH = math.log(_CACHE_HIGH_SPEED_MAX_SECONDS) / (
     100.0 - _CACHE_HIGH_SPEED_ENTER
 )
 
-# Demuxer byte cap shared by all three playback profiles (see
+# Demuxer byte cap for every profile actually running a cache (see
 # _apply_playback_options): mpv reads ahead by whichever of this and
 # the seconds-based cache-secs/demuxer-readahead-secs above is larger,
 # so too small a cap here can bottleneck a cache that's otherwise
 # sized generously (e.g. low_latency's at a high History speed).
 _DEMUXER_MAX_BYTES_MIB = 32.0
+
+# Byte cap for a profile running with no cache at all -- today only a
+# silent camera's Live stream. mpv's own docs put demuxer-max-bytes as
+# the limit on "excessive readahead in case of broken files or desynced
+# playback", so it is not the dead letter an unused cache would suggest:
+# it is exactly the ceiling the demuxer buffers up to while playback is
+# stalled, before backpressure reaches the pipe. Keeping it tight here
+# bounds that per slot, which matters most on a full 4x4 grid, and costs
+# nothing when nothing is stalled -- a stream reading ahead zero seconds
+# never approaches it.
+_DEMUXER_MAX_BYTES_UNCACHED = "512KiB"
 
 
 # Runtime setters for the constants above, used by the Settings page's
@@ -509,7 +520,9 @@ class MpvGLArea(Gtk.GLArea):
         cache_enabled = target_seconds > 0
         timed = cache_enabled or not self._low_latency
         self._mpv["cache"] = "yes" if cache_enabled else "no"
-        self._mpv["demuxer-max-bytes"] = f"{_DEMUXER_MAX_BYTES_MIB:g}MiB"
+        self._mpv["demuxer-max-bytes"] = (
+            f"{_DEMUXER_MAX_BYTES_MIB:g}MiB" if cache_enabled else _DEMUXER_MAX_BYTES_UNCACHED
+        )
         self._mpv["demuxer-readahead-secs"] = target_seconds
         self._mpv["cache-secs"] = target_seconds
         self._mpv["correct-pts"] = timed

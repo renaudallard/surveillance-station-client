@@ -28,6 +28,8 @@ logic (no GTK required)."""
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
 
@@ -41,8 +43,11 @@ from surveillance.ui.timeline import (
     max_speed_for_slots,
     pan_view_end,
     parse_custom_download_range,
+    pick_tick_step,
     quick_download_label,
     quick_download_range,
+    tick_label,
+    tick_times,
 )
 
 
@@ -236,3 +241,84 @@ class TestMaxSpeedForSlots:
     def test_no_slots_means_the_whole_budget(self, budget: Callable[[float], None]) -> None:
         budget(100.0)
         assert max_speed_for_slots(0) == 100.0
+
+
+def _labels(end: datetime, window_seconds: float, width: int = 1000) -> list[str]:
+    step = pick_tick_step(window_seconds, width)
+    end_ts = end.timestamp()
+    return [tick_label(tick, step) for tick in tick_times(end_ts - window_seconds, end_ts, step)]
+
+
+class TestRulerTicks:
+    """Ticks sit on local wall-clock multiples of the step, labelled with
+    what tells them apart at that step."""
+
+    @pytest.fixture
+    def brussels(self) -> Iterator[None]:
+        # A zone an hour or two east of UTC, where a UTC-aligned two-hour
+        # grid read as odd local hours for half the year.
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "Europe/Brussels"
+        time.tzset()
+        yield
+        if saved is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = saved
+        time.tzset()
+
+    def test_step_picks_the_smallest_that_fits(self) -> None:
+        assert pick_tick_step(180, 1000) == 30
+        assert pick_tick_step(86400, 1000) == 7200
+        assert pick_tick_step(8 * 86400, 1000) == 86400
+        assert pick_tick_step(30 * 86400, 1000) == 604800
+
+    @pytest.mark.usefixtures("brussels")
+    def test_two_hour_ticks_land_on_even_local_hours_all_year(self) -> None:
+        for end in (datetime(2026, 1, 15, 12, 0), datetime(2026, 7, 15, 12, 0)):
+            labels = _labels(end, 86400)
+            assert labels[0] == "12:00"
+            assert all(int(label[:2]) % 2 == 0 for label in labels), labels
+            assert len(labels) == 13
+
+    def test_sub_minute_ticks_carry_seconds(self) -> None:
+        labels = _labels(datetime(2026, 9, 10, 12, 3, 0), 180)
+        assert labels == [
+            "12:00:00",
+            "12:00:30",
+            "12:01:00",
+            "12:01:30",
+            "12:02:00",
+            "12:02:30",
+            "12:03:00",
+        ]
+
+    def test_day_ticks_are_dated_and_anchored_to_the_calendar(self) -> None:
+        end = datetime(2026, 9, 10, 12, 0)
+        step = pick_tick_step(8 * 86400, 1000)
+        assert step == 86400
+        labels = _labels(end, 8 * 86400)
+        assert labels == ["09-03", "09-04", "09-05", "09-06", "09-07", "09-08", "09-09", "09-10"]
+        # A two-day grid does not slide with the window: panning by one
+        # day keeps the same tick days.
+        two_days = 172800
+        first = {
+            t.date() for t in tick_times(end.timestamp() - 8 * 86400, end.timestamp(), two_days)
+        }
+        shifted = {
+            t.date()
+            for t in tick_times(end.timestamp() - 9 * 86400, end.timestamp() - 86400, two_days)
+        }
+        assert first & shifted == first - {max(first)} or first == shifted
+
+    @pytest.mark.usefixtures("brussels")
+    def test_a_dst_gap_yields_the_hour_that_exists(self) -> None:
+        # 2026-03-29 02:00 CET becomes 03:00 CEST: no tick is labelled
+        # with an hour that never happened, and none is drawn twice.
+        start = datetime(2026, 3, 29, 0, 30).timestamp()
+        end = datetime(2026, 3, 29, 4, 30).timestamp()
+        assert [tick_label(t, 3600) for t in tick_times(start, end, 3600)] == [
+            "01:00",
+            "03:00",
+            "04:00",
+        ]

@@ -38,8 +38,8 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Sequence
-from datetime import datetime, timedelta, timezone
+from collections.abc import Callable, Iterator, Sequence
+from datetime import date, datetime, timedelta
 
 import cairo
 import gi
@@ -53,8 +53,27 @@ from surveillance.ui.event_type_filter import EventTypeFilterView
 from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier_zoom_icon
 
 # Candidate tick spacings (seconds); the smallest that still leaves each
-# label enough room on screen is picked at draw time.
-_TICK_STEPS = [30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200]
+# label enough room on screen is picked at draw time. Up to a week, so
+# the 30-day window _MAX_WINDOW_SECONDS allows gets dated ticks a label's
+# width apart rather than sixty hour marks drawn over each other.
+_TICK_STEPS = [
+    30,
+    60,
+    120,
+    300,
+    600,
+    900,
+    1800,
+    3600,
+    7200,
+    14400,
+    21600,
+    43200,
+    86400,
+    172800,
+    604800,
+]
+_DAY_SECONDS = 86400
 
 # Download popover's Custom Save entries -- plain text rather than a
 # widget, see _build_download_popover for why.
@@ -192,6 +211,57 @@ def max_speed_for_slots(count: int) -> float:
     if count <= 0:
         return _MAX_SPEED_SLOT_PRODUCT
     return max(1.0, _MAX_SPEED_SLOT_PRODUCT / count)
+
+
+def pick_tick_step(window_seconds: float, width: int) -> int:
+    """The smallest of _TICK_STEPS that keeps *window_seconds* worth of
+    ticks at least _MIN_LABEL_SPACING_PX apart across *width* pixels."""
+    max_ticks = max(1, width // _MIN_LABEL_SPACING_PX)
+    for step in _TICK_STEPS:
+        if window_seconds / step <= max_ticks:
+            return step
+    return _TICK_STEPS[-1]
+
+
+def tick_times(start: float, end: float, step: int) -> Iterator[datetime]:
+    """Naive local datetimes of the ruler ticks in [start, end] at *step*.
+
+    Ticks sit on local wall-clock multiples of the step (02:00, 04:00,
+    ... at two hours; midnight at a day or more), not UTC ones: the
+    labels are local, and a UTC grid reads as odd hours from any zone
+    with an odd offset for half the year. A day-scale step is anchored
+    to the calendar rather than to the window, so panning does not
+    slide the grid. Walked as naive datetimes, so a DST change inside
+    the window keeps the wall-clock spacing; the one hour a year that
+    exists twice yields a single tick.
+    """
+    first = datetime.fromtimestamp(start)
+    if step >= _DAY_SECONDS:
+        days = step // _DAY_SECONDS
+        ordinal = first.toordinal()
+        tick = datetime.combine(date.fromordinal(ordinal - ordinal % days), datetime.min.time())
+    else:
+        midnight = first.replace(hour=0, minute=0, second=0, microsecond=0)
+        since_midnight = (first - midnight).total_seconds()
+        tick = midnight + timedelta(seconds=since_midnight // step * step)
+    last = start - 1
+    while (at := tick.timestamp()) <= end:
+        if at > last:
+            # The instant's own local time, not the walked value: inside
+            # a DST gap the walked 02:00 is the instant 03:00 names.
+            yield datetime.fromtimestamp(at)
+            last = at
+        tick += timedelta(seconds=step)
+
+
+def tick_label(tick: datetime, step: int) -> str:
+    """What the ruler writes under a tick: the date at a day-scale step,
+    seconds included below a minute, where "%H:%M" alone repeats."""
+    if step >= _DAY_SECONDS:
+        return tick.strftime("%m-%d")
+    if step < 60:
+        return tick.strftime("%H:%M:%S")
+    return tick.strftime("%H:%M")
 
 
 def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
@@ -625,13 +695,6 @@ class TimelineCanvas(Gtk.DrawingArea):
         self.queue_draw()
         return True  # continue ticking
 
-    def _pick_tick_step(self, width: int) -> int:
-        max_ticks = max(1, width // _MIN_LABEL_SPACING_PX)
-        for step in _TICK_STEPS:
-            if self._window_seconds / step <= max_ticks:
-                return step
-        return _TICK_STEPS[-1]
-
     def _theme_color(
         self, name: str, fallback: tuple[float, float, float]
     ) -> tuple[float, float, float]:
@@ -662,23 +725,16 @@ class TimelineCanvas(Gtk.DrawingArea):
             *(_HISTORY_TICK_COLOR if self._history_position is not None else _LIVE_TICK_COLOR)
         )
         cr.set_line_width(1)
-        step = self._pick_tick_step(width)
-        first_tick = int(start // step) * step
-        t = first_tick
-        while t <= end:
-            tx = x_for(t)
+        step = pick_tick_step(self._window_seconds, width)
+        for tick in tick_times(start, end, step):
+            tx = x_for(tick.timestamp())
             cr.move_to(tx, tick_y)
             cr.line_to(tx, tick_y + 6)
             cr.stroke()
-            label = (
-                datetime.fromtimestamp(t, tz=timezone.utc)
-                .astimezone()
-                .strftime("%H:%M" if step < 86400 else "%m-%d")
-            )
+            label = tick_label(tick, step)
             extents = cr.text_extents(label)
             cr.move_to(tx - extents.width / 2 - extents.x_bearing, ruler_y + 12)
             cr.show_text(label)
-            t += step
 
         # Recording-presence bar: focus-slot row on top, layout-
         # accumulated (plain OR across every camera in the active

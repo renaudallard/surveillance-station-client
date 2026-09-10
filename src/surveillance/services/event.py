@@ -226,8 +226,8 @@ async def list_granular_events(
 ) -> list[Event]:
     """List real, short-duration events decoded from event_map.
 
-    Unlike list_events() (SYNO.SurveillanceStation.Event::List), which only
-    exposes coarse ~30-minute recording-file segments, this decodes
+    Unlike SYNO.SurveillanceStation.Event::List, which only exposes
+    coarse ~30-minute recording-file segments, this decodes
     RecordingPicker::EnumInterval's event_map to recover the actual
     irregular motion/alarm windows shown in DSM's own Monitor Center
     timeline. Returns every event within [from_time, to_time], newest first —
@@ -283,47 +283,6 @@ async def list_presence_and_events(
 
     events.sort(key=lambda e: e.start_time, reverse=True)
     return presence, events
-
-
-async def list_events(
-    api: SurveillanceAPI,
-    camera_id: int | None = None,
-    offset: int = 0,
-    limit: int = 50,
-) -> tuple[list[Event], int]:
-    """List motion/alarm events.
-
-    Tries Event.List first, falls back to Event.Query on older NAS versions.
-    Returns (events, total_count).
-    """
-    params: dict[str, str] = {
-        "offset": str(offset),
-        "limit": str(limit),
-    }
-    if camera_id is not None:
-        params["cameraIds"] = str(camera_id)
-
-    # Try List first (modern), fall back to Query (legacy)
-    last_exc: Exception | None = None
-    for method in ("List", "Query"):
-        try:
-            data = await api.request(
-                api="SYNO.SurveillanceStation.Event",
-                method=method,
-                version=5,
-                extra_params=params,
-            )
-        except Exception as exc:
-            last_exc = exc
-            if method == "List":
-                log.debug("Event.List not available, trying Event.Query")
-                continue
-            raise
-        else:
-            events = [Event.from_api(e) for e in data.get("events", [])]
-            total = data.get("total", len(events))
-            return events, total
-    raise last_exc  # type: ignore[misc]
 
 
 async def list_alerts(

@@ -294,30 +294,6 @@ class TestPtzService:
 
 class TestEventService:
     @pytest.mark.asyncio
-    async def test_list_events(self, api: SurveillanceAPI) -> None:
-        from surveillance.services.event import list_events
-
-        mock_data = {
-            "events": [
-                {
-                    "id": 1,
-                    "cameraId": 1,
-                    "cameraName": "Front Door",
-                    "eventType": 1,
-                    "startTime": 1700000000,
-                    "stopTime": 1700000060,
-                }
-            ],
-            "total": 1,
-        }
-
-        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            events, total = await list_events(api)
-            assert len(events) == 1
-            assert total == 1
-            assert events[0].event_type == 1
-
-    @pytest.mark.asyncio
     async def test_count_unread_alerts(self, api: SurveillanceAPI) -> None:
         from surveillance.services.event import count_unread_alerts
 

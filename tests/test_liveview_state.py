@@ -67,7 +67,7 @@ class TestPageTickers:
         return fake
 
     @staticmethod
-    def _page() -> SimpleNamespace:
+    def _ticking_page() -> SimpleNamespace:
         return SimpleNamespace(
             _focus_idle_id=0,
             _history_tick_id=0,
@@ -76,7 +76,7 @@ class TestPageTickers:
         )
 
     def test_map_starts_both_once(self, glib: _FakeGLib) -> None:
-        page = self._page()
+        page = self._ticking_page()
         LiveView._on_map(page, None)  # type: ignore[arg-type]
         LiveView._on_map(page, None)  # type: ignore[arg-type]
         assert [interval for interval, _ in glib.added] == [1000, 1000]
@@ -86,7 +86,7 @@ class TestPageTickers:
         }
 
     def test_unmap_removes_both_and_only_once(self, glib: _FakeGLib) -> None:
-        page = self._page()
+        page = self._ticking_page()
         LiveView._on_map(page, None)  # type: ignore[arg-type]
         LiveView._on_unmap(page, None)  # type: ignore[arg-type]
         LiveView._on_unmap(page, None)  # type: ignore[arg-type]
@@ -94,9 +94,141 @@ class TestPageTickers:
         assert (page._focus_idle_id, page._history_tick_id) == (0, 0)
 
     def test_remap_starts_again(self, glib: _FakeGLib) -> None:
-        page = self._page()
+        page = self._ticking_page()
         LiveView._on_map(page, None)  # type: ignore[arg-type]
         LiveView._on_unmap(page, None)  # type: ignore[arg-type]
         LiveView._on_map(page, None)  # type: ignore[arg-type]
         assert len(glib.added) == 4
         assert page._focus_idle_id and page._history_tick_id
+
+
+class _Calls:
+    """A stand-in that records every method call by name."""
+
+    # What the code under test reads off a slot, a timeline or a page
+    # stand-in; set per instance through the constructor.
+    index: int
+    camera: object
+    player: _Calls
+    canvas: _Calls
+    _ws_bridge: object
+    _rtsp_monitor: object
+
+    def __init__(self, **attrs: object) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.__dict__.update(attrs)
+
+    def __getattr__(self, name: str) -> Callable[..., None]:
+        def record(*args: object) -> None:
+            self.calls.append((name, args))
+
+        return record
+
+    def called(self, name: str) -> list[tuple[object, ...]]:
+        return [args for called, args in self.calls if called == name]
+
+
+def _slot(camera: object = None, bridge: object = None, monitor: object = None) -> _Calls:
+    if camera is None:
+        camera = SimpleNamespace(id=1, name="cam")
+    return _Calls(index=0, camera=camera, player=_Calls(), _ws_bridge=bridge, _rtsp_monitor=monitor)
+
+
+def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespace:
+    """A LiveView stand-in carrying the state the Pause paths read, with
+    the two helpers they call bound to it as the real methods."""
+    for i, slot in enumerate(slots):
+        slot.index = i
+    page = SimpleNamespace(
+        _timeline_paused=paused,
+        timeline=_Calls(canvas=_Calls()),
+        _slots=slots,
+        _active=active,
+        _set_history_position=lambda slot, pos: None,
+    )
+    page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
+    page._resume_all_slots = lambda: LiveView._resume_all_slots(page)  # type: ignore[arg-type]
+    return page
+
+
+def _bridge(history: bool = False) -> SimpleNamespace:
+    # resume() hands back a marker rather than a coroutine: run_async is
+    # faked below, so a real coroutine would never be awaited.
+    return SimpleNamespace(is_history=history, resume=lambda: "resume")
+
+
+class TestTimelinePause:
+    """Ending a Pause has to reach the bridges, not only the players.
+
+    mpv keeps its pause across stop() and play(), a paused Live bridge
+    discards every frame, and a bridge or monitor left unpaused behind a
+    paused mpv reads the stall as a dead stream and gives up. So every
+    path that leaves a Pause behind resumes what it keeps, and every
+    path that restarts everything clears the local pause on the whole
+    slot pool first."""
+
+    @pytest.fixture
+    def launched(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        launched: list[object] = []
+        monkeypatch.setattr(
+            liveview,
+            "run_async",
+            lambda coro, callback=None, error_callback=None: launched.append(coro),
+        )
+        return launched
+
+    def test_resume_reaches_bridges_monitors_and_every_player(self, launched: list[object]) -> None:
+        live = _slot(bridge=_bridge())
+        monitor = _Calls()
+        rtsp = _slot(monitor=monitor)
+        hidden = _slot()
+        hidden.camera = None
+        page = _page(True, [live, rtsp, hidden], active=[0, 1])
+        LiveView._resume_all_slots(page)  # type: ignore[arg-type]
+        assert page._timeline_paused is False
+        assert page.timeline.called("set_paused") == [(False,)]
+        assert launched == ["resume"]
+        assert monitor.called("set_paused") == [(False,)]
+        for slot in (live, rtsp, hidden):
+            assert slot.player.called("set_paused") == [(False,)]
+
+    def test_resume_without_a_pause_touches_no_bridge(self, launched: list[object]) -> None:
+        page = _page(False, [_slot(bridge=_bridge())], active=[0])
+        LiveView._resume_all_slots(page)  # type: ignore[arg-type]
+        assert launched == []
+        assert page.timeline.calls == []
+
+    def test_leaving_the_page_ends_the_pause(self, launched: list[object]) -> None:
+        slot = _slot(bridge=_bridge())
+        page = _page(True, [slot], active=[0])
+        page._streams_paused = False
+        LiveView.pause_streams(page)  # type: ignore[arg-type]
+        assert page._timeline_paused is False
+        assert page.timeline.called("set_paused") == [(False,)]
+        assert slot.player.called("set_paused") == [(False,)]
+        assert slot.called("stop_stream") == [()]
+
+    def test_return_to_live_resumes_the_live_bridge_it_keeps(self, launched: list[object]) -> None:
+        slot = _slot(bridge=_bridge(history=False))
+        page = _page(True, [slot], active=[0])
+        page._leaving_history_slots = set()
+        page._timeline_speed = "4"
+        page._timeline_reverse = True
+        page._run_staggered = lambda actions: [action() for action in actions]
+        page._start_stream = lambda *args: None
+        LiveView._return_all_to_live(page)  # type: ignore[arg-type]
+        assert page._timeline_paused is False
+        assert launched == ["resume"]
+        assert page.timeline.called("set_speed") == [("1",)]
+
+    def test_a_seek_resumes_before_looking_anything_up(self, launched: list[object]) -> None:
+        slot = _slot(bridge=_bridge(history=False))
+        page = _page(True, [slot], active=[0])
+        page._seek_generation = 0
+        page._slot_seek_generation = {}
+        page._run_staggered = lambda actions: [action() for action in actions]
+        page._seek_slot_to_time = lambda *args: None
+        LiveView._on_timeline_seek(page, 1_700_000_000.0)  # type: ignore[arg-type]
+        assert page._timeline_paused is False
+        assert launched == ["resume"]
+        assert page.timeline.canvas.called("ensure_visible") == [(1_700_000_000.0,)]

@@ -882,23 +882,14 @@ class LiveView(Gtk.Box):
         # hidden (see _return_all_to_live). Before self._active changes
         # below, since that's what it reads to know which slots to check.
         self._return_all_to_live()
-        # Same scoping for a Pause left active. Every slot's own local
-        # pause needs clearing explicitly here, not just the toolbar's
-        # tracking flag/icon: slot objects are a fixed pool reused
-        # across layout switches, not recreated, and mpv.play() never
-        # resets mpv.pause on its own -- a slot paused in the old
-        # layout would otherwise still show a frozen picture under
-        # whatever camera the new layout puts on it, with the toolbar
-        # wrongly reading "playing". Unconditionally, across the whole
-        # pool rather than just self._active: a slot hidden by this
-        # switch can still be reused by a later one.
-        if self._timeline_paused:
-            self._timeline_paused = False
-            self.timeline.set_paused(False)
-        for slot in self._slots:
-            slot.player.set_paused(False)
-            if slot._rtsp_monitor is not None:
-                slot._rtsp_monitor.set_paused(False)
+        # Same scoping for a Pause left active: _return_all_to_live has
+        # resumed the active slots, and this clears the local mpv pause
+        # on every slot in the pool. Slot objects are reused across
+        # layout switches, not recreated, and mpv.play() never resets
+        # mpv.pause on its own, so a slot paused in the old layout would
+        # otherwise show a frozen picture under whatever camera a later
+        # layout puts on it, with the toolbar reading "playing".
+        self._end_timeline_pause()
         new_active = list(LAYOUT_VISIBLE[self._current_layout])
         self._select_slot(None)
 
@@ -1735,11 +1726,14 @@ class LiveView(Gtk.Box):
         whole of the first batch and not just the part of it that had
         got going.
 
-        Also clears a pending Pause, the same as WebSocketBridge.seek()
+        Also ends a pending Pause, the same as WebSocketBridge.seek()
         does at its own level: a seek is "go here and play", so leaving
         the toolbar showing Play (and every slot's own player still
         locally paused) after this would read as still paused when it
-        isn't.
+        isn't. The bridges are resumed too, not only the players: a slot
+        whose lookup finds no recording keeps the Live bridge it has,
+        and one left paused behind an unpaused mpv stays frozen with
+        nothing on screen saying so.
 
         Pans (without changing zoom) to keep the target visible -- see
         TimelineCanvas.ensure_visible -- so Back/Forward 10s and
@@ -1748,11 +1742,7 @@ class LiveView(Gtk.Box):
         no-op for a ruler click, which can only ever target something
         already visible.
         """
-        if self._timeline_paused:
-            self._timeline_paused = False
-            self.timeline.set_paused(False)
-            for slot_idx in self._active:
-                self._slots[slot_idx].player.set_paused(False)
+        self._resume_all_slots()
         self.timeline.canvas.ensure_visible(timestamp)
         target_unix = int(timestamp)
         self._seek_generation += 1
@@ -2050,24 +2040,36 @@ class LiveView(Gtk.Box):
                 ),
             )
 
+    def _end_timeline_pause(self) -> None:
+        """Drop a timeline Pause without resuming any bridge: the flag,
+        the toolbar's icon, and the local mpv pause on every slot in
+        the pool, hidden ones included, since mpv.play() never resets
+        mpv.pause on its own. For the paths that replace every bridge
+        anyway (leaving the page, a layout switch's hidden slots); the
+        bridges that stay are _resume_all_slots' business."""
+        if self._timeline_paused:
+            self._timeline_paused = False
+            self.timeline.set_paused(False)
+        for slot in self._slots:
+            slot.player.set_paused(False)
+            if slot._rtsp_monitor is not None:
+                slot._rtsp_monitor.set_paused(False)
+
     def _resume_all_slots(self) -> None:
         """Undo _pause_all_slots for every active slot. A History
         slot's resumed position can land later than where it was
         paused (WebSocketBridge.resume's own wall-clock floor), hence
         still updating _set_history_position here rather than assuming
-        the frozen marker was already correct."""
-        self._timeline_paused = False
-        self.timeline.set_paused(False)
+        the frozen marker was already correct. A no-op for the bridges
+        when nothing was paused, so every path that must not leave a
+        Pause behind can call it without checking first."""
+        was_paused = self._timeline_paused
+        self._end_timeline_pause()
+        if not was_paused:
+            return
         for slot_idx in self._active:
             slot = self._slots[slot_idx]
-            if slot.camera is None:
-                continue
-            # Same reasoning as _pause_all_slots: the local unfreeze
-            # applies regardless of protocol.
-            slot.player.set_paused(False)
-            if slot._rtsp_monitor is not None:
-                slot._rtsp_monitor.set_paused(False)
-            if slot._ws_bridge is None:
+            if slot.camera is None or slot._ws_bridge is None:
                 continue
             camera_name = slot.camera.name
             run_async(
@@ -2132,6 +2134,13 @@ class LiveView(Gtk.Box):
         reorder __init__, since nothing else here depends on
         construction order.
         """
+        # A Pause does not survive the return to Live. The History
+        # bridges it froze are replaced below, but a Live slot keeps its
+        # bridge, and one left paused behind the mpv this unpauses would
+        # stay frozen; and mpv itself keeps its pause across play(), so
+        # a restarted slot would feed a paused player, which the bridge
+        # reads as a stalled pipe and gives up on.
+        self._resume_all_slots()
         actions: list[Callable[[], None]] = []
         for slot_idx in self._active:
             slot = self._slots[slot_idx]
@@ -2998,6 +3007,11 @@ class LiveView(Gtk.Box):
         camera's actual mute/volume choice, not just leaving it muted.
         """
         self._streams_paused = True
+        # Leaving the page ends a Pause, like a layout switch does:
+        # resume_streams starts every stream afresh, and mpv keeps its
+        # pause across play(), so the new stream would otherwise feed a
+        # paused player that its bridge or monitor then gives up on.
+        self._end_timeline_pause()
         for slot in self._slots:
             slot.player.reset_zoom()
             slot.player.set_mute(True)

@@ -156,7 +156,7 @@ class TestDecodeFlag:
 
     def test_reserved_field_zero_produces_nothing(self) -> None:
         decoded = decode_flag(1, 0, "hikvision")
-        assert decoded == []
+        assert decoded == ()
 
     def test_negative_flag_recovers_sign_bit(self) -> None:
         # -2147483647 -> unsigned bits {0, 31} -> Unattended Baggage Detection
@@ -307,3 +307,14 @@ class TestBuildFilterOptions:
         occurrences = [(513, 0, "Vivotek"), (513, 0, "hikvision")]
         options = build_filter_options(occurrences)
         assert [key for key, _label, _notes in options] == ["09"]
+
+
+class TestDecodeCache:
+    def test_the_same_flag_decodes_once(self) -> None:
+        """The Events page and the timeline decode one flag per event per
+        filter key; a NAS produces a handful of distinct flags, so the
+        decoder hands back the same tuple rather than working again."""
+        first = decode_flag(259, 0, "hikvision")
+        assert isinstance(first, tuple)
+        assert decode_flag(259, 0, "hikvision") is first
+        assert decode_flag(259, 0, "reolink") is not first

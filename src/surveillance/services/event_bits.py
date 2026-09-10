@@ -194,7 +194,8 @@ def _decode_bit(bit: int | None, bit_key: str, brand: str, vendor: str) -> Decod
     )
 
 
-def decode_flag(flag: int, reserved: int, vendor: str) -> list[DecodedBit]:
+@functools.lru_cache(maxsize=1024)
+def decode_flag(flag: int, reserved: int, vendor: str) -> tuple[DecodedBit, ...]:
     """Decode a raw event_map flag (+ its RLE reserved field) into the set
     of DecodedBit entries it represents, for the given camera's raw DSM
     `vendor` string (normalized internally for variant matching, but kept
@@ -202,6 +203,12 @@ def decode_flag(flag: int, reserved: int, vendor: str) -> list[DecodedBit]:
     _decode_bit).
 
     Modifier bits 0 and 1 are always excluded — see _MODIFIER_BITS.
+
+    Memoised: a NAS produces a handful of distinct flags, while the
+    Events page and the timeline decode one per event per filter key,
+    which at well over a hundred microseconds a decode came to seconds
+    on the GTK thread for a large result. The result is a tuple, so
+    handing the same one to every caller is safe.
     """
     brand = normalize_brand(vendor)
     unsigned = flag & _UNSIGNED_MASK
@@ -212,7 +219,7 @@ def decode_flag(flag: int, reserved: int, vendor: str) -> list[DecodedBit]:
         decoded.append(_decode_bit(bit, str(bit), brand, vendor))
     if reserved:
         decoded.append(_decode_bit(None, _RESERVED_KEY, brand, vendor))
-    return decoded
+    return tuple(decoded)
 
 
 def event_matches_key(flag: int, reserved: int, vendor: str, key: str) -> bool:

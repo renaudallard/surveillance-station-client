@@ -1122,6 +1122,14 @@ class WebSocketBridge:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await keepalive_task
+            # A cancel() aimed at the pump while it waited on the line
+            # above lands on that wait and is swallowed along with it,
+            # and the pump would go on to reconnect onto pipes whose
+            # ffmpeg is gone (see _watch_ffmpeg). The request survives
+            # in the task's own count, so honour it from here.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
 
     def _log_reconnect(self, clean_close: bool) -> None:
         if clean_close:

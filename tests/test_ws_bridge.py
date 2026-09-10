@@ -2392,3 +2392,52 @@ class TestDeliberateReconnects:
             assert not pump.done(), "gave up on a close it asked for itself"
         assert bridge._fast_failures == 0
         await bridge.stop()
+
+
+class TestCancelDuringKeepaliveShutdown:
+    async def test_a_cancel_landing_on_the_keepalive_wait_still_stops_the_pump(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_watch_ffmpeg ends the pump with cancel(). One arriving while
+        the pump waited for its keepalive task to finish winding down was
+        swallowed together with that wait, and the pump went on to
+        reconnect onto pipes whose ffmpeg had already gone."""
+
+        async def slow_to_stop(self: WebSocketBridge, ws: Any) -> None:
+            try:
+                await asyncio.sleep(1000)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+                raise
+
+        monkeypatch.setattr(WebSocketBridge, "_send_keepalive_loop", slow_to_stop)
+        connections: list[_FakeWS] = []
+
+        class _EndsAfterAPause(_FakeWS):
+            async def recv(self) -> bytes:
+                from websockets.exceptions import ConnectionClosedOK
+
+                if self._messages:
+                    return self._messages.pop(0)
+                # One yield, so the keepalive task gets its first step
+                # and is genuinely running when the read loop ends;
+                # raising outright would cancel it before it ever ran.
+                await asyncio.sleep(0.01)
+                raise ConnectionClosedOK(None, None)
+
+        def _ending(url: str, **kwargs: Any) -> _FakeWS:
+            fake = _EndsAfterAPause([_codec_frame()])
+            connections.append(fake)
+            return fake
+
+        monkeypatch.setattr(ws_bridge, "_ws_connect", _ending)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        pump = bridge._pump_task
+        assert pump is not None
+        await asyncio.sleep(0.1)  # inside the keepalive's wind-down
+        pump.cancel()
+        await asyncio.sleep(0.6)
+        assert pump.done(), "the cancel was swallowed with the keepalive wait"
+        assert len(connections) == 1
+        await bridge.stop()

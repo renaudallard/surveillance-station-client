@@ -33,6 +33,7 @@ import ctypes.util
 import logging
 import math
 import os
+import shlex
 from collections.abc import Callable
 from typing import Any
 
@@ -317,14 +318,17 @@ class MpvGLArea(Gtk.GLArea):
                 log.info("Audio output driver set to %s", ao)
 
             # SURVEILLANCE_MPV_OPTS passes extra mpv options as
-            # "name=value,name=value" (e.g. "hwdec-extra-frames=12" when NVDEC
-            # reports "No decoder surfaces left" on streams with deep reorder
-            # buffers, or "hwdec=nvdec" to pick the decoder). Optional.
+            # "name=value name=value", split like a shell command line so a
+            # value keeps its commas (hwdec=nvdec,vaapi is mpv's own list
+            # syntax) and one with whitespace can be quoted (e.g.
+            # "hwdec-extra-frames=12" when NVDEC reports "No decoder surfaces
+            # left" on streams with deep reorder buffers, or "hwdec=nvdec" to
+            # pick the decoder). Optional.
             extra_opts: dict[str, str] = {}
-            for item in os.environ.get("SURVEILLANCE_MPV_OPTS", "").split(","):
+            for item in shlex.split(os.environ.get("SURVEILLANCE_MPV_OPTS", "")):
                 if "=" in item:
                     name, value = item.split("=", 1)
-                    extra_opts[name.strip()] = value.strip()
+                    extra_opts[name] = value
             if extra_opts:
                 log.info("Extra mpv options from SURVEILLANCE_MPV_OPTS: %s", extra_opts)
 

@@ -377,6 +377,10 @@ class WebSocketBridge:
         # a cross-recording seek into the next reconnect instead of
         # sending on a dead socket.
         self._current_ws: Any = None
+        # Set by resume() and seek() before they close the socket on
+        # purpose, so _pump does not score the reconnect that follows as
+        # a failed attempt (see _note_attempt_outcome).
+        self._closing_on_purpose = False
         # Purely for logging — lets a "dropped"/"stalled"/"gave up" line be
         # traced back to a specific camera after the fact, since the bridge
         # itself only ever sees a bare URL.
@@ -456,6 +460,11 @@ class WebSocketBridge:
         NAS accepts but never feeds would score as healthy on every pass,
         reset the streak forever, and leave start() waiting on a codec-info
         frame that is never coming.
+
+        A close this bridge asked for itself, resume() and a
+        cross-recording seek(), is never scored here at all (see _pump):
+        a few pause toggles or event jumps inside the threshold would
+        otherwise add up to giving up on a connection that was fine.
         """
         attempt_uptime = (
             time.monotonic() - attempt_start if connected and self._attempt_got_data else 0.0
@@ -1252,6 +1261,7 @@ class WebSocketBridge:
         self._paused = False
         if not self.is_history:
             if self._current_ws is not None:
+                self._closing_on_purpose = True
                 await self._current_ws.close()
             return None
         if self._history_paused_position is None:
@@ -1576,6 +1586,7 @@ class WebSocketBridge:
             return clamped_target
         self._history_recording = recording
         if self._current_ws is not None:
+            self._closing_on_purpose = True
             await self._current_ws.close()
         return clamped_target
 
@@ -1668,11 +1679,14 @@ class WebSocketBridge:
                 # or another -- nothing left for seek() to send on until
                 # the next connection (if any) sets this again.
                 self._current_ws = None
+                on_purpose, self._closing_on_purpose = self._closing_on_purpose, False
 
                 if self._stopping:
                     break
 
-                if give_up_now or self._note_attempt_outcome(connected, attempt_start):
+                if give_up_now or (
+                    not on_purpose and self._note_attempt_outcome(connected, attempt_start)
+                ):
                     break
 
                 # Reconnect on the SAME pipe(s) rather than closing them,

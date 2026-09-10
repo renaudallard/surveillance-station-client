@@ -46,6 +46,7 @@ import threading
 import time
 import types
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qsl
@@ -170,6 +171,23 @@ def connect(monkeypatch: pytest.MonkeyPatch) -> Any:
         monkeypatch.setattr(ws_bridge, "_ws_connect", _fake)
 
     return _install
+
+
+@pytest.fixture
+def fresh_connections(monkeypatch: pytest.MonkeyPatch) -> list[_FakeWS]:
+    """Replace the real connect with one handing out a fresh hanging fake
+    per call, listed in order: for tests that reconnect, where a single
+    fake would come back already closed. Each delivers a codec frame
+    and then waits, the way a camera between frames does."""
+    connections: list[_FakeWS] = []
+
+    def _fresh(url: str, **kwargs: Any) -> _FakeWS:
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connections.append(fake)
+        return fake
+
+    monkeypatch.setattr(ws_bridge, "_ws_connect", _fresh)
+    return connections
 
 
 class TestWaitClosed:
@@ -2285,4 +2303,67 @@ class TestConsumeLastRealTick:
         fake._messages.append(_frame(b"mediaType=1&msec=100000", b"AAA"))
         await _wait_until(lambda: bridge.current_history_position == rec.start_time + 100)
         assert bridge.consume_last_real_tick() == rec.start_time + 240
+        await bridge.stop()
+
+
+class TestDeliberateReconnects:
+    """A close the bridge asks for itself is not a connection failure."""
+
+    @staticmethod
+    def _settled(bridge: WebSocketBridge, connections: list[_FakeWS], before: int) -> bool:
+        """True once the bridge is back on a fresh connection with data,
+        or has given up, which ends the wait with a reason of its own."""
+        pump = bridge._pump_task
+        assert pump is not None
+        return pump.done() or (
+            len(connections) > before
+            and bridge._current_ws is connections[-1]
+            and bridge._attempt_got_data
+        )
+
+    async def test_pause_resume_toggles_do_not_add_up_to_giving_up(
+        self, fresh_connections: list[_FakeWS]
+    ) -> None:
+        """Live resume() closes the socket on purpose, to come back on a
+        keyframe. Every toggle lands inside the fast-failure window of the
+        reconnect before it, and five of them used to make the bridge
+        give up on a connection that was never at fault."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        pump = bridge._pump_task
+        assert pump is not None
+        for _ in range(ws_bridge._MAX_CONSECUTIVE_FAST_FAILURES + 1):
+            before = len(fresh_connections)
+            await bridge.pause()
+            await bridge.resume()
+            await _wait_until(partial(self._settled, bridge, fresh_connections, before))
+            assert not pump.done(), "gave up on a close it asked for itself"
+        assert bridge._fast_failures == 0
+        assert len(fresh_connections) == ws_bridge._MAX_CONSECUTIVE_FAST_FAILURES + 2
+        await bridge.stop()
+
+    async def test_cross_recording_seeks_do_not_add_up_to_giving_up(
+        self, fresh_connections: list[_FakeWS]
+    ) -> None:
+        """Same for a seek into another recording, which reconnects to
+        send the new action=play: stepping through events that sit in
+        different recordings is a run of exactly these."""
+        rec = _recording()
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+        pump = bridge._pump_task
+        assert pump is not None
+        for i in range(ws_bridge._MAX_CONSECUTIVE_FAST_FAILURES + 1):
+            before = len(fresh_connections)
+            other = _recording(id=rec.id + i + 1)
+            await bridge.seek(other, other.start_time + 10)
+            await _wait_until(partial(self._settled, bridge, fresh_connections, before))
+            assert not pump.done(), "gave up on a close it asked for itself"
+        assert bridge._fast_failures == 0
         await bridge.stop()

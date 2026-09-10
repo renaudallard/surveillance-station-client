@@ -149,7 +149,7 @@ def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespa
         _set_history_position=lambda slot, pos: None,
     )
     page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
-    page._resume_all_slots = lambda: LiveView._resume_all_slots(page)  # type: ignore[arg-type]
+    page._resume_all_slots = lambda **kw: LiveView._resume_all_slots(page, **kw)  # type: ignore[arg-type]
     return page
 
 
@@ -445,3 +445,50 @@ class TestOfflineCard:
         page._leaving_history_slots = set()
         LiveView._sync_history_active(page)  # type: ignore[arg-type]
         assert page.timeline.called("set_history_active") == [(False,), (True,)]
+
+
+class TestResumedPosition:
+    """Only the Play button puts a bridge's resumed position on the
+    timeline. The other paths settle the position themselves, and a
+    resume answers a main-loop turn later, so applying it there would
+    overwrite what they just decided."""
+
+    @pytest.fixture
+    def callbacks(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        callbacks: list[object] = []
+        monkeypatch.setattr(
+            liveview,
+            "run_async",
+            lambda coro, callback=None, error_callback=None: callbacks.append(callback),
+        )
+        return callbacks
+
+    @staticmethod
+    def _paused_page() -> tuple[SimpleNamespace, _Calls]:
+        slot = _slot(bridge=_bridge(history=True))
+        page = _page(True, [slot], active=[0])
+        page.positions = []
+        page._set_history_position = lambda s, pos: page.positions.append((s, pos))
+        page._apply_resumed_position = lambda s, pos: LiveView._apply_resumed_position(page, s, pos)  # type: ignore[arg-type]
+        return page, slot
+
+    def test_play_applies_the_resumed_position(self, callbacks: list[object]) -> None:
+        page, slot = self._paused_page()
+        page._pause_all_slots = lambda: None
+        LiveView._on_timeline_pause_play(page, None)  # type: ignore[arg-type]
+        assert callbacks and callbacks[0] is not None
+        callbacks[0](1_700_000_042)  # type: ignore[operator]
+        assert page.positions == [(slot, 1_700_000_042)]
+
+    def test_a_live_bridge_reports_no_position_to_apply(self, callbacks: list[object]) -> None:
+        page, _slot_obj = self._paused_page()
+        page._pause_all_slots = lambda: None
+        LiveView._on_timeline_pause_play(page, None)  # type: ignore[arg-type]
+        callbacks[0](None)  # type: ignore[operator]
+        assert page.positions == []
+
+    def test_the_other_paths_ask_for_no_position_callback(self, callbacks: list[object]) -> None:
+        page, _slot_obj = self._paused_page()
+        LiveView._resume_all_slots(page)  # type: ignore[arg-type]
+        assert callbacks == [None]
+        assert page.positions == []

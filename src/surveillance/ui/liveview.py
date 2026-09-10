@@ -2011,7 +2011,7 @@ class LiveView(Gtk.Box):
         every active slot, the same scope as Back/Forward 10s and
         Live."""
         if self._timeline_paused:
-            self._resume_all_slots()
+            self._resume_all_slots(apply_resumed_position=True)
         else:
             self._pause_all_slots()
 
@@ -2075,14 +2075,20 @@ class LiveView(Gtk.Box):
             if slot._rtsp_monitor is not None:
                 slot._rtsp_monitor.set_paused(False)
 
-    def _resume_all_slots(self) -> None:
-        """Undo _pause_all_slots for every active slot. A History
-        slot's resumed position can land later than where it was
-        paused (WebSocketBridge.resume's own wall-clock floor), hence
-        still updating _set_history_position here rather than assuming
-        the frozen marker was already correct. A no-op for the bridges
-        when nothing was paused, so every path that must not leave a
-        Pause behind can call it without checking first."""
+    def _resume_all_slots(self, *, apply_resumed_position: bool = False) -> None:
+        """Undo _pause_all_slots for every active slot. A no-op for the
+        bridges when nothing was paused, so every path that must not
+        leave a Pause behind can call it without checking first.
+
+        *apply_resumed_position* puts where a History bridge actually
+        resumed on the timeline, since that can land later than where
+        the pause froze it (WebSocketBridge.resume's own wall-clock
+        floor). Only the Play button wants it. The other callers -- the
+        Live button, a seek, a layout switch -- settle the position
+        themselves, and a resume answers a turn of the main loop later,
+        so applying it there would overwrite what they had just decided
+        with where playback stood before the resume.
+        """
         was_paused = self._timeline_paused
         self._end_timeline_pause()
         if not was_paused:
@@ -2094,13 +2100,19 @@ class LiveView(Gtk.Box):
             camera_name = slot.camera.name
             run_async(
                 slot._ws_bridge.resume(),
-                callback=lambda pos, s=slot: (
-                    self._set_history_position(s, pos) if pos is not None else None
-                ),
+                callback=partial(self._apply_resumed_position, slot)
+                if apply_resumed_position
+                else None,
                 error_callback=lambda exc, name=camera_name: log.error(
                     "Resume failed for %s: %s", name, exc
                 ),
             )
+
+    def _apply_resumed_position(self, slot: CameraSlot, position: int | None) -> None:
+        """Reflect where *slot*'s bridge resumed. None for a Live bridge,
+        which has no position of its own."""
+        if position is not None:
+            self._set_history_position(slot, position)
 
     def _on_timeline_speed_selected(self, value: str) -> None:
         """Timeline's speed dropdown — applies to every active History

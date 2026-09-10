@@ -355,3 +355,56 @@ class TestLayoutRestore:
         LiveView.set_layout(page, "1x1")  # type: ignore[arg-type]
         assert page.handed == frozenset({0, 1, 4, 5})
         assert page._current_layout == "1x1"
+
+
+class TestSeekSupersession:
+    """A seek waiting its turn in the stagger is dropped once a newer
+    seek or a layout switch has moved its slot's generation on."""
+
+    @pytest.fixture
+    def launched(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        launched: list[object] = []
+        monkeypatch.setattr(
+            liveview,
+            "run_async",
+            lambda coro, callback=None, error_callback=None: launched.append(coro),
+        )
+        monkeypatch.setattr(liveview, "find_recording_at", lambda api, cam, t: "lookup")
+        return launched
+
+    @staticmethod
+    def _page(generations: dict[int, int]) -> SimpleNamespace:
+        page = SimpleNamespace(
+            app=SimpleNamespace(api=object()),
+            _slot_seek_generation=generations,
+            finished=[],
+        )
+        page._finish_timeline_seek = page.finished.append
+        return page
+
+    def test_a_current_generation_looks_the_recording_up(self, launched: list[object]) -> None:
+        page = self._page({3: 7})
+        slot = _slot()
+        slot.index = 3
+        LiveView._seek_slot_to_time(page, slot, 1_700_000_000, 7)  # type: ignore[arg-type]
+        assert launched == ["lookup"]
+        assert page.finished == []
+
+    def test_a_stale_generation_is_dropped_and_released(self, launched: list[object]) -> None:
+        page = self._page({3: 8})
+        slot = _slot()
+        slot.index = 3
+        LiveView._seek_slot_to_time(page, slot, 1_700_000_000, 7)  # type: ignore[arg-type]
+        assert launched == []
+        assert page.finished == [3]
+
+    def test_a_layout_switch_forgets_every_generation(self, launched: list[object]) -> None:
+        page = self._page({3: 8})
+        slot = _slot()
+        slot.index = 3
+        # The part of _apply_layout that matters here, run against the
+        # same dict the seek reads.
+        page._slot_seek_generation.clear()
+        LiveView._seek_slot_to_time(page, slot, 1_700_000_000, 8)  # type: ignore[arg-type]
+        assert launched == []
+        assert page.finished == [3]

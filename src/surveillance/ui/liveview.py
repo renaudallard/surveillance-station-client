@@ -890,6 +890,13 @@ class LiveView(Gtk.Box):
         # otherwise show a frozen picture under whatever camera a later
         # layout puts on it, with the toolbar reading "playing".
         self._end_timeline_pause()
+        # A seek still resolving belongs to the outgoing layout too. Its
+        # lookups land over the next seconds, staggered, and one for a
+        # slot this switch hides would open a History session nobody
+        # sees, then flip the toolbar into History mode over a layout
+        # that is all Live. Forgetting every slot's generation makes each
+        # of those results stale on arrival.
+        self._slot_seek_generation.clear()
         new_active = list(LAYOUT_VISIBLE[self._current_layout])
         self._select_slot(None)
 
@@ -1782,6 +1789,13 @@ class LiveView(Gtk.Box):
         keeps playing recorded video for the newly picked camera too,
         at the same point in time, rather than silently dropping back
         to live -- its own fresh generation, a batch of one)."""
+        if generation != self._slot_seek_generation.get(slot.index):
+            # Superseded while waiting its turn in the stagger, by a
+            # newer seek or a layout switch: the lookup would only be
+            # discarded on arrival, so skip it, but release the nudge
+            # tracking the way a discarded result does.
+            self._finish_timeline_seek(slot.index)
+            return
         if not self.app.api or slot.camera is None:
             return
         api = self.app.api

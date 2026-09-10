@@ -152,6 +152,21 @@ writes to a fresh, timestamped file under
 set) and marks it complete on a clean exit. Files marked complete are
 deleted by the next run that also passes a bare `--log-file`. Unmarked
 files left over from crashes are kept for inspection.
+
+Two environment variables reach the embedded mpv player. `SURVEILLANCE_AO`
+picks its audio output driver (see the AppImage note above), and
+`SURVEILLANCE_MPV_OPTS` passes any other mpv options, whitespace-separated
+and written as `name=value` the way `mpv.conf` spells them, or a bare
+`name` for a flag. They are applied after the client's own options, so
+they override them:
+
+```sh
+SURVEILLANCE_MPV_OPTS="hwdec=nvdec hwdec-extra-frames=12" surveillance
+```
+
+Quote a value that contains whitespace as in a shell. A name mpv does not
+know stops the player from starting, and the log names it. See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) for when this is needed.
 </details>
 
 <details>

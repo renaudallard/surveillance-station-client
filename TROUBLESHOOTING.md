@@ -236,6 +236,45 @@ stream) and persist across restarts, in
 `~/.config/surveillance-station/config.toml`'s `[setting_overrides]`/
 `[setting_overrides_bool]` sections.
 
+## Ghosting or flicker with NVIDIA hardware decoding
+
+The picture smears, ghosts or flickers on some cameras, even in a 1x1
+layout, and the debug log fills with
+
+```
+mpv [ffmpeg/video] error: h264: No decoder surfaces left
+mpv [vd]: Error while decoding frame (hardware decoding)!
+mpv [ffmpeg/video] error: hevc: Could not find ref with POC 42
+```
+
+NVDEC decodes into a fixed pool of surfaces. ffmpeg sizes it from the
+buffering the stream declares and mpv adds a few spares, but a camera
+that reorders frames deeper than it declared (with a Dahua camera,
+ffmpeg logs `Increasing reorder buffer to 13` or more) pins more
+surfaces than that. The decoder runs out, drops the frame and paints
+the next ones from references it no longer has. mpv's
+`hwdec-extra-frames` option enlarges the pool; pass it through the
+environment:
+
+```sh
+SURVEILLANCE_MPV_OPTS="hwdec-extra-frames=12" surveillance
+```
+
+The right value depends on the GPU, which is why it is not a default. On
+an NVIDIA GB10 with driver 580, 12 ran a 4x4 grid with six H.265 cameras
+without a single surface error, while 32 pushed HEVC past NVDEC's surface
+limit: the decoder could not be created and mpv fell back to software
+decoding without saying so. Raise it in small steps and stop at the first
+value where the errors go away.
+
+`SURVEILLANCE_MPV_OPTS` takes any other mpv option the same way,
+whitespace-separated and written as they would be in `mpv.conf`, applied
+after the client's own options so they override them: `hwdec=nvdec` pins
+the decoder, `hwdec=no` turns hardware decoding off to rule it out. A
+bare name is a flag, a value containing whitespace is quoted as in a
+shell, and a name mpv does not know stops the player from starting, with
+the log naming it.
+
 ## Recording playback never starts
 
 The player dialog opens, the video area stays black, and after seven seconds
@@ -248,7 +287,9 @@ Likely causes:
 2. **H.265 without hardware decoding** - BC500 records in H.265 by default.
    Run `mpv --hwdec=auto <stream-url>` to verify hardware decoding works,
    or switch the camera to H.264 in Surveillance Station
-   (*IP Camera > Edit > Video > Codec*).
+   (*IP Camera > Edit > Video > Codec*). The client's `hwdec=auto` can be
+   overridden with `SURVEILLANCE_MPV_OPTS=hwdec=<api>`, see the NVIDIA
+   section above for the variable.
 3. **Missing codec** - install `libavcodec-extra` (or your distro's equivalent).
 4. **Download workaround** - the download button often succeeds when playback
    does not, since the file is decoded locally with the user's full codec set.

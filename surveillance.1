@@ -357,6 +357,25 @@ Left unset, mpv chooses for itself. The AppImage sets it to
 .I pulse
 where it has to run its own bundled PipeWire library, whose output driver
 would crash there; setting it explicitly overrides that.
+.TP
+.B SURVEILLANCE_MPV_OPTS
+Further options for the embedded mpv player, separated by whitespace and
+written as
+.I name=value
+the way
+.I mpv.conf
+spells them, or a bare
+.I name
+for a flag, as on mpv's command line. Quote a value containing whitespace
+as in a shell. They are applied after the client's own options and
+replace them by name, the driver chosen through
+.B SURVEILLANCE_AO
+included. A name mpv does not know stops the player from starting, and
+the log names it. For example
+.B hwdec=nvdec hwdec-extra-frames=12
+picks NVIDIA decoding and enlarges its surface pool; see
+.I TROUBLESHOOTING.md
+for when that is needed.
 .SH TROUBLESHOOTING
 See
 .I TROUBLESHOOTING.md

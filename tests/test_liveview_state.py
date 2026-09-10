@@ -297,3 +297,61 @@ class TestStreamStartedUnderPause:
             assert slot.player.called("play") == [("rtsp://cam/stream",)]
         finally:
             monitor.stop()
+
+
+class TestLayoutRestore:
+    """A layout switch leaves a slot alone when the incoming layout keeps
+    the camera it already streams; everything else starts afresh."""
+
+    @staticmethod
+    def _page(active: list[int], saved: list[int], held: dict[int, int]) -> SimpleNamespace:
+        cameras = [SimpleNamespace(id=i, name=f"cam{i}") for i in range(1, 10)]
+        slots = [_slot() for _ in range(16)]
+        for i, slot in enumerate(slots):
+            slot.index = i
+            slot.camera = SimpleNamespace(id=held[i], name=f"cam{held[i]}") if i in held else None
+        page = SimpleNamespace(
+            _active=active,
+            _slots=slots,
+            _current_layout="2x2",
+            _streams_paused=False,
+            _cameras=cameras,
+            app=SimpleNamespace(config=SimpleNamespace(layout_cameras={"2x2": saved})),
+            window=SimpleNamespace(sidebar=SimpleNamespace(cameras=cameras)),
+            started=[],
+            cleared=[],
+        )
+        page._restore_saved_audio_state = lambda slot, cam: None
+        page._update_slot_audio = lambda slot, cam: None
+        page._load_slot_ptz_extras = lambda slot, cam: None
+        page._request_presence_refresh = lambda: None
+        page._start_stream = lambda idx, cam: page.started.append((idx, cam.id))
+        page._clear_slot = lambda slot: page.cleared.append(slot.index)
+        return page
+
+    def test_unchanged_streaming_slots_are_left_alone(self) -> None:
+        page = self._page(active=[0, 1, 4, 5], saved=[1, 2, 3, 4], held={0: 1, 1: 2, 2: 3})
+        LiveView._restore_layout_cameras(page, frozenset({0, 1, 2}))  # type: ignore[arg-type]
+        assert page.started == [(4, 3), (5, 4)]
+        assert page._slots[0].called("assign") == []
+        assert page._slots[4].called("assign") != []
+
+    def test_a_hidden_slot_holding_the_camera_starts_afresh(self) -> None:
+        page = self._page(active=[0, 1, 4, 5], saved=[1, 2, 3, 4], held={0: 1, 1: 2})
+        LiveView._restore_layout_cameras(page, frozenset({4, 5}))  # type: ignore[arg-type]
+        assert [idx for idx, _ in page.started] == [0, 1, 4, 5]
+
+    def test_a_slot_changing_camera_is_restarted(self) -> None:
+        page = self._page(active=[0, 1, 4, 5], saved=[2, 1, 3, 4], held={0: 1, 1: 2})
+        LiveView._restore_layout_cameras(page, frozenset({0, 1}))  # type: ignore[arg-type]
+        assert page.started == [(0, 2), (1, 1), (4, 3), (5, 4)]
+
+    def test_set_layout_hands_over_the_outgoing_active_slots(self) -> None:
+        page = SimpleNamespace(_current_layout="2x2", _active=[0, 1, 4, 5], handed=None)
+        page._save_layout_cameras = lambda: None
+        page._apply_layout = lambda: setattr(page, "_active", [0])
+        page._restore_layout_cameras = lambda streaming: setattr(page, "handed", streaming)
+        page._save_session = lambda: None
+        LiveView.set_layout(page, "1x1")  # type: ignore[arg-type]
+        assert page.handed == frozenset({0, 1, 4, 5})
+        assert page._current_layout == "1x1"

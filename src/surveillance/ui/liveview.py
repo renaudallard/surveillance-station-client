@@ -2222,10 +2222,13 @@ class LiveView(Gtk.Box):
             return
         # Save current layout's cameras before switching
         self._save_layout_cameras()
+        # The slots streaming under the outgoing layout: a camera the
+        # incoming one keeps in the same slot is left running there.
+        streaming = frozenset(self._active)
         self._current_layout = layout
         self._apply_layout()
         # Restore the new layout's saved cameras
-        self._restore_layout_cameras()
+        self._restore_layout_cameras(streaming)
         self._save_session()
 
     def _save_layout_cameras(self) -> None:
@@ -2237,12 +2240,21 @@ class LiveView(Gtk.Box):
         log.debug("layout_cameras save: [%s] = %s", self._current_layout, cam_ids)
         self.app.config.layout_cameras[self._current_layout] = cam_ids
 
-    def _restore_layout_cameras(self) -> None:
+    def _restore_layout_cameras(self, streaming: frozenset[int] = frozenset()) -> None:
         """Restore saved camera assignments for the current layout.
 
         Layouts are independent: one with no saved assignment starts empty
         rather than inheriting whatever another layout had shown, since the
         16 physical slots are shared behind the scenes across layouts.
+
+        *streaming* names the slots whose stream is current, active under
+        the layout just left. One of those already showing the camera
+        this layout puts in it is left alone: restarting it blanked the
+        slot for a reconnect and spawned another ffmpeg, in the same
+        main-loop pass as every other slot's start, which on a switch to
+        4x4 is the burst described at _HISTORY_TRANSITION_STAGGER_MS. A
+        hidden slot still holds its last camera in memory but no stream,
+        so it is not in the set and starts afresh like any other.
         """
         cam_ids = self.app.config.layout_cameras.get(self._current_layout, [])
         log.debug("layout_cameras restore: [%s] = %s", self._current_layout, cam_ids)
@@ -2257,6 +2269,9 @@ class LiveView(Gtk.Box):
             cam_id = cam_ids[i] if i < len(cam_ids) else 0
             if cam_id and cam_id in cam_map and cam_id not in seen:
                 seen.add(cam_id)
+                shown = self._slots[phys].camera
+                if phys in streaming and shown is not None and shown.id == cam_id:
+                    continue
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._restore_saved_audio_state(self._slots[phys], cam)

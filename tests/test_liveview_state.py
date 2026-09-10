@@ -232,3 +232,68 @@ class TestTimelinePause:
         assert page._timeline_paused is False
         assert launched == ["resume"]
         assert page.timeline.canvas.called("ensure_visible") == [(1_700_000_000.0,)]
+
+
+class TestStreamStartedUnderPause:
+    """A stream that starts while the layout is paused joins the Pause:
+    its bridge or monitor is paused along with the player, so neither
+    reads the paused mpv as a stream that died."""
+
+    @pytest.fixture
+    def launched(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        launched: list[object] = []
+        monkeypatch.setattr(
+            liveview,
+            "run_async",
+            lambda coro, callback=None, error_callback=None: launched.append(coro),
+        )
+        return launched
+
+    @staticmethod
+    def _bridge_page(paused: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            _timeline_paused=paused,
+            _leaving_history_slots=set(),
+            _timeline_speed="1",
+            _set_history_position=lambda slot, pos: None,
+            _on_stream_gave_up=lambda *args: None,
+        )
+
+    def test_new_bridge_is_paused_first(self, launched: list[object]) -> None:
+        bridge = _Calls(
+            is_history=False,
+            pause=lambda: "pause",
+            start=lambda: "start",
+            wait_closed=lambda: "wait_closed",
+        )
+        slot = _slot()
+        page = self._bridge_page(paused=True)
+        page._pause_bridge = lambda s: LiveView._pause_bridge(page, s)  # type: ignore[arg-type]
+        LiveView._start_bridge(page, slot, bridge)  # type: ignore[arg-type]
+        assert bridge.called("request_pause") == [()]
+        assert launched == ["pause", "start", "wait_closed"]
+
+    def test_new_bridge_is_left_alone_without_a_pause(self, launched: list[object]) -> None:
+        bridge = _Calls(
+            is_history=False,
+            pause=lambda: "pause",
+            start=lambda: "start",
+            wait_closed=lambda: "wait_closed",
+        )
+        page = self._bridge_page(paused=False)
+        LiveView._start_bridge(page, _slot(), bridge)  # type: ignore[arg-type]
+        assert bridge.called("request_pause") == []
+        assert launched == ["start", "wait_closed"]
+
+    @pytest.mark.parametrize("paused", [True, False])
+    def test_new_rtsp_monitor_follows_the_pause(self, paused: bool) -> None:
+        slot = _slot()
+        page = self._bridge_page(paused)
+        LiveView._start_rtsp_monitor(page, slot, "rtsp://cam/stream")  # type: ignore[arg-type]
+        monitor = slot._rtsp_monitor
+        assert isinstance(monitor, liveview.RtspHealthMonitor)
+        try:
+            assert monitor._paused is paused
+            assert slot.player.called("play") == [("rtsp://cam/stream",)]
+        finally:
+            monitor.stop()

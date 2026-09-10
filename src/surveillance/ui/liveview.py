@@ -2012,33 +2012,37 @@ class LiveView(Gtk.Box):
             slot = self._slots[slot_idx]
             if slot.camera is None:
                 continue
-            if slot._ws_bridge is not None:
-                # Synchronously, before mpv -- see request_pause's own
-                # docstring for the write-stall race this closes.
-                slot._ws_bridge.request_pause()
+            # Bridge and monitor before mpv: see request_pause's own
+            # docstring for the write-stall race this closes, and
+            # RtspHealthMonitor.set_paused's for the monitor's own
+            # version of it, where a frozen time_pos reads as the
+            # stream having died.
+            self._pause_bridge(slot)
             if slot._rtsp_monitor is not None:
-                # Also before mpv -- same idea as request_pause: its
-                # own stall detection must already know a pause is
-                # deliberate before mpv.pause stops time_pos advancing,
-                # or it reads the frozen clock as the stream having
-                # died (see RtspHealthMonitor.set_paused's docstring).
                 slot._rtsp_monitor.set_paused(True)
             # The local freeze applies regardless of protocol -- a
             # camera on RTSP/mjpeg/etc. has no _ws_bridge at all, but
             # mpv is still what's rendering it either way.
             slot.player.set_paused(True)
-            if slot._ws_bridge is None:
-                continue
-            camera_name = slot.camera.name
-            run_async(
-                slot._ws_bridge.pause(),
-                callback=lambda pos, s=slot: (
-                    self._set_history_position(s, pos) if pos is not None else None
-                ),
-                error_callback=lambda exc, name=camera_name: log.error(
-                    "Pause failed for %s: %s", name, exc
-                ),
-            )
+
+    def _pause_bridge(self, slot: CameraSlot) -> None:
+        """Pause *slot*'s bridge: request_pause() synchronously first,
+        the rest of pause() on the loop, and a History bridge's frozen
+        position reflected on the timeline once it is known."""
+        bridge = slot._ws_bridge
+        if bridge is None or slot.camera is None:
+            return
+        bridge.request_pause()
+        camera_name = slot.camera.name
+        run_async(
+            bridge.pause(),
+            callback=lambda pos, s=slot: (
+                self._set_history_position(s, pos) if pos is not None else None
+            ),
+            error_callback=lambda exc, name=camera_name: log.error(
+                "Pause failed for %s: %s", name, exc
+            ),
+        )
 
     def _end_timeline_pause(self) -> None:
         """Drop a timeline Pause without resuming any bridge: the flag,
@@ -2666,6 +2670,14 @@ class LiveView(Gtk.Box):
         if not self.app.api:
             return
 
+        # A stream starting while the layout is paused (a camera picked
+        # into a slot, a status flip, a protocol change, a retry) joins
+        # the Pause: this slot's own player may never have been paused,
+        # and mpv keeps its pause across play() either way, so the
+        # bridge or monitor started below has to know too, or it reads
+        # the paused player as a dead stream (see _pause_all_slots).
+        slot.player.set_paused(self._timeline_paused)
+
         api = self.app.api
         protocol = self.app.config.camera_protocols.get(camera.id, "auto")
         override = self.app.config.camera_overrides.get(camera.id, "")
@@ -2786,6 +2798,8 @@ class LiveView(Gtk.Box):
         # the pipe is even ready -- a slot mid-History-connect has no
         # live camera under it any more than one already playing does.
         slot.set_history_mode(bridge.is_history)
+        if self._timeline_paused:
+            self._pause_bridge(slot)
         if not bridge.is_history:
             # Defensive: covers every path back to Live, not just the
             # Live button (already clears this itself) -- e.g. a slot
@@ -2880,6 +2894,8 @@ class LiveView(Gtk.Box):
             on_gave_up=lambda reason: self._on_stream_gave_up(slot_idx, cam_id, monitor, reason),
             on_recovered=lambda: self._on_stream_recovered(slot_idx, cam_id, monitor),
         )
+        if self._timeline_paused:
+            monitor.set_paused(True)
         slot._rtsp_monitor = monitor
 
     def _on_stream_recovered(self, slot_idx: int, cam_id: int, monitor: RtspHealthMonitor) -> None:

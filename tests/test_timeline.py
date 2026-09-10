@@ -32,11 +32,13 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
+from itertools import pairwise
 
 import pytest
 
 from surveillance.ui.timeline import (
     _MAX_WINDOW_SECONDS,
+    _MIN_LABEL_SPACING_PX,
     _MIN_WINDOW_SECONDS,
     clamp_to_live,
     compute_zoom,
@@ -278,8 +280,38 @@ class TestRulerTicks:
         for end in (datetime(2026, 1, 15, 12, 0), datetime(2026, 7, 15, 12, 0)):
             labels = _labels(end, 86400)
             assert labels[0] == "12:00"
-            assert all(int(label[:2]) % 2 == 0 for label in labels), labels
             assert len(labels) == 13
+            dated = [label for label in labels if "-" in label]
+            times = [label for label in labels if "-" not in label]
+            # One midnight in a 24-hour window, carrying the date.
+            assert dated == [end.strftime("%m-%d")], labels
+            assert all(int(label[:2]) % 2 == 0 for label in times), labels
+
+    def test_a_window_spanning_midnight_never_repeats_a_label_in_a_row(self) -> None:
+        """A bare "12:00" sits on both sides of midnight at the wider
+        steps; the dated tick between them is what tells them apart."""
+        end = datetime(2026, 9, 10, 12, 0)
+        labels = _labels(end, 36 * 3600, width=400)
+        assert "09-10" in labels
+        assert all(a != b for a, b in pairwise(labels)), labels
+
+    def test_no_two_labels_in_a_row_are_the_same_at_any_size(self) -> None:
+        """Swept across every window the timeline allows and the widths a
+        real window spans, since the label format has to stay legible at
+        all of them."""
+        window = float(_MIN_WINDOW_SECONDS)
+        while window <= _MAX_WINDOW_SECONDS:
+            for width in (400, 700, 1000, 1600, 2560):
+                step = pick_tick_step(window, width)
+                ticks = list(tick_times(1_700_000_000 - window, 1_700_000_000, step))
+                labels = [tick_label(tick, step) for tick in ticks]
+                assert all(a != b for a, b in pairwise(labels)), (
+                    window,
+                    width,
+                    labels,
+                )
+                assert width / (window / step) >= _MIN_LABEL_SPACING_PX, (window, width, step)
+            window *= 1.15
 
     def test_sub_minute_ticks_carry_seconds(self) -> None:
         labels = _labels(datetime(2026, 9, 10, 12, 3, 0), 180)

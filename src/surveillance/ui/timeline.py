@@ -255,9 +255,16 @@ def tick_times(start: float, end: float, step: int) -> Iterator[datetime]:
 
 
 def tick_label(tick: datetime, step: int) -> str:
-    """What the ruler writes under a tick: the date at a day-scale step,
-    seconds included below a minute, where "%H:%M" alone repeats."""
-    if step >= _DAY_SECONDS:
+    """What the ruler writes under a tick.
+
+    The date wherever a tick lands on midnight, and the time otherwise,
+    with seconds below a minute where "%H:%M" alone repeats. A window
+    can span more than a day at any step from six hours up, and a bare
+    "12:00" on either side of midnight says nothing about which day it
+    belongs to; the dated tick between them does. Every tick of a
+    day-scale step is a midnight, so those are all dates.
+    """
+    if (tick.hour, tick.minute, tick.second) == (0, 0, 0):
         return tick.strftime("%m-%d")
     if step < 60:
         return tick.strftime("%H:%M:%S")

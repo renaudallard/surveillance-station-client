@@ -422,9 +422,11 @@ class AdvancedSearchDialog(Gtk.Window):
         time_str = time_entry.get_text().strip() or default_time
         try:
             hour, minute, second = map(int, time_str.split(":"))
+            return datetime(year, month, day, hour, minute, second)
         except ValueError:
-            hour, minute, second = 0, 0, 0
-        return datetime(year, month, day, hour, minute, second)
+            # Not three numbers, or a field out of range ("24:00:00"):
+            # midnight, the same as an unparseable entry has always meant.
+            return datetime(year, month, day)
 
     def _get_selected_camera_ids(self) -> list[int] | None:
         """Return selected camera IDs, or None for all cameras.

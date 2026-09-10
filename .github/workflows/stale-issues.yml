@@ -43,24 +43,18 @@ jobs:
 
               // Find last non-bot activity
               let lastActivity = new Date(issue.created_at);
-              let reminders = 0;
-
               for (const c of comments) {
                 if (c.user.type === 'Bot' || c.body.includes('<!-- stale-reminder')) {
-                  if (c.body.includes('<!-- stale-reminder')) {
-                    reminders++;
-                  }
                   continue;
                 }
                 const d = new Date(c.created_at);
                 if (d > lastActivity) {
                   lastActivity = d;
-                  reminders = 0;  // Reset — count only reminders after last human comment
                 }
               }
 
-              // Re-count reminders after last human activity
-              reminders = 0;
+              // Reminders posted since that activity
+              let reminders = 0;
               for (const c of comments) {
                 if (new Date(c.created_at) > lastActivity && c.body.includes('<!-- stale-reminder')) {
                   reminders++;

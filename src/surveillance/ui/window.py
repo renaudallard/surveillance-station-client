@@ -100,8 +100,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.stack.set_visible_child_name("live")
         self.headerbar.set_page("live")
 
-        # Selected camera
-        self.selected_camera: Camera | None = None
         self._homemode_poll_id: int = 0
         self._alerts_poll_id: int = 0
 
@@ -419,7 +417,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def on_camera_selected(self, camera: Camera) -> None:
         """Handle camera selection from sidebar."""
-        self.selected_camera = camera
         log.info("Selected camera: %s (id=%d)", camera.name, camera.id)
 
         # Notify the current visible page

@@ -67,7 +67,6 @@ class LicensesView(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.app = window.app
-        self._license_info: LicenseInfo | None = None
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -119,7 +118,6 @@ class LicensesView(Gtk.Box):
         )
 
     def _on_licenses_loaded(self, info: LicenseInfo) -> None:
-        self._license_info = info
         self.summary_label.set_label(f"{info.key_used} / {info.key_total} used, max {info.key_max}")
 
         # Clear old rows

@@ -73,7 +73,6 @@ class RecordingsView(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.app = window.app
-        self._recordings: list[Recording] = []
         self._total = 0
         self._offset = 0
         self._camera_id: int | None = None
@@ -487,7 +486,6 @@ class RecordingsView(Gtk.Box):
             self._load_recordings()
             return
         recordings, total = result
-        self._recordings = recordings
         self._total = total
         log.debug("Loaded %d recordings (total=%d)", len(recordings), total)
 

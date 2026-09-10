@@ -75,8 +75,6 @@ class TimeLapseView(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.app = window.app
-        self._recordings: list[TimeLapseRecording] = []
-        self._tasks: list[TimeLapseTask] = []
         self._total = 0
         self._offset = 0
         self._task_id: int = -1  # -1 = all tasks
@@ -167,7 +165,6 @@ class TimeLapseView(Gtk.Box):
         )
 
     def _on_tasks_loaded(self, tasks: list[TimeLapseTask]) -> None:
-        self._tasks = tasks
         # Rebuild combo, keeping current selection
         current = self.task_combo.get_active_id()
         self.task_combo.handler_block_by_func(self._on_filter_changed)
@@ -245,7 +242,6 @@ class TimeLapseView(Gtk.Box):
             self._load_recordings()
             return
         recordings, total = result
-        self._recordings = recordings
         self._total = total
         log.debug("Loaded %d time lapse recordings (total=%d)", len(recordings), total)
 

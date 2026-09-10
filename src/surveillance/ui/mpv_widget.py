@@ -326,32 +326,37 @@ class MpvGLArea(Gtk.GLArea):
             for item in os.environ.get("SURVEILLANCE_MPV_OPTS", "").split(","):
                 if "=" in item:
                     name, value = item.split("=", 1)
-                    extra_opts[name.strip().replace("-", "_")] = value.strip()
+                    extra_opts[name.strip()] = value.strip()
             if extra_opts:
                 log.info("Extra mpv options from SURVEILLANCE_MPV_OPTS: %s", extra_opts)
 
-            self._mpv = mpv.MPV(
-                vo="libmpv",
-                hwdec=hwdec,
-                keep_open="yes",
-                idle="yes",
-                input_default_bindings=False,
-                input_vo_keyboard=False,
-                log_handler=self._mpv_log,
+            # The client's own options, spelled as mpv spells them, so an
+            # entry from SURVEILLANCE_MPV_OPTS naming one replaces it here
+            # rather than reaching the constructor as a second keyword
+            # argument of the same name, which Python refuses before mpv
+            # sees anything.
+            options: dict[str, Any] = {
+                "vo": "libmpv",
+                "hwdec": hwdec,
+                "keep-open": "yes",
+                "idle": "yes",
+                "input-default-bindings": False,
+                "input-vo-keyboard": False,
                 # A minimum level, not a filter: at "fatal" libmpv delivers
                 # nothing else, so _mpv_log's error and warn branches could
                 # never run and mpv was silent about every problem short of
                 # a fatal one. It writes nothing to stderr either, terminal
                 # being off, so this handler is the only way its diagnostics
                 # reach a log at all.
-                loglevel="debug" if log.isEnabledFor(logging.DEBUG) else "warn",
-                demuxer_lavf_o="rtsp_transport=tcp",
-                tls_verify=self._tls_verify,
-                mute=self._muted,
-                volume=self._volume,
+                "loglevel": "debug" if log.isEnabledFor(logging.DEBUG) else "warn",
+                "demuxer-lavf-o": "rtsp_transport=tcp",
+                "tls-verify": self._tls_verify,
+                "mute": self._muted,
+                "volume": self._volume,
                 **ao_option,
-                **extra_opts,
-            )
+            }
+            options.update(extra_opts)
+            self._mpv = mpv.MPV(log_handler=self._mpv_log, **options)
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches
             self._proc_addr_fn = mpv.MpvGlGetProcAddressFn(_get_gl_proc_address)

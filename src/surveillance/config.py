@@ -478,14 +478,6 @@ def add_profile(config: AppConfig, profile: ConnectionProfile) -> None:
     save_config_now(config)
 
 
-def remove_profile(config: AppConfig, name: str) -> None:
-    """Remove a connection profile."""
-    config.profiles.pop(name, None)
-    if config.default_profile == name:
-        config.default_profile = next(iter(config.profiles), "")
-    save_config_now(config)
-
-
 def load_search_filters(
     cfg: AppConfig, prefix: str
 ) -> tuple[list[int] | None, int | None, int | None, str]:

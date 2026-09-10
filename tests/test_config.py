@@ -38,7 +38,6 @@ from surveillance.config import (
     _write_config,
     add_profile,
     load_config,
-    remove_profile,
 )
 
 
@@ -302,17 +301,3 @@ class TestAddRemoveProfile:
 
         assert config.default_profile == "nas1"
         assert "nas1" in config.profiles
-
-    def test_remove_profile_updates_default(self, tmp_path: Path, monkeypatch: object) -> None:
-        import surveillance.config as cfg
-
-        monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
-        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
-
-        config = AppConfig(default_profile="nas1")
-        config.profiles["nas1"] = ConnectionProfile(name="nas1", host="10.0.0.1")
-        config.profiles["nas2"] = ConnectionProfile(name="nas2", host="10.0.0.2")
-
-        remove_profile(config, "nas1")
-        assert "nas1" not in config.profiles
-        assert config.default_profile == "nas2"

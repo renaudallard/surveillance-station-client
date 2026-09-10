@@ -1927,16 +1927,18 @@ class LiveView(Gtk.Box):
 
         The toolbar's History-only controls are switched on by whatever
         seek entered History and off by the Live button. A slot that
-        leaves History without going through either -- cleared, or
-        restarted live by resume_streams after a page switch -- left
-        them on with nothing behind them. Deliberately not used in
-        _return_all_to_live, which turns them off while the outgoing
-        bridges are still alive (their replacement is staggered), and
-        so would read as still-in-History here.
+        leaves History without going through either -- cleared, dropped
+        to the offline card, or restarted live by resume_streams after
+        a page switch -- left them on with nothing behind them. A slot
+        _return_all_to_live has told to leave is skipped: its old bridge
+        stays alive until the staggered replacement lands, and would
+        otherwise count as still in History.
         """
         if not hasattr(self, "timeline"):
             return  # still constructing -- see _return_all_to_live
-        bridges = (self._slots[i]._ws_bridge for i in self._active)
+        bridges = (
+            self._slots[i]._ws_bridge for i in self._active if i not in self._leaving_history_slots
+        )
         self.timeline.set_history_active(any(b is not None and b.is_history for b in bridges))
 
     def _focus_reference_time(self) -> float:
@@ -2684,6 +2686,13 @@ class LiveView(Gtk.Box):
             slot._stream_lost = False  # showing "offline", not a lost stream
             slot.stop_stream()
             slot.stop_ptt()  # the camera is not reachable to talk to either
+            # A History session playing here went with the stream, so
+            # its position goes too, or the timeline keeps drawing the
+            # grey History ruler and bubble for it, and Back 10s, the
+            # calendar and Download keep starting from where it was.
+            slot.set_history_mode(False)
+            self._set_history_position(slot, None)
+            self._sync_history_active()
             slot.player.reset_zoom()  # the placeholder card is never zoomed
             slot.set_status("offline")
             slot.player.play(OFFLINE_PLACEHOLDER_URL)

@@ -113,6 +113,8 @@ class _Calls:
     canvas: _Calls
     _ws_bridge: object
     _rtsp_monitor: object
+    _history_position: float | None
+    _stream_lost: bool
 
     def __init__(self, **attrs: object) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
@@ -408,3 +410,38 @@ class TestSeekSupersession:
         LiveView._seek_slot_to_time(page, slot, 1_700_000_000, 8)  # type: ignore[arg-type]
         assert launched == []
         assert page.finished == [3]
+
+
+class TestOfflineCard:
+    """A slot dropped to the offline card loses its History position,
+    and the toolbar's History-active state is re-derived."""
+
+    def test_offline_clears_the_history_position(self) -> None:
+        slot = _slot()
+        slot._history_position = 1_700_000_000.0
+        slot._stream_lost = True
+        page = SimpleNamespace(_slots=[slot], positions=[], synced=0)
+        page._set_history_position = lambda s, pos: page.positions.append((s, pos))
+        page._sync_history_active = lambda: setattr(page, "synced", page.synced + 1)
+        camera = SimpleNamespace(id=1, name="cam", status=liveview.CameraStatus.DISCONNECTED)
+        LiveView._start_stream(page, 0, camera)  # type: ignore[arg-type]
+        assert page.positions == [(slot, None)]
+        assert page.synced == 1
+        assert slot.called("set_history_mode") == [(False,)]
+        assert slot.player.called("play") == [(liveview.OFFLINE_PLACEHOLDER_URL,)]
+        assert slot._stream_lost is False
+
+    def test_history_active_ignores_a_slot_on_its_way_back_to_live(self) -> None:
+        leaving = _slot(bridge=_bridge(history=True))
+        staying = _slot(bridge=_bridge(history=False))
+        page = SimpleNamespace(
+            timeline=_Calls(),
+            _slots=[leaving, staying],
+            _active=[0, 1],
+            _leaving_history_slots={0},
+        )
+        LiveView._sync_history_active(page)  # type: ignore[arg-type]
+        assert page.timeline.called("set_history_active") == [(False,)]
+        page._leaving_history_slots = set()
+        LiveView._sync_history_active(page)  # type: ignore[arg-type]
+        assert page.timeline.called("set_history_active") == [(False,), (True,)]

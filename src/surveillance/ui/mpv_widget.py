@@ -275,6 +275,20 @@ def _mpv_options_from_env() -> tuple[list[str], dict[str, str]]:
     return flags, options
 
 
+def _start_option(offset: float) -> str:
+    """mpv's `start` for an offset of *offset* seconds, or for none.
+
+    "none" is what mpv reads as unset; "0" is a position like any other,
+    so it made the player seek to the beginning of every stream it
+    opened. A pipe cannot seek, so each one answered with "Cannot seek
+    in this stream" at error level and mpv fell back to playing from
+    wherever it already was. The option is sticky on a reused handle,
+    which is why an offset of none has to be written rather than left
+    alone: it clears the offset the previous recording set.
+    """
+    return str(offset) if offset else "none"
+
+
 class MpvGLArea(Gtk.GLArea):
     """GTK4 GLArea widget that renders mpv video via OpenGL.
 
@@ -394,7 +408,7 @@ class MpvGLArea(Gtk.GLArea):
             if self._url:
                 self._apply_playback_options()
                 self._restart_cache_control()
-                self._mpv["start"] = str(self._start_offset) if self._start_offset else "0"
+                self._mpv["start"] = _start_option(self._start_offset)
                 self._mpv.play(self._url)
 
         except Exception:
@@ -693,7 +707,7 @@ class MpvGLArea(Gtk.GLArea):
             try:
                 self._apply_playback_options()
                 self._restart_cache_control()
-                self._mpv["start"] = str(start_offset) if start_offset else "0"
+                self._mpv["start"] = _start_option(start_offset)
                 self._mpv.play(url)
             except Exception:
                 log.exception("Failed to play %s", url)

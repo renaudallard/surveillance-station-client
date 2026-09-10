@@ -68,16 +68,28 @@ class TestMpvOptionsFromEnv:
 
 
 class _FakeMPV:
-    """python-mpv's constructor, recording what it was handed."""
+    """python-mpv's constructor, recording what it was handed, plus the
+    option writes and the play() that follow it on the same handle."""
 
     calls: ClassVar[list[tuple[tuple[str, ...], dict[str, Any]]]] = []
 
     def __init__(self, *flags: str, **options: Any) -> None:
         self.calls.append((flags, options))
+        self.written: dict[str, Any] = {}
+        self.played: list[str] = []
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        self.written[name] = value
+
+    def __getitem__(self, name: str) -> Any:
+        return self.written[name]
+
+    def play(self, url: str) -> None:
+        self.played.append(url)
 
 
 def _constructed(
-    monkeypatch: pytest.MonkeyPatch, env: str | None
+    monkeypatch: pytest.MonkeyPatch, env: str | None, url: str | None = None
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
     """The flags and options _on_realize hands mpv.MPV with
     SURVEILLANCE_MPV_OPTS set to *env* (unset for None).
@@ -99,12 +111,23 @@ def _constructed(
         monkeypatch.setenv("SURVEILLANCE_MPV_OPTS", env)
 
     class _Widget:
+        _apply_playback_options = MpvGLArea._apply_playback_options
+        _restart_cache_control = MpvGLArea._restart_cache_control
+        _stop_cache_control = MpvGLArea._stop_cache_control
+        _tick_cache_control = MpvGLArea._tick_cache_control
+        _mpv: Any = None
         _tls_verify = True
         _muted = False
         _volume = 100
-        _url = None
+        _url = url
         _ctx = None
         _initialized = False
+        _low_latency = False
+        _muxed_audio = False
+        _history_speed = 1.0
+        _start_offset = 0.0
+        _cache_control_enabled = False
+        _cache_control_source = None
 
         def make_current(self) -> None:
             pass
@@ -123,7 +146,11 @@ def _constructed(
     MpvGLArea._on_realize(widget, widget)  # type: ignore[arg-type]
     assert widget._initialized, "mpv was never constructed"
     assert len(_FakeMPV.calls) == 1
+    _last_handle.append(widget._mpv)
     return _FakeMPV.calls[0]
+
+
+_last_handle: list[Any] = []
 
 
 class TestOnRealize:
@@ -146,3 +173,14 @@ class TestOnRealize:
         flags, options = _constructed(monkeypatch, "vd-lavc-fast hwdec-extra-frames=12")
         assert flags == ("vd-lavc-fast",)
         assert options["hwdec-extra-frames"] == "12"
+
+    def test_a_url_set_before_realization_asks_for_no_seek(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other place the start option is written: a slot given a
+        URL before its widget was realized plays it from here instead of
+        from play(), and a pipe cannot seek to the beginning either."""
+        _constructed(monkeypatch, None, url="fd://7")
+        handle = _last_handle[-1]
+        assert handle.played == ["fd://7"]
+        assert handle.written["start"] == "none"

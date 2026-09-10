@@ -45,6 +45,7 @@ from surveillance.ui.mpv_widget import (
     _cache_control_speed,
     _cache_target_seconds,
     _high_speed_cache_seconds,
+    _start_option,
 )
 
 
@@ -247,3 +248,85 @@ class TestCacheTargetSeconds:
     def test_high_history_speed_adds_the_high_speed_term(self) -> None:
         target = _cache_target_seconds(0.5, 100.0)
         assert target == pytest.approx(0.5 + _CACHE_HIGH_SPEED_MAX_SECONDS)
+
+
+class _PlayerRecorder(_Recorder):
+    """_Recorder plus the calls play() makes on the handle itself."""
+
+    played: list[str]
+
+    def __init__(self) -> None:
+        super().__init__()
+        object.__setattr__(self, "played", [])
+
+    def play(self, url: str) -> None:
+        self.played.append(url)
+
+
+def _widget(recorder: _PlayerRecorder) -> Any:
+    """A stand-in for a realized widget over *recorder*.
+
+    play() calls three of its own methods, so those are carried over
+    from the real class rather than stubbed: the point is what the whole
+    path writes to the handle.
+    """
+
+    class _Widget:
+        _apply_playback_options = MpvGLArea._apply_playback_options
+        _restart_cache_control = MpvGLArea._restart_cache_control
+        _stop_cache_control = MpvGLArea._stop_cache_control
+        _tick_cache_control = MpvGLArea._tick_cache_control
+
+        def __init__(self) -> None:
+            self._mpv = recorder
+            self._initialized = True
+            self._low_latency = False
+            self._muxed_audio = False
+            self._history_speed = 1.0
+            self._cache_control_enabled = False
+            self._cache_control_source = None
+
+    return _Widget()
+
+
+def _play(url: str = "fd://7", **kwargs: Any) -> _PlayerRecorder:
+    """The handle state left by one play(), on the same kind of stand-in
+    _applied uses: play() reads only these attributes."""
+
+    recorder = _PlayerRecorder()
+    MpvGLArea.play(_widget(recorder), url, **kwargs)  # type: ignore[arg-type]
+    return recorder
+
+
+class TestStartOption:
+    """mpv reads "none" as no start position and every other value as one,
+    so "0" asked it to seek to the beginning of a stream that cannot
+    seek, which it reported at error level on every stream this app
+    opened."""
+
+    def test_no_offset_leaves_the_start_unset(self) -> None:
+        assert _start_option(0) == "none"
+        assert _start_option(0.0) == "none"
+
+    def test_an_offset_is_a_position(self) -> None:
+        assert _start_option(12.5) == "12.5"
+        assert _start_option(1) == "1"
+
+    def test_play_without_an_offset_asks_for_no_seek(self) -> None:
+        recorder = _play()
+        assert recorder.options["start"] == "none"
+        assert recorder.played == ["fd://7"]
+
+    def test_play_with_an_offset_still_seeks_there(self) -> None:
+        """A recording opened at a moment within it: the offset is the
+        whole point, and that stream is seekable."""
+        recorder = _play(start_offset=42.0)
+        assert recorder.options["start"] == "42.0"
+
+    def test_a_reused_widget_drops_the_previous_offset(self) -> None:
+        """The option sticks on a handle, so a slot that played a
+        recording and then a live stream has to clear it."""
+        recorder = _play(start_offset=42.0)
+        assert recorder.options["start"] == "42.0"
+        MpvGLArea.play(_widget(recorder), "fd://9")  # type: ignore[arg-type]
+        assert recorder.options["start"] == "none"

@@ -846,8 +846,30 @@ class LiveView(Gtk.Box):
         self._overlay.set_clip_overlay(self._thumbnail_frame, False)
         self.append(self._overlay)
 
-        GLib.timeout_add(1000, self._check_timeline_focus_idle)
-        GLib.timeout_add(1000, self._tick_history_positions)
+        # Both tickers run only while this page is on screen, started on
+        # map and stopped on unmap like TimelineCanvas's own tick. A page
+        # another one covers is unmapped but stays realized, and a login
+        # builds a fresh LiveView in place of this one, so a timer bound
+        # to nothing would keep the old page alive and ticking for the
+        # rest of the process.
+        self._focus_idle_id = 0
+        self._history_tick_id = 0
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
+
+    def _on_map(self, _widget: Gtk.Widget) -> None:
+        if not self._focus_idle_id:
+            self._focus_idle_id = GLib.timeout_add(1000, self._check_timeline_focus_idle)
+        if not self._history_tick_id:
+            self._history_tick_id = GLib.timeout_add(1000, self._tick_history_positions)
+
+    def _on_unmap(self, _widget: Gtk.Widget) -> None:
+        if self._focus_idle_id:
+            GLib.source_remove(self._focus_idle_id)
+            self._focus_idle_id = 0
+        if self._history_tick_id:
+            GLib.source_remove(self._history_tick_id)
+            self._history_tick_id = 0
 
     # ------------------------------------------------------------------
     # Layout management

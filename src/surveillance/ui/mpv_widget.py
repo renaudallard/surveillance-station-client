@@ -254,6 +254,27 @@ def _get_gl_proc_address(_ctx: ctypes.c_void_p, name: bytes) -> int:
     return 0
 
 
+def _mpv_options_from_env() -> tuple[list[str], dict[str, str]]:
+    """Flags and options named in SURVEILLANCE_MPV_OPTS, for mpv.MPV().
+
+    Split like a shell command line, so a value keeps its commas
+    (hwdec=nvdec,vaapi is mpv's own list syntax) and one with whitespace
+    can be quoted. name=value sets an option and a bare name is a flag,
+    as on mpv's command line. Nothing is checked here: mpv refuses a
+    name it does not know when the handle is created, and _on_realize
+    logs that failure with the name in it.
+    """
+    flags: list[str] = []
+    options: dict[str, str] = {}
+    for item in shlex.split(os.environ.get("SURVEILLANCE_MPV_OPTS", "")):
+        name, sep, value = item.partition("=")
+        if sep:
+            options[name] = value
+        else:
+            flags.append(name)
+    return flags, options
+
+
 class MpvGLArea(Gtk.GLArea):
     """GTK4 GLArea widget that renders mpv video via OpenGL.
 
@@ -317,24 +338,10 @@ class MpvGLArea(Gtk.GLArea):
                 ao_option["ao"] = ao
                 log.info("Audio output driver set to %s", ao)
 
-            # SURVEILLANCE_MPV_OPTS passes extra mpv options as
-            # "name=value name=value", split like a shell command line so a
-            # value keeps its commas (hwdec=nvdec,vaapi is mpv's own list
-            # syntax) and one with whitespace can be quoted (e.g.
-            # "hwdec-extra-frames=12" when NVDEC reports "No decoder surfaces
-            # left" on streams with deep reorder buffers, or "hwdec=nvdec" to
-            # pick the decoder). A bare name is a flag, as on mpv's command
-            # line. Nothing is checked here: mpv refuses a name it does not
-            # know when the handle is created, and that lands in the log
-            # below with the name in it. Optional.
-            extra_flags: list[str] = []
-            extra_opts: dict[str, str] = {}
-            for item in shlex.split(os.environ.get("SURVEILLANCE_MPV_OPTS", "")):
-                name, sep, value = item.partition("=")
-                if sep:
-                    extra_opts[name] = value
-                else:
-                    extra_flags.append(name)
+            # Extra options from the environment, e.g. hwdec-extra-frames=12
+            # when NVDEC reports "No decoder surfaces left" on a stream with
+            # a deep reorder buffer, or hwdec=nvdec to pick the decoder.
+            extra_flags, extra_opts = _mpv_options_from_env()
             if extra_flags or extra_opts:
                 log.info(
                     "Extra mpv options from SURVEILLANCE_MPV_OPTS: %s %s", extra_flags, extra_opts

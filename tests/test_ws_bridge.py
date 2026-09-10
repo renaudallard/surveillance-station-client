@@ -1839,15 +1839,15 @@ class TestPauseResume:
         await bridge.stop()
 
     async def test_pause_suspends_the_idle_timeout_in_history_mode(
-        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+        self, fresh_connections: list[_FakeWS], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """pause() asks DSM to stop sending entirely -- the resulting
         silence must not be mistaken for a stalled connection and
-        reconnected out from under a deliberate pause."""
+        reconnected out from under a deliberate pause. Counted in
+        connections: the pump leaves a connection through its context
+        manager, which the fake's own closed flag never sees."""
         monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.05)
         rec = _recording()
-        fake = _FakeWS([_codec_frame()], hang=True)
-        connect(fake)
         bridge = WebSocketBridge(
             "wss://nas/stream",
             False,
@@ -1858,7 +1858,32 @@ class TestPauseResume:
         await bridge.start()
         await bridge.pause()
         await asyncio.sleep(0.3)  # several idle-timeout multiples
-        assert not fake.closed, "a deliberate pause must not trip the idle-stall reconnect"
+        assert len(fresh_connections) == 1, "a deliberate pause tripped the idle-stall reconnect"
+        assert bridge._error == ""
+        await bridge.stop()
+
+    async def test_pause_landing_on_a_pending_recv_does_not_reconnect(
+        self, fresh_connections: list[_FakeWS], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The idle timeout is armed at the top of each read; a pause()
+        arriving while a read already waits under it used to let that
+        read time out and reconnect, logging a stall the NAS never had,
+        and a pause soon after a connect counted toward giving up."""
+        monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.2)
+        rec = _recording()
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+        await asyncio.sleep(0.1)  # a recv() is now waiting under the timeout
+        await bridge.pause()
+        await asyncio.sleep(0.5)  # well past the timeout that recv() was armed with
+        assert len(fresh_connections) == 1, "the pending read timed out into a reconnect"
+        assert bridge._error == ""
         await bridge.stop()
 
     async def test_seek_within_same_recording_while_paused_explicitly_resumes(

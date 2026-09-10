@@ -1015,6 +1015,11 @@ class WebSocketBridge:
                     # video rather than another reconnect it can't use.
                     await self._expire_aac_detection()
                     continue
+                if self._paused and self.is_history:
+                    # pause() landed while this recv() was already waiting
+                    # under the idle timeout: the silence is what it asked
+                    # DSM for, and the next pass waits without a limit.
+                    continue
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None
             self._attempt_got_data = True

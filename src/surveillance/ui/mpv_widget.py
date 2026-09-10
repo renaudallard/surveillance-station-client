@@ -323,14 +323,22 @@ class MpvGLArea(Gtk.GLArea):
             # syntax) and one with whitespace can be quoted (e.g.
             # "hwdec-extra-frames=12" when NVDEC reports "No decoder surfaces
             # left" on streams with deep reorder buffers, or "hwdec=nvdec" to
-            # pick the decoder). Optional.
+            # pick the decoder). A bare name is a flag, as on mpv's command
+            # line. Nothing is checked here: mpv refuses a name it does not
+            # know when the handle is created, and that lands in the log
+            # below with the name in it. Optional.
+            extra_flags: list[str] = []
             extra_opts: dict[str, str] = {}
             for item in shlex.split(os.environ.get("SURVEILLANCE_MPV_OPTS", "")):
-                if "=" in item:
-                    name, value = item.split("=", 1)
+                name, sep, value = item.partition("=")
+                if sep:
                     extra_opts[name] = value
-            if extra_opts:
-                log.info("Extra mpv options from SURVEILLANCE_MPV_OPTS: %s", extra_opts)
+                else:
+                    extra_flags.append(name)
+            if extra_flags or extra_opts:
+                log.info(
+                    "Extra mpv options from SURVEILLANCE_MPV_OPTS: %s %s", extra_flags, extra_opts
+                )
 
             # The client's own options, spelled as mpv spells them, so an
             # entry from SURVEILLANCE_MPV_OPTS naming one replaces it here
@@ -358,7 +366,7 @@ class MpvGLArea(Gtk.GLArea):
                 **ao_option,
             }
             options.update(extra_opts)
-            self._mpv = mpv.MPV(log_handler=self._mpv_log, **options)
+            self._mpv = mpv.MPV(*extra_flags, log_handler=self._mpv_log, **options)
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches
             self._proc_addr_fn = mpv.MpvGlGetProcAddressFn(_get_gl_proc_address)

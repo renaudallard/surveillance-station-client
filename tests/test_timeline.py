@@ -28,6 +28,7 @@ logic (no GTK required)."""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from datetime import datetime
 
 import pytest
@@ -37,6 +38,7 @@ from surveillance.ui.timeline import (
     _MIN_WINDOW_SECONDS,
     clamp_to_live,
     compute_zoom,
+    max_speed_for_slots,
     pan_view_end,
     parse_custom_download_range,
     quick_download_label,
@@ -201,3 +203,36 @@ class TestParseCustomDownloadRange:
     def test_end_equal_start_raises(self) -> None:
         with pytest.raises(ValueError, match="End must be after start"):
             parse_custom_download_range("2026-08-22 10:00:00", "2026-08-22 10:00:00")
+
+
+class TestMaxSpeedForSlots:
+    """The speed budget divides across slots, but 1x is always on offer:
+    real time is what Live already decodes on every slot."""
+
+    @pytest.fixture
+    def budget(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[float], None]]:
+        from surveillance.ui import timeline
+
+        original = timeline._MAX_SPEED_SLOT_PRODUCT
+
+        def _set(value: float) -> None:
+            monkeypatch.setattr(timeline, "_MAX_SPEED_SLOT_PRODUCT", value)
+
+        yield _set
+        timeline._MAX_SPEED_SLOT_PRODUCT = original
+
+    def test_divides_the_budget_across_slots(self, budget: Callable[[float], None]) -> None:
+        budget(100.0)
+        assert max_speed_for_slots(1) == 100.0
+        assert max_speed_for_slots(4) == 25.0
+        assert max_speed_for_slots(16) == 6.25
+
+    def test_never_drops_below_real_time(self, budget: Callable[[float], None]) -> None:
+        budget(8.0)
+        assert max_speed_for_slots(9) == 1.0
+        budget(1.0)
+        assert max_speed_for_slots(16) == 1.0
+
+    def test_no_slots_means_the_whole_budget(self, budget: Callable[[float], None]) -> None:
+        budget(100.0)
+        assert max_speed_for_slots(0) == 100.0

@@ -177,11 +177,21 @@ def set_max_speed_slot_product(value: float) -> None:
     page's timeline-settings registry (surveillance.settings_registry).
     Read fresh by set_active_slot_count() on every layout/slot-count
     change, so reassigning it here takes effect from the next one.
-    Clamped to 1.0: below that, every speed but 1x would grey out on
-    any layout with more than one slot, an unusable state a hand-edited
-    config file could otherwise produce."""
+    Clamped to 1.0, the least one slot at 1x needs; 1x itself stays on
+    offer whatever the budget, see max_speed_for_slots."""
     global _MAX_SPEED_SLOT_PRODUCT
     _MAX_SPEED_SLOT_PRODUCT = max(value, 1.0)
+
+
+def max_speed_for_slots(count: int) -> float:
+    """The fastest History speed *count* slots may be asked for at once
+    under _MAX_SPEED_SLOT_PRODUCT. Never below 1x: real time is what
+    Live already decodes on every slot, so it stays on offer whatever
+    the budget, rather than greying out with the rest and pushing a
+    slower speed onto every bridge, or on 4x4 leaving nothing to pick."""
+    if count <= 0:
+        return _MAX_SPEED_SLOT_PRODUCT
+    return max(1.0, _MAX_SPEED_SLOT_PRODUCT / count)
 
 
 def pan_view_end(view_end: float, dx: float, window_seconds: float, width: float) -> float:
@@ -954,7 +964,7 @@ class Timeline(Gtk.Box):
         speed that silently vanished from the list on a layout switch
         would read as a bug rather than a limit.
         """
-        self._max_speed = _MAX_SPEED_SLOT_PRODUCT / count if count > 0 else _MAX_SPEED_SLOT_PRODUCT
+        self._max_speed = max_speed_for_slots(count)
         available = [value for value in self._speed_radios if float(value) <= self._max_speed]
         for value, radio in self._speed_radios.items():
             allowed = value in available

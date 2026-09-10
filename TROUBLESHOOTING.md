@@ -191,9 +191,11 @@ system as a whole to affect other running applications too.
 
 The dropdown greys out the speeds a layout cannot afford, on a budget of
 (speed × active slots): by default, 1×1 keeps the full range up to 100x,
-2×2 stops at 16x, 3×3 at 8x, and 4×4 at 4x. To go faster, switch to a
-smaller layout, or raise the budget itself from the Settings page (see
-"Tuning playback buffering for your setup" below).
+2×2 stops at 16x, 3×3 at 8x, and 4×4 at 4x. Normal speed is always
+offered, however low the budget is set: it is what Live already decodes
+on every slot. To go faster, switch to a smaller layout, or raise the
+budget itself from the Settings page (see "Tuning playback buffering for
+your setup" below).
 
 That budget is a guard, not a measurement — high-speed playback under load
 is still being characterized, and the default may move once it is. If a

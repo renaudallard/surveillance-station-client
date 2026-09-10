@@ -198,7 +198,8 @@ def _timeline_settings() -> list[Setting]:
                 "times more video per second, on every slot at once, so "
                 "too high a product across a full grid can overload the "
                 "app. Higher speeds are greyed out on layouts with more "
-                "slots to stay under this budget."
+                "slots to stay under this budget; 1x stays on offer "
+                "however low it goes."
             ),
             default=timeline._MAX_SPEED_SLOT_PRODUCT,
             get=lambda: timeline._MAX_SPEED_SLOT_PRODUCT,

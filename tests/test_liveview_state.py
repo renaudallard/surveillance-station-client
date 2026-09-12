@@ -35,7 +35,7 @@ from types import SimpleNamespace
 import pytest
 
 from surveillance.ui import liveview
-from surveillance.ui.liveview import LiveView
+from surveillance.ui.liveview import CameraSlot, LiveView
 
 
 class _FakeGLib:
@@ -492,3 +492,73 @@ class TestResumedPosition:
         LiveView._resume_all_slots(page)  # type: ignore[arg-type]
         assert callbacks == [None]
         assert page.positions == []
+
+
+class TestSlotReload:
+    """The right-click Reload restarts one slot and nothing else.
+
+    A layout switch leaves a slot alone when it keeps its camera (see
+    TestLayoutRestore), so this is what resets a single stream that has
+    gone bad."""
+
+    @staticmethod
+    def _page(events: list[object], bridge: object = None) -> SimpleNamespace:
+        slot = _Calls(
+            index=0,
+            camera=SimpleNamespace(id=7, name="cam7"),
+            player=_Calls(),
+            _ws_bridge=bridge,
+            _rtsp_monitor=None,
+            _history_position=1_700_000_000.0,
+            stop_stream=lambda: events.append(("stop",)),
+        )
+        page = SimpleNamespace(
+            _slots=[slot],
+            _seek_generation=4,
+            _slot_seek_generation={},
+        )
+        page._history_target = LiveView._history_target
+        page._restart_slot_stream = lambda *args: LiveView._restart_slot_stream(page, *args)  # type: ignore[arg-type]
+        page._start_stream = lambda idx, cam: events.append(("start", idx, cam.id))
+        page._seek_slot_to_time = lambda slot, when, gen: events.append(("seek", when, gen))
+        return page
+
+    def test_a_live_slot_is_stopped_then_started_again(self) -> None:
+        events: list[object] = []
+        page = self._page(events)
+        LiveView._on_slot_reload(page, 0)  # type: ignore[arg-type]
+        assert events == [("stop",), ("start", 0, 7)]
+        assert page._slot_seek_generation == {}
+
+    def test_a_history_slot_reloads_where_it_was(self) -> None:
+        events: list[object] = []
+        page = self._page(events, bridge=SimpleNamespace(is_history=True))
+        LiveView._on_slot_reload(page, 0)  # type: ignore[arg-type]
+        # Stopped first, or the seek would reuse the bridge it found
+        # rather than building the fresh one the reload is for.
+        assert events == [("stop",), ("seek", 1_700_000_000, 5)]
+        assert page._slot_seek_generation == {0: 5}
+
+    def test_a_live_bridge_does_not_count_as_a_position(self) -> None:
+        events: list[object] = []
+        page = self._page(events, bridge=SimpleNamespace(is_history=False))
+        LiveView._on_slot_reload(page, 0)  # type: ignore[arg-type]
+        assert events == [("stop",), ("start", 0, 7)]
+
+    def test_an_empty_slot_reloads_nothing(self) -> None:
+        events: list[object] = []
+        page = self._page(events)
+        page._slots[0].camera = None
+        LiveView._on_slot_reload(page, 0)  # type: ignore[arg-type]
+        assert events == []
+
+    def test_the_menu_item_hands_over_the_slot_index(self) -> None:
+        reloaded: list[int] = []
+        slot = SimpleNamespace(
+            index=3,
+            _menu_popover=_Calls(),
+            _reload_callback=reloaded.append,
+        )
+        CameraSlot._on_menu_reload(slot, None)  # type: ignore[arg-type]
+        assert reloaded == [3]
+        assert slot._menu_popover.called("popdown") == [()]

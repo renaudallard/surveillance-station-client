@@ -318,6 +318,11 @@ class CameraSlot(Gtk.Box):
         self._open_1x1_menu_btn.connect("clicked", self._on_menu_open_1x1)
         menu_box.append(self._open_1x1_menu_btn)
 
+        self._reload_menu_btn = Gtk.Button(label="Reload")
+        self._reload_menu_btn.add_css_class("flat")
+        self._reload_menu_btn.connect("clicked", self._on_menu_reload)
+        menu_box.append(self._reload_menu_btn)
+
         self._clear_menu_btn = Gtk.Button(label="Clear Slot")
         self._clear_menu_btn.add_css_class("flat")
         self._clear_menu_btn.connect("clicked", self._on_menu_clear_slot)
@@ -353,6 +358,7 @@ class CameraSlot(Gtk.Box):
         self._status = ""  # stream state shown after the camera name
         self._snapshot_callback: object = None
         self._open_1x1_callback: object = None
+        self._reload_callback: object = None
         self._clear_slot_callback: object = None
         self._open_1x1_available_callback: object = None
 
@@ -364,6 +370,9 @@ class CameraSlot(Gtk.Box):
 
     def set_open_1x1_callback(self, callback: object) -> None:
         self._open_1x1_callback = callback
+
+    def set_reload_callback(self, callback: object) -> None:
+        self._reload_callback = callback
 
     def set_clear_slot_callback(self, callback: object) -> None:
         self._clear_slot_callback = callback
@@ -434,6 +443,7 @@ class CameraSlot(Gtk.Box):
             return
         has_camera = self.camera is not None
         self._snapshot_menu_btn.set_sensitive(has_camera)
+        self._reload_menu_btn.set_sensitive(has_camera)
         self._clear_menu_btn.set_sensitive(has_camera)
 
         show_open_1x1 = True
@@ -465,6 +475,11 @@ class CameraSlot(Gtk.Box):
         self._menu_popover.popdown()
         if self._open_1x1_callback and callable(self._open_1x1_callback):
             self._open_1x1_callback(self.index)
+
+    def _on_menu_reload(self, btn: Gtk.Button) -> None:
+        self._menu_popover.popdown()
+        if self._reload_callback and callable(self._reload_callback):
+            self._reload_callback(self.index)
 
     def _on_menu_clear_slot(self, btn: Gtk.Button) -> None:
         self._menu_popover.popdown()
@@ -750,6 +765,7 @@ class LiveView(Gtk.Box):
             slot.set_click_callback(self._on_slot_clicked)
             slot.set_snapshot_callback(self._on_slot_take_snapshot)
             slot.set_open_1x1_callback(self._on_slot_open_1x1)
+            slot.set_reload_callback(self._on_slot_reload)
             slot.set_clear_slot_callback(self._on_slot_clear)
             slot.set_open_1x1_available_callback(lambda: self._current_layout != "1x1")
             slot.set_volume_changed_callback(self._on_slot_volume_changed)
@@ -2644,6 +2660,29 @@ class LiveView(Gtk.Box):
             self._select_slot(None)
         self._save_session()
 
+    def _on_slot_reload(self, slot_idx: int) -> None:
+        """Right-click menu action: restart this slot's stream, leaving
+        the rest of the layout alone.
+
+        A slot that keeps its camera across a layout switch keeps its
+        stream too (see _restore_layout_cameras), so switching layout is
+        no longer a way to reset one camera that has drifted behind or
+        stopped moving. This is, and it costs a single reconnect instead
+        of a whole layout's worth.
+        """
+        slot = self._slots[slot_idx]
+        camera = slot.camera
+        if camera is None:
+            return
+        log.info("Reloading slot %d: %s", slot_idx, camera.name)
+        history_target = self._history_target(slot)
+        # Drop the bridge first. A History seek that still finds one on
+        # the slot reuses that connection rather than building a fresh
+        # one (see _on_recording_resolved), which would leave whatever
+        # went wrong with it exactly where it was.
+        slot.stop_stream()
+        self._restart_slot_stream(slot_idx, camera, history_target)
+
     def _assign_to_slot(self, slot_idx: int, camera: Camera) -> None:
         """Assign a camera to a specific slot, moving it if already displayed."""
         # Remove camera from its current slot if displayed elsewhere
@@ -2658,11 +2697,7 @@ class LiveView(Gtk.Box):
         # showing -- picking a camera isn't implicitly "return to live"
         # the way the Live button explicitly is (see _return_all_to_live).
         # Read before clear() below, which drops it.
-        history_target = (
-            target._history_position
-            if target._ws_bridge is not None and target._ws_bridge.is_history
-            else None
-        )
+        history_target = self._history_target(target)
 
         # Clear the target slot and assign
         self._clear_slot(target)
@@ -2670,16 +2705,42 @@ class LiveView(Gtk.Box):
         self._restore_saved_audio_state(target, camera)
         self._update_slot_audio(target, camera)
         self._load_slot_ptz_extras(target, camera)
-        if history_target is not None:
-            self._seek_generation += 1
-            self._slot_seek_generation[slot_idx] = self._seek_generation
-            self._seek_slot_to_time(target, int(history_target), self._seek_generation)
-        else:
-            self._start_stream(slot_idx, camera)
+        self._restart_slot_stream(slot_idx, camera, history_target)
 
     # ------------------------------------------------------------------
     # Streaming
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _history_target(slot: CameraSlot) -> float | None:
+        """Where *slot* is in recorded video, None if it is playing live.
+
+        Read before whatever tears the slot's stream down: clear() drops
+        the position outright, and a fresh bridge starts reporting its
+        own.
+        """
+        if slot._ws_bridge is None or not slot._ws_bridge.is_history:
+            return None
+        return slot._history_position
+
+    def _restart_slot_stream(
+        self, slot_idx: int, camera: Camera, history_target: float | None
+    ) -> None:
+        """Start *camera* in *slot_idx* afresh, back at *history_target*
+        if that is where the slot was.
+
+        Only the Live button ends History (see _return_all_to_live), so
+        a slot showing recorded video comes back on the same moment
+        rather than at the live edge. The seek gets a generation of its
+        own, a batch of one, so it cannot supersede a timeline click's
+        whole batch (see _slot_seek_generation).
+        """
+        if history_target is None:
+            self._start_stream(slot_idx, camera)
+            return
+        self._seek_generation += 1
+        self._slot_seek_generation[slot_idx] = self._seek_generation
+        self._seek_slot_to_time(self._slots[slot_idx], int(history_target), self._seek_generation)
 
     def _start_stream(self, slot_idx: int, camera: Camera) -> None:
         """Start streaming a camera in a slot.

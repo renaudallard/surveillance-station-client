@@ -53,6 +53,13 @@ or
 .RI ( "attempting reconnect" )
 while retrying. Both recover automatically once the camera is reachable
 again.
+A slot keeps its stream when a layout switch leaves its camera in the
+same position, so a single feed that has drifted behind or stopped
+moving is restarted from
+.B Reload
+in the slot's right-click menu, without disturbing the other slots; a
+slot showing recorded video reloads at the same moment rather than
+returning to live.
 .TP
 .B Live View Timeline
 A shared timeline strip below the grid, toggled from the header bar

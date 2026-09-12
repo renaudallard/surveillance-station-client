@@ -58,3 +58,37 @@ class TestTimeEntry:
         """A field outside its range used to raise out of the Search
         button; it means midnight now, the same as garbage always has."""
         assert _parse(text) == datetime(2026, 9, 10)
+
+
+def _calendar(year: int, month: int, day: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        get_date=lambda: SimpleNamespace(
+            get_year=lambda: year,
+            get_month=lambda: month,
+            get_day_of_month=lambda: day,
+            format=lambda fmt: f"{year:04d}-{month:02d}-{day:02d}",
+        )
+    )
+
+
+class TestDateLabels:
+    """GtkCalendar's own selected-day highlight renders invisibly under at
+    least one real GTK4 theme (Breeze); from_date_label/to_date_label are
+    the plain-text fallback, so their text has to actually track each
+    calendar's own current date."""
+
+    def test_reflects_each_calendar_s_own_current_date(self) -> None:
+        dialog = SimpleNamespace(
+            from_date=_calendar(2026, 8, 27),
+            to_date=_calendar(2026, 9, 6),
+            from_date_label=SimpleNamespace(text="", set_label=lambda t: None),
+            to_date_label=SimpleNamespace(text="", set_label=lambda t: None),
+        )
+        labels: dict[str, str] = {}
+        dialog.from_date_label.set_label = lambda t: labels.__setitem__("from", t)
+        dialog.to_date_label.set_label = lambda t: labels.__setitem__("to", t)
+
+        AdvancedSearchDialog._update_date_labels(dialog)  # type: ignore[arg-type]
+
+        assert labels["from"] == "Selected: 2026-08-27"
+        assert labels["to"] == "Selected: 2026-09-06"

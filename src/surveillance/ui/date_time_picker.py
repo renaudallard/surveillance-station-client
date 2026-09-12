@@ -70,6 +70,12 @@ class DateTimePicker(Gtk.Box):
     at least one real GTK4 theme) and a plain-text status label are
     used together for the "indicate" half of that: the label is the
     one guaranteed to actually show something regardless of theme.
+
+    GtkCalendar's own selected-day highlight has the same problem (a
+    different theme rendered it invisible too), so selected_date_label
+    is a second, separate plain-text label stating which day is
+    currently selected, independent of status_label's own availability
+    message above.
     """
 
     def __init__(self) -> None:
@@ -77,6 +83,14 @@ class DateTimePicker(Gtk.Box):
 
         self.calendar = Gtk.Calendar()
         self.append(self.calendar)
+
+        # GtkCalendar's own selected-day highlight renders invisibly under
+        # at least one real GTK4 theme (Breeze). No visual difference at
+        # all between the selected day and any other. This label is the
+        # one guaranteed to actually show which day is selected regardless
+        # of theme, same reasoning as status_label below for availability.
+        self.selected_date_label = Gtk.Label(xalign=0)
+        self.append(self.selected_date_label)
 
         self.status_label = Gtk.Label(xalign=0)
         self.status_label.add_css_class("dim-label")
@@ -99,6 +113,7 @@ class DateTimePicker(Gtk.Box):
         gdt = self.calendar.get_date()
         self._last_valid_date = gdt
         self._last_valid_month = (gdt.get_year(), gdt.get_month())
+        self.selected_date_label.set_label(f"Selected: {gdt.format('%Y-%m-%d')}")
         # Set while this widget is applying its own change (set_datetime,
         # or reverting an invalid day) -- so that doesn't get validated
         # against itself the same way a user click would be.
@@ -197,11 +212,29 @@ class DateTimePicker(Gtk.Box):
         self._available_intervals = intervals
         self._refresh_status_and_validity()
 
+    def _day_unavailable_message(self) -> str:
+        """Message for a day known to have no recording, shared between
+        the refusal path (a click on a day already known to be
+        unavailable) and _refresh_status_and_validity (a day accepted
+        before its month's availability was known, whose answer later
+        arrives and turns out negative. See that method's own check).
+        """
+        if not self._available_days:
+            return "No recordings this month"
+        return "No recordings on that day — pick another"
+
     def _refresh_status_and_validity(self) -> None:
+        self.selected_date_label.set_label(f"Selected: {self._last_valid_date.format('%Y-%m-%d')}")
+        day = self._last_valid_date.get_day_of_month()
         if self._available_days is None:
             self.status_label.set_label("Checking recordings for this month…")
-        elif not self._available_days:
-            self.status_label.set_label("No recordings this month")
+        elif day not in self._available_days:
+            # Covers a day accepted while _available_days was still None
+            # (nothing to check it against yet) whose month answer, once
+            # it arrives, turns out not to include it after all. The
+            # exact-time check below would otherwise report a wrong time
+            # rather than a wrong day, since neither is available.
+            self.status_label.set_label(self._day_unavailable_message())
         elif not self.is_current_selection_valid():
             self.status_label.set_label("No recording at that exact time — pick another")
         else:
@@ -220,6 +253,25 @@ class DateTimePicker(Gtk.Box):
             return
         gdt = calendar.get_date()
         year, month, day = gdt.get_year(), gdt.get_month(), gdt.get_day_of_month()
+        if (year, month, day) == (
+            self._last_valid_date.get_year(),
+            self._last_valid_date.get_month(),
+            self._last_valid_date.get_day_of_month(),
+        ):
+            # calendar.select_day() below (reverting an invalid click) does
+            # not fire notify::day/month/year synchronously. GTK queues
+            # it, so by the time it actually arrives _programmatic_change
+            # has already been reset by the finally block and no longer
+            # guards it. Reprocessing that deferred notification as a new
+            # click landed on whatever day it reverted to would overwrite
+            # the refusal message that revert was trying to show with that
+            # day's own status instead.
+            #
+            # This can only be that deferred revert, not a genuine second
+            # click on the already-selected day: GtkCalendar suppresses
+            # notify::day/month/year entirely for a click landing on the
+            # day already selected, so a real one never reaches here.
+            return
         if (year, month) != self._last_valid_month:
             # A different month has no availability answer yet (marks
             # don't carry over -- GtkCalendar's own marks are always
@@ -233,7 +285,7 @@ class DateTimePicker(Gtk.Box):
             self._refresh_status_and_validity()
             return
         if self._available_days is not None and day not in self._available_days:
-            self.status_label.set_label("No recordings on that day — pick another")
+            self.status_label.set_label(self._day_unavailable_message())
             self._programmatic_change = True
             try:
                 calendar.select_day(self._last_valid_date)

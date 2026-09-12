@@ -599,6 +599,7 @@ surveillance-station-client/
     ├── test_advanced_search.py
     ├── test_api_client.py
     ├── test_config.py
+    ├── test_date_time_picker.py
     ├── test_event_bits.py
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py

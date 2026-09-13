@@ -72,6 +72,11 @@ vice versa) as a workaround.
 
 ## A camera with audio repeatedly stalls or loses its WebSocket stream
 
+The app checks the ffmpeg on its own `PATH` at startup and shows a one-time
+notice (with a "Don't show this again" checkbox) if it's a version known to
+have this problem, since History mode reaches it regardless of a camera's
+own Live protocol. The rest of this section covers what to do about it.
+
 The symptom in the log is a slot giving up with a stalled pipe write:
 
 ```

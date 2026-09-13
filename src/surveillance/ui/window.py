@@ -217,6 +217,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sidebar.start_polling()
         self._start_polling()
         self._check_for_update()
+        self._check_ffmpeg_version()
 
     def _check_for_update(self) -> None:
         """Check GitHub once per launch for a release newer than this build.
@@ -253,6 +254,85 @@ class MainWindow(Gtk.ApplicationWindow):
             about_page = self.stack.get_child_by_name("about")
             if about_page and hasattr(about_page, "on_page_shown"):
                 about_page.on_page_shown()
+
+    def _check_ffmpeg_version(self) -> None:
+        """Warn once per launch if ffmpeg is a version known to stall
+        muxed audio (see TROUBLESHOOTING.md), unless already dismissed
+        for good. Not gated on any particular camera/protocol being
+        configured: History mode always goes through the muxed
+        WebSocket path regardless of a camera's own Live protocol, so
+        every camera can hit this eventually.
+        """
+        if self.app.config.ffmpeg_warning_dismissed:
+            return
+        from surveillance.services.ffmpeg_check import ffmpeg_version_is_affected
+        from surveillance.util.async_bridge import run_async
+
+        run_async(ffmpeg_version_is_affected(), callback=self._on_ffmpeg_check_result)
+
+    def _on_ffmpeg_check_result(self, affected: bool | None) -> None:
+        if affected:
+            self._show_ffmpeg_warning_dialog()
+
+    def _show_ffmpeg_warning_dialog(self) -> None:
+        from surveillance.config import save_config
+        from surveillance.services.ffmpeg_check import TROUBLESHOOTING_URL
+
+        dialog = Gtk.Window(title="ffmpeg Compatibility Notice", transient_for=self, modal=True)
+        dialog.set_default_size(400, -1)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        dialog.set_child(outer)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        label = Gtk.Label(
+            label=(
+                "Your ffmpeg version has a known issue that can stall or freeze "
+                "a camera's video when its audio is muxed in over WebSocket. "
+                "This has been observed on ffmpeg versions 7.0 through at least "
+                "9.0. Versions below 7 have been found to work well with this app."
+            )
+        )
+        label.set_wrap(True)
+        label.set_xalign(0)
+        content.append(label)
+
+        link = Gtk.LinkButton(uri=TROUBLESHOOTING_URL, label="Workarounds and details")
+        link.set_halign(Gtk.Align.START)
+        content.append(link)
+
+        dont_show_check = Gtk.CheckButton(label="Don't show this again")
+        content.append(dont_show_check)
+
+        outer.append(content)
+
+        btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_bar.set_margin_top(8)
+        btn_bar.set_margin_bottom(12)
+        btn_bar.set_margin_start(12)
+        btn_bar.set_margin_end(12)
+        btn_bar.set_halign(Gtk.Align.END)
+
+        def _on_ok(_btn: Gtk.Button) -> None:
+            if dont_show_check.get_active():
+                self.app.config.ffmpeg_warning_dismissed = True
+                save_config(self.app.config)
+            dialog.close()
+
+        ok_btn = Gtk.Button(label="Got it")
+        ok_btn.add_css_class("suggested-action")
+        ok_btn.connect("clicked", _on_ok)
+        btn_bar.append(ok_btn)
+
+        outer.append(Gtk.Separator())
+        outer.append(btn_bar)
+
+        dialog.present()
 
     def _restore_live_session(self, cameras: list[Camera]) -> None:
         """Restore live view camera assignments and refresh other pages' camera filters.

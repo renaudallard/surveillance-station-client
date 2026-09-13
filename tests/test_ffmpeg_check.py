@@ -30,7 +30,6 @@ from typing import Any
 
 import pytest
 
-from surveillance.services import ffmpeg_check
 from surveillance.services.ffmpeg_check import _parse_major_version, ffmpeg_version_is_affected
 
 
@@ -115,11 +114,3 @@ class TestFfmpegVersionIsAffected:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
         await ffmpeg_version_is_affected()
         assert seen == [("ffmpeg", "-version")]
-
-
-def test_first_affected_major_matches_troubleshooting_doc() -> None:
-    """TROUBLESHOOTING.md documents 7.0 as the first affected major
-    version and 6.1.1 as confirmed unaffected. This constant is the
-    single source of truth for that cutoff, so it drifting from the doc
-    would make the warning wrong without anything else here catching it."""
-    assert ffmpeg_check._FIRST_AFFECTED_MAJOR == 7

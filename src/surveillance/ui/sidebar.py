@@ -297,14 +297,19 @@ class CameraSidebar(Gtk.Box):
         """Show stream protocol dialog on right-click.
 
         Clears the row's pressed (CSS ":active") state by hand first:
-        opening the modal dialog from this "pressed" handler means the row
-        never gets the matching button-release before the dialog's grab
-        takes over, so GTK never clears it on its own, leaving the row
-        stuck highlighted forever. This is a known GTK bug in implicit-grab/
-        active-state accounting, fixed upstream in GTK 4.21.5
-        (https://gitlab.gnome.org/GNOME/gtk/-/issues/7930). This stays as a
-        defensive workaround since most users won't be on that GTK version
-        for a long time yet.
+        opening the modal dialog from this "pressed" handler was seen to
+        leave the row highlighted for good, as though the matching
+        button-release never reached it.
+
+        That treats the symptom. GTK counts this state rather than storing
+        a flag (GtkWidgetPrivate.n_active, driven by
+        gtk_widget_set_active_state), and unset_state_flags leaves the
+        count alone, so it stays one above zero and a later press/release
+        pair on the same row can end with the row lit again. If that turns
+        up, the fix belongs at the cause instead. Upstream reworked the
+        same accounting for GTK issue 7930
+        (https://gitlab.gnome.org/GNOME/gtk/-/issues/7930), released in
+        4.21.6.
         """
         widget = gesture.get_widget()
         if widget is not None:

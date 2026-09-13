@@ -81,14 +81,23 @@ class MainWindow(Gtk.ApplicationWindow):
         self.paned.set_shrink_end_child(False)
         self.paned.set_position(220)
 
-        # Placeholder pages (replaced by real widgets when connected)
-        self._add_placeholder("live", "Live View", "Connect to view live streams")
-        self._add_placeholder("recordings", "Recordings", "Connect to browse recordings")
-        self._add_placeholder("snapshots", "Snapshots", "Connect to view snapshots")
-        self._add_placeholder("events", "Events", "Connect to view events")
-        self._add_placeholder("timelapse", "Time Lapse", "Connect to browse time lapse recordings")
-        self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
-        self._add_placeholder("about", "About", "Connect to view app info")
+        # Shown instead of the whole sidebar + page stack while logged
+        # out (see _show_logged_out_state). Simpler than a separate
+        # placeholder per page, since none of them have anything to show
+        # without a connection anyway, and the sidebar being hidden means
+        # there is no way to navigate between them regardless.
+        logged_out_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        logged_out_box.set_halign(Gtk.Align.CENTER)
+        logged_out_box.set_valign(Gtk.Align.CENTER)
+        logged_out_icon = Gtk.Image.new_from_icon_name("camera-video-symbolic")
+        logged_out_icon.set_pixel_size(64)
+        logged_out_icon.add_css_class("dim-label")
+        logged_out_box.append(logged_out_icon)
+        logged_out_label = Gtk.Label(label="Login to your DSM Server to use the application")
+        logged_out_label.add_css_class("title-1")
+        logged_out_label.add_css_class("dim-label")
+        logged_out_box.append(logged_out_label)
+        self.stack.add_named(logged_out_box, "logged_out")
 
         # Not a placeholder: these are this client's own tunables, with
         # nothing to fetch from the NAS, so the page works logged out
@@ -96,9 +105,6 @@ class MainWindow(Gtk.ApplicationWindow):
         from surveillance.ui.settings import SettingsView
 
         self.stack.add_named(SettingsView(self), "settings")
-
-        self.stack.set_visible_child_name("live")
-        self.headerbar.set_page("live")
 
         self._homemode_poll_id: int = 0
         self._alerts_poll_id: int = 0
@@ -117,7 +123,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.connect("close-request", lambda *_: self._force_exit("signal"))
 
         # Show login if not connected
-        if not self.app.api:
+        if self.app.api:
+            self.stack.set_visible_child_name("live")
+            self.headerbar.set_page("live")
+        else:
+            self._show_logged_out_state()
             self._schedule_login()
 
     def _setup_actions(self) -> None:
@@ -178,26 +188,6 @@ class MainWindow(Gtk.ApplicationWindow):
         os._exit(0)
         return True
 
-    def _add_placeholder(self, name: str, title: str, description: str) -> None:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_halign(Gtk.Align.CENTER)
-        box.set_valign(Gtk.Align.CENTER)
-
-        icon = Gtk.Image.new_from_icon_name("camera-video-symbolic")
-        icon.set_pixel_size(64)
-        icon.add_css_class("dim-label")
-        box.append(icon)
-
-        title_label = Gtk.Label(label=title)
-        title_label.add_css_class("title-1")
-        box.append(title_label)
-
-        desc_label = Gtk.Label(label=description)
-        desc_label.add_css_class("dim-label")
-        box.append(desc_label)
-
-        self.stack.add_named(box, name)
-
     def _schedule_login(self) -> None:
         """Show login dialog after window is shown."""
         GLib.idle_add(self.show_login)
@@ -208,6 +198,22 @@ class MainWindow(Gtk.ApplicationWindow):
 
         dialog = LoginDialog(self.app, self)
         dialog.present()
+
+    def _show_logged_out_state(self) -> None:
+        """Hide the sidebar and every header control that needs a
+        connection to do anything, and show a single login prompt in
+        place of the whole page stack. There is nothing any of them
+        has to show without one anyway, so gating each individually
+        would just be more to keep in sync for no real benefit. Safe to
+        call before a first login too, not just on logout: set_connected
+        also covers the header controls' initial hidden state, which
+        AppHeaderBar.__init__ itself only half-does (sensitivity, not
+        visibility). Undone by _setup_content_pages() on login.
+        """
+        self.headerbar.set_connected(False)
+        self.sidebar.set_visible(False)
+        self.stack.set_visible_child_name("logged_out")
+        self.headerbar.set_page("logged_out")
 
     def on_connected(self) -> None:
         """Called after successful login."""
@@ -354,7 +360,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 page.refresh_camera_filter()
 
     def _setup_content_pages(self) -> None:
-        """Replace placeholders with real content widgets."""
+        """Build the real content widgets and undo _show_logged_out_state()."""
+        self.sidebar.set_visible(self.app.config.sidebar_visible)
+
         from surveillance.ui.about import AboutView
         from surveillance.ui.events import EventsView
         from surveillance.ui.licenses import LicensesView
@@ -363,7 +371,9 @@ class MainWindow(Gtk.ApplicationWindow):
         from surveillance.ui.snapshots import SnapshotsView
         from surveillance.ui.timelapse import TimeLapseView
 
-        # Remove placeholders and add real pages
+        # Replace with fresh widgets. A no-op the first time (nothing
+        # to remove yet), and a clean rebuild against the new session on
+        # a later re-login.
         for name, widget_class in [
             ("live", LiveView),
             ("recordings", RecordingsView),
@@ -485,7 +495,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sidebar.stop_polling()
         self.sidebar.clear()
         self._stop_polling()
-        self.headerbar.set_connected(False)
+        self._show_logged_out_state()
 
         live_view = self.stack.get_child_by_name("live")
         if live_view and hasattr(live_view, "stop_all"):

@@ -53,6 +53,7 @@ PAGE_TITLES: dict[str, str] = {
     "licenses": "Licenses",
     "settings": "Settings",
     "about": "About",
+    "logged_out": "Login",
 }
 
 
@@ -170,12 +171,22 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._build_theme_popover()
         self.pack_end(self.theme_btn)
 
-        # Logout button
-        logout_btn = Gtk.Button()
-        logout_btn.set_icon_name("system-log-out-symbolic")
-        logout_btn.set_tooltip_text("Logout")
-        logout_btn.set_action_name("app.logout")
-        self.pack_end(logout_btn)
+        # Logout button; doubles as Login when not connected (app.logout
+        # itself already falls back to showing the login dialog in that
+        # case, see SurveillanceApp._on_logout), so only its icon/tooltip
+        # need to track connection state; see _update_logout_button.
+        self.logout_btn = Gtk.Button()
+        self.logout_btn.set_action_name("app.logout")
+        self._update_logout_button()
+        self.pack_end(self.logout_btn)
+
+    def _update_logout_button(self) -> None:
+        if self._connected:
+            self.logout_btn.set_icon_name("system-log-out-symbolic")
+            self.logout_btn.set_tooltip_text("Logout")
+        else:
+            self.logout_btn.set_icon_name("avatar-default-symbolic")
+            self.logout_btn.set_tooltip_text("Login")
 
     def _update_sidebar_tooltip(self, visible: bool) -> None:
         self.sidebar_btn.set_tooltip_text("Hide Panel" if visible else "Show Panel")
@@ -303,6 +314,11 @@ class AppHeaderBar(Gtk.HeaderBar):
     def set_connected(self, connected: bool) -> None:
         """Enable/disable controls based on connection state."""
         self._connected = connected
+        self._update_logout_button()
+        self.home_btn.set_visible(connected)
         self.home_btn.set_sensitive(connected)
+        self.sidebar_overlay.set_visible(connected)
+        self.notif_overlay.set_visible(connected)
         self.notif_btn.set_sensitive(connected)
+        self.grid_btn.set_visible(connected)
         self.grid_btn.set_sensitive(connected and self._page == "live")

@@ -2,7 +2,7 @@
 Name=Surveillance Station
 Comment=Synology Surveillance Station client
 Exec=surveillance
-Icon=camera-web
+Icon=org.surveillance.app
 Terminal=false
 Type=Application
 Categories=Video;Security;Network;

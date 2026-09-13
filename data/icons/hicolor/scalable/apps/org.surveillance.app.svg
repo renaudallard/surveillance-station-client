@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Surveillance Station Client">
+  <g stroke="#f2593f" stroke-width="8" stroke-linecap="round" fill="none">
+    <path d="M 8 34 V 20 A 12 12 0 0 1 20 8 H 34"/>
+    <path d="M 86 8 H 108 A 12 12 0 0 1 120 20 V 34"/>
+    <path d="M 120 86 V 108 A 12 12 0 0 1 108 120 H 86"/>
+    <path d="M 42 120 H 20 A 12 12 0 0 1 8 108 V 86"/>
+  </g>
+  <path d="M 14 58 Q 64 0 108 58 Q 114 64 108 70 Q 64 132 14 70 Q 8 64 14 58 Z" fill="#666666"/>
+  <path d="M 20 58 Q 64 4 102 58 Q 108 64 102 70 Q 64 128 20 70 Q 14 64 20 58 Z" fill="#ffffff"/>
+  <circle cx="64" cy="64" r="30" fill="#2D5789"/>
+  <circle cx="64" cy="64" r="20" fill="#0b0d0e"/>
+  <circle cx="56" cy="56" r="6" fill="#f2593f"/>
+</svg>

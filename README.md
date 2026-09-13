@@ -526,7 +526,9 @@ surveillance-station-client/
 ├── scripts/
 │   └── dump_event_map.py                diagnostic tool for extending EVENT_BITMASK.md
 ├── data/
-│   └── org.surveillance.desktop
+│   ├── org.surveillance.app.desktop
+│   └── icons/hicolor/scalable/apps/
+│       └── org.surveillance.app.svg  app icon
 ├── .github/ISSUE_TEMPLATE/
 │   ├── bug_report.yml                   bug report form
 │   └── config.yml                       issue template config

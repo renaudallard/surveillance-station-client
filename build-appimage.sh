@@ -361,16 +361,8 @@ EOF
 # Create symlink for desktop file
 ln -sf usr/share/applications/${APP_ID}.desktop "${APPDIR}/${APP_ID}.desktop"
 
-# Create a simple icon (using a camera symbol)
-cat > "${APPDIR}/usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <rect x="4" y="12" width="40" height="24" rx="3" fill="#4a90d9"/>
-  <circle cx="24" cy="24" r="8" fill="#fff"/>
-  <circle cx="24" cy="24" r="5" fill="#333"/>
-  <rect x="36" y="16" width="4" height="3" rx="1" fill="#fff"/>
-</svg>
-EOF
+cp "${SCRIPT_DIR}/data/icons/hicolor/scalable/apps/${APP_ID}.svg" \
+    "${APPDIR}/usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
 
 # Create icon symlink
 ln -sf usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg "${APPDIR}/${APP_ID}.svg"

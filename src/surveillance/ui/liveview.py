@@ -2683,6 +2683,23 @@ class LiveView(Gtk.Box):
         slot.stop_stream()
         self._restart_slot_stream(slot_idx, camera, history_target)
 
+    def reload_all_streams(self) -> None:
+        """Restart every visible slot's stream, one slot at a time.
+
+        The header bar's Reload button, for a whole layout gone bad
+        rather than the single camera _on_slot_reload covers. Staggered
+        rather than fired in one main-loop pass: a full 4x4 restarted at
+        once is exactly the burst _HISTORY_TRANSITION_STAGGER_MS exists
+        to spread out, and reloading is not worth reintroducing it.
+        """
+        self._run_staggered(
+            [
+                partial(self._on_slot_reload, slot_idx)
+                for slot_idx in self._active
+                if self._slots[slot_idx].camera is not None
+            ]
+        )
+
     def _assign_to_slot(self, slot_idx: int, camera: Camera) -> None:
         """Assign a camera to a specific slot, moving it if already displayed."""
         # Remove camera from its current slot if displayed elsewhere

@@ -136,6 +136,17 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._build_grid_menu()
         self.pack_end(self.grid_btn)
 
+        # Reload every stream in the layout. Live View only, like the
+        # timeline toggle: there is nothing to reload on the other pages,
+        # each of which carries its own Refresh for its own list.
+        self.reload_btn = Gtk.Button()
+        self.reload_btn.set_icon_name("view-refresh-symbolic")
+        self.reload_btn.set_tooltip_text("Reload All Streams")
+        self.reload_btn.set_sensitive(False)
+        self.reload_btn.set_visible(self._page == "live")
+        self.reload_btn.connect("clicked", self._on_reload_clicked)
+        self.pack_end(self.reload_btn)
+
         # Notification bell
         self.notif_btn = Gtk.MenuButton()
         # "bell-symbolic" doesn't exist in this icon theme (confirmed via
@@ -206,6 +217,9 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._update_timeline_tooltip(visible)
         self.window.toggle_timeline(visible)
 
+    def _on_reload_clicked(self, btn: Gtk.Button) -> None:
+        self.window.reload_all_streams()
+
     def _on_home_toggled(self, btn: Gtk.ToggleButton) -> None:
         if not self.app.api:
             return
@@ -236,6 +250,8 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._page = page_name
         self.title_label.set_label(f"Surveillance Station — {PAGE_TITLES[page_name]}")
         self.grid_btn.set_sensitive(self._connected and page_name == "live")
+        self.reload_btn.set_sensitive(self._connected and page_name == "live")
+        self.reload_btn.set_visible(page_name == "live")
         self.timeline_btn.set_visible(page_name == "live")
 
     _THEME_ICONS: ClassVar[dict[str, str]] = {
@@ -306,3 +322,4 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.home_btn.set_sensitive(connected)
         self.notif_btn.set_sensitive(connected)
         self.grid_btn.set_sensitive(connected and self._page == "live")
+        self.reload_btn.set_sensitive(connected and self._page == "live")

@@ -562,3 +562,50 @@ class TestSlotReload:
         CameraSlot._on_menu_reload(slot, None)  # type: ignore[arg-type]
         assert reloaded == [3]
         assert slot._menu_popover.called("popdown") == [()]
+
+
+class TestReloadAllStreams:
+    """The header bar's Reload restarts the layout a slot at a time.
+
+    All at once is the burst _HISTORY_TRANSITION_STAGGER_MS exists to
+    spread out, and a reload is not worth bringing it back."""
+
+    @staticmethod
+    def _page(held: dict[int, int], active: list[int]) -> SimpleNamespace:
+        slots = []
+        for i in range(16):
+            cam = SimpleNamespace(id=held[i], name=f"cam{held[i]}") if i in held else None
+            slots.append(
+                _Calls(
+                    index=i,
+                    camera=cam,
+                    player=_Calls(),
+                    _ws_bridge=None,
+                    _rtsp_monitor=None,
+                    _history_position=None,
+                )
+            )
+        page = SimpleNamespace(_slots=slots, _active=active, staggered=[], reloaded=[])
+        page._run_staggered = page.staggered.extend
+        page._on_slot_reload = page.reloaded.append
+        return page
+
+    def test_only_visible_slots_holding_a_camera_are_reloaded(self) -> None:
+        # Slot 2 is hidden under this layout and 5 is empty.
+        page = self._page(held={0: 1, 1: 2, 2: 3, 4: 4}, active=[0, 1, 4, 5])
+        LiveView.reload_all_streams(page)  # type: ignore[arg-type]
+        for action in page.staggered:
+            action()
+        assert page.reloaded == [0, 1, 4]
+
+    def test_the_restarts_go_through_the_stagger(self) -> None:
+        page = self._page(held={0: 1, 1: 2, 4: 3, 5: 4}, active=[0, 1, 4, 5])
+        LiveView.reload_all_streams(page)  # type: ignore[arg-type]
+        # Handed over whole, not run here: nothing has reloaded yet.
+        assert len(page.staggered) == 4
+        assert page.reloaded == []
+
+    def test_an_empty_layout_reloads_nothing(self) -> None:
+        page = self._page(held={}, active=[0, 1, 4, 5])
+        LiveView.reload_all_streams(page)  # type: ignore[arg-type]
+        assert page.staggered == []

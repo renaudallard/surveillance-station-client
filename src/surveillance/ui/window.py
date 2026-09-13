@@ -430,6 +430,12 @@ class MainWindow(Gtk.ApplicationWindow):
         if live_view and hasattr(live_view, "restart_camera"):
             live_view.restart_camera(camera_id)
 
+    def reload_all_streams(self) -> None:
+        """Restart every live stream, from the header bar's Reload button."""
+        live_view = self.stack.get_child_by_name("live")
+        if live_view and hasattr(live_view, "reload_all_streams"):
+            live_view.reload_all_streams()
+
     def clear_selected_slot(self) -> None:
         """Clear the selected grid slot on the visible page, if it has one."""
         current_page = self.stack.get_visible_child()

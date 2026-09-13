@@ -147,13 +147,6 @@ than a one-off recovery. Workarounds:
   codec to mux, the stream is piped straight to mpv, so this does not
   apply to it either. Keeps WebSocket, at the price of the audio.
 
-## Audio does not work for cameras using AAC encoding
-
-If ffmpeg is dynamically linked rather than a static build (see the PATH
-workaround above), also make sure its `libx264`/`libx265` libraries are
-actually installed, since some distros split or dlopen them separately and
-AAC audio silently fails to mux without them.
-
 ## Known limitations of the Live View timeline
 
 The Live View timeline (Live/History mode, seeking, playback speed, event

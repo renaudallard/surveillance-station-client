@@ -569,6 +569,7 @@ surveillance-station-client/
 │   │   ├── homemode.py                  home mode toggle
 │   │   ├── license.py                   license management
 │   │   ├── timelapse.py                 time lapse management
+│   │   ├── ffmpeg_check.py              muxing-compatibility check on the ffmpeg found on PATH
 │   │   └── update_check.py              GitHub release version check
 │   ├── ui/
 │   │   ├── window.py                    main window
@@ -605,6 +606,7 @@ surveillance-station-client/
     ├── test_config.py
     ├── test_date_time_picker.py
     ├── test_event_bits.py
+    ├── test_ffmpeg_check.py
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py
     ├── test_logging.py

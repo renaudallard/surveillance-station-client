@@ -246,7 +246,7 @@ class AppHeaderBar(Gtk.HeaderBar):
         """Show the current page in the title and enable the controls it owns."""
         self._page = page_name
         self.title_label.set_label(f"Surveillance Station — {PAGE_TITLES[page_name]}")
-        self.grid_btn.set_sensitive(self._connected and page_name == "live")
+        self._update_grid_button()
         self.timeline_btn.set_visible(page_name == "live")
 
     _THEME_ICONS: ClassVar[dict[str, str]] = {
@@ -311,6 +311,12 @@ class AppHeaderBar(Gtk.HeaderBar):
         else:
             self.badge_label.set_visible(False)
 
+    def _update_grid_button(self) -> None:
+        """Grid Layout is only useful on the Live View page."""
+        on_live = self._connected and self._page == "live"
+        self.grid_btn.set_visible(on_live)
+        self.grid_btn.set_sensitive(on_live)
+
     def set_connected(self, connected: bool) -> None:
         """Enable/disable controls based on connection state."""
         self._connected = connected
@@ -320,5 +326,4 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.sidebar_overlay.set_visible(connected)
         self.notif_overlay.set_visible(connected)
         self.notif_btn.set_sensitive(connected)
-        self.grid_btn.set_visible(connected)
-        self.grid_btn.set_sensitive(connected and self._page == "live")
+        self._update_grid_button()

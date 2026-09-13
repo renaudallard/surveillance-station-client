@@ -339,7 +339,6 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._update_logout_button()
         self.home_btn.set_visible(connected)
         self.home_btn.set_sensitive(connected)
-        self.sidebar_overlay.set_visible(connected)
         self.notif_overlay.set_visible(connected)
         self.notif_btn.set_sensitive(connected)
         self._update_grid_button()

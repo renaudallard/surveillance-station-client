@@ -81,11 +81,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.paned.set_shrink_end_child(False)
         self.paned.set_position(220)
 
-        # Shown instead of the whole sidebar + page stack while logged
-        # out (see _show_logged_out_state). Simpler than a separate
-        # placeholder per page, since none of them have anything to show
-        # without a connection anyway, and the sidebar being hidden means
-        # there is no way to navigate between them regardless.
+        # Shown instead of the whole page stack while logged out (see
+        # _show_logged_out_state). Simpler than a separate placeholder
+        # per page, since none of them have anything to show without a
+        # connection anyway, and the sidebar drops their nav rows while
+        # logged out so none of them can be reached either.
         logged_out_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         logged_out_box.set_halign(Gtk.Align.CENTER)
         logged_out_box.set_valign(Gtk.Align.CENTER)
@@ -200,18 +200,22 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.present()
 
     def _show_logged_out_state(self) -> None:
-        """Hide the sidebar and every header control that needs a
-        connection to do anything, and show a single login prompt in
-        place of the whole page stack. There is nothing any of them
-        has to show without one anyway, so gating each individually
-        would just be more to keep in sync for no real benefit. Safe to
-        call before a first login too, not just on logout: set_connected
-        also covers the header controls' initial hidden state, which
-        AppHeaderBar.__init__ itself only half-does (sensitivity, not
-        visibility). Undone by _setup_content_pages() on login.
+        """Drop every control that needs a connection to do anything and
+        show a single login prompt in place of the whole page stack.
+        There is nothing any of them has to show without one anyway, so
+        gating each individually would just be more to keep in sync for
+        no real benefit. The sidebar stays, trimmed to its Settings row
+        (see CameraSidebar.set_logged_out): that page is this client's
+        own tunables and works with no NAS behind it, and the sidebar is
+        the only way to reach it. Safe to call before a first login too,
+        not just on logout: set_connected also covers the header
+        controls' initial hidden state, which AppHeaderBar.__init__
+        itself only half-does (sensitivity, not visibility). Undone by
+        _setup_content_pages() on login.
         """
         self.headerbar.set_connected(False)
-        self.sidebar.set_visible(False)
+        self.sidebar.set_logged_out(True)
+        self.sidebar.set_visible(self.app.config.sidebar_visible)
         self.stack.set_visible_child_name("logged_out")
         self.headerbar.set_page("logged_out")
 
@@ -363,6 +367,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _setup_content_pages(self) -> None:
         """Build the real content widgets and undo _show_logged_out_state()."""
+        self.sidebar.set_logged_out(False)
         self.sidebar.set_visible(self.app.config.sidebar_visible)
 
         from surveillance.ui.about import AboutView

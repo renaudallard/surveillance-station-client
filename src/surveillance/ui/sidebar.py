@@ -86,6 +86,7 @@ class CameraSidebar(Gtk.Box):
         refresh_btn.set_tooltip_text("Refresh")
         refresh_btn.connect("clicked", lambda _: self.refresh())
         header.append(refresh_btn)
+        self._list_header = header
         self.append(header)
 
         # Scrollable camera list
@@ -151,6 +152,20 @@ class CameraSidebar(Gtk.Box):
 
         self.append(Gtk.Separator())
         self.append(nav_box)
+
+    def set_logged_out(self, logged_out: bool) -> None:
+        """Leave only what works without a session.
+
+        The camera list and every nav row but Settings need one, so they
+        go away until login; Settings is this client's own tunables and
+        is built before any connection exists. Hidden rather than just
+        disabled, matching how the header bar treats its own
+        session-only controls. The empty list keeps its space so the
+        Settings row stays where it always sits, at the bottom.
+        """
+        self._list_header.set_visible(not logged_out)
+        for page_name, btn in self._nav_buttons.items():
+            btn.set_visible(not logged_out or page_name == "settings")
 
     def set_update_available(self, available: bool) -> None:
         """Show/hide the update dot on the About nav row."""

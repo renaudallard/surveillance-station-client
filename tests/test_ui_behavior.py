@@ -829,3 +829,58 @@ class TestRecordingFilterConfig:
             _write_config(config)
             loaded = load_config()
             assert loaded.search_time_preset == preset
+
+
+class _Visible:
+    """Stand-in for the visibility half of a Gtk.Widget."""
+
+    def __init__(self) -> None:
+        self.visible = True
+
+    def set_visible(self, visible: bool) -> None:
+        self.visible = visible
+
+
+class TestSidebarLoggedOut:
+    """Settings is built before any connection exists and works without
+    one, and the sidebar's nav list is the only route to it, so a logout
+    has to leave that row behind while dropping the rest."""
+
+    _PAGES = (
+        "live",
+        "recordings",
+        "snapshots",
+        "events",
+        "timelapse",
+        "licenses",
+        "settings",
+        "about",
+    )
+
+    def _sidebar(self) -> object:
+        from surveillance.ui.sidebar import CameraSidebar
+
+        sidebar = CameraSidebar.__new__(CameraSidebar)
+        sidebar._list_header = _Visible()  # type: ignore[assignment]
+        sidebar._nav_buttons = {p: _Visible() for p in self._PAGES}  # type: ignore[misc]
+        return sidebar
+
+    def test_logout_leaves_only_the_settings_row(self) -> None:
+        from surveillance.ui.sidebar import CameraSidebar
+
+        sidebar = self._sidebar()
+        CameraSidebar.set_logged_out(sidebar, True)  # type: ignore[arg-type]
+
+        assert sidebar._list_header.visible is False  # type: ignore[attr-defined]
+        shown = [p for p, b in sidebar._nav_buttons.items() if b.visible]  # type: ignore[attr-defined]
+        assert shown == ["settings"]
+
+    def test_login_brings_every_row_back(self) -> None:
+        from surveillance.ui.sidebar import CameraSidebar
+
+        sidebar = self._sidebar()
+        CameraSidebar.set_logged_out(sidebar, True)  # type: ignore[arg-type]
+        CameraSidebar.set_logged_out(sidebar, False)  # type: ignore[arg-type]
+
+        assert sidebar._list_header.visible is True  # type: ignore[attr-defined]
+        assert all(b.visible for b in sidebar._nav_buttons.values())  # type: ignore[attr-defined]

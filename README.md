@@ -189,6 +189,11 @@ On launch, a login dialog asks for your NAS connection details:
 <details>
 <summary><b>Basic usage</b></summary>
 
+Before you connect, a login prompt fills the window and only what works
+without a NAS stays on screen: the sidebar keeps its **Settings** row, and
+the header bar keeps the panel and theme toggles beside a **Login** button.
+Everything else appears once you are connected.
+
 After connecting, the camera list appears in the sidebar. Click a camera to
 start its live stream. Use the navigation buttons at the bottom of the sidebar
 to switch between **Live View**, **Recordings**, **Snapshots**, **Events**,

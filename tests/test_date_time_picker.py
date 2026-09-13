@@ -56,10 +56,10 @@ class FakeDateTime:
 
 @dataclass
 class FakeCalendar:
-    """select_day() updates get_date() the way the real GtkCalendar
-    eventually does, since these tests exercise the app's own logic
-    rather than GTK's separate, untestable-without-a-display timing
-    (see _on_date_notify's own comment on that)."""
+    """select_day() updates get_date() and emits nothing, which is the
+    half of the real GtkCalendar these tests need: the notification it
+    would emit lands inside the call, where _programmatic_change is
+    already up, so the handler under test never sees it."""
 
     date: FakeDateTime
     selected: list[FakeDateTime] = field(default_factory=list)
@@ -162,18 +162,6 @@ class TestRefreshStatusAndValidity:
 
 
 class TestOnDateNotify:
-    def test_ignores_the_deferred_notification_from_its_own_revert(self) -> None:
-        """calendar.select_day() (used below to revert a refused click)
-        does not fire notify::day/month/year synchronously in real GTK,
-        so the guard around it can't rely on timing -- see the method's
-        own comment. This exercises that guard directly: a notification
-        reporting the date already considered selected must be a no-op,
-        not reprocessed as a fresh click."""
-        picker = _make_picker(date=FakeDateTime(2026, 9, 5), available_days={5, 6, 7})
-        picker.status_label.set_label("untouched")
-        picker._on_date_notify(picker.calendar, None)
-        assert picker.status_label.get_label() == "untouched"
-
     def test_refuses_a_day_with_no_recording_and_reverts(self) -> None:
         picker = _make_picker(date=FakeDateTime(2026, 8, 31), available_days={5, 6, 7})
         clicked = FakeDateTime(2026, 8, 25)

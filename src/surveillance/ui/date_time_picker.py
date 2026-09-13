@@ -253,25 +253,6 @@ class DateTimePicker(Gtk.Box):
             return
         gdt = calendar.get_date()
         year, month, day = gdt.get_year(), gdt.get_month(), gdt.get_day_of_month()
-        if (year, month, day) == (
-            self._last_valid_date.get_year(),
-            self._last_valid_date.get_month(),
-            self._last_valid_date.get_day_of_month(),
-        ):
-            # calendar.select_day() below (reverting an invalid click) does
-            # not fire notify::day/month/year synchronously. GTK queues
-            # it, so by the time it actually arrives _programmatic_change
-            # has already been reset by the finally block and no longer
-            # guards it. Reprocessing that deferred notification as a new
-            # click landed on whatever day it reverted to would overwrite
-            # the refusal message that revert was trying to show with that
-            # day's own status instead.
-            #
-            # This can only be that deferred revert, not a genuine second
-            # click on the already-selected day: GtkCalendar suppresses
-            # notify::day/month/year entirely for a click landing on the
-            # day already selected, so a real one never reaches here.
-            return
         if (year, month) != self._last_valid_month:
             # A different month has no availability answer yet (marks
             # don't carry over -- GtkCalendar's own marks are always

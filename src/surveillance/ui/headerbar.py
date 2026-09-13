@@ -53,6 +53,7 @@ PAGE_TITLES: dict[str, str] = {
     "licenses": "Licenses",
     "settings": "Settings",
     "about": "About",
+    "logged_out": "Login",
 }
 
 
@@ -181,12 +182,22 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._build_theme_popover()
         self.pack_end(self.theme_btn)
 
-        # Logout button
-        logout_btn = Gtk.Button()
-        logout_btn.set_icon_name("system-log-out-symbolic")
-        logout_btn.set_tooltip_text("Logout")
-        logout_btn.set_action_name("app.logout")
-        self.pack_end(logout_btn)
+        # Logout button; doubles as Login when not connected (app.logout
+        # itself already falls back to showing the login dialog in that
+        # case, see SurveillanceApp._on_logout), so only its icon/tooltip
+        # need to track connection state; see _update_logout_button.
+        self.logout_btn = Gtk.Button()
+        self.logout_btn.set_action_name("app.logout")
+        self._update_logout_button()
+        self.pack_end(self.logout_btn)
+
+    def _update_logout_button(self) -> None:
+        if self._connected:
+            self.logout_btn.set_icon_name("system-log-out-symbolic")
+            self.logout_btn.set_tooltip_text("Logout")
+        else:
+            self.logout_btn.set_icon_name("avatar-default-symbolic")
+            self.logout_btn.set_tooltip_text("Login")
 
     def _update_sidebar_tooltip(self, visible: bool) -> None:
         self.sidebar_btn.set_tooltip_text("Hide Panel" if visible else "Show Panel")
@@ -249,7 +260,7 @@ class AppHeaderBar(Gtk.HeaderBar):
         """Show the current page in the title and enable the controls it owns."""
         self._page = page_name
         self.title_label.set_label(f"Surveillance Station — {PAGE_TITLES[page_name]}")
-        self.grid_btn.set_sensitive(self._connected and page_name == "live")
+        self._update_grid_button()
         self.reload_btn.set_sensitive(self._connected and page_name == "live")
         self.reload_btn.set_visible(page_name == "live")
         self.timeline_btn.set_visible(page_name == "live")
@@ -316,10 +327,20 @@ class AppHeaderBar(Gtk.HeaderBar):
         else:
             self.badge_label.set_visible(False)
 
+    def _update_grid_button(self) -> None:
+        """Grid Layout is only useful on the Live View page."""
+        on_live = self._connected and self._page == "live"
+        self.grid_btn.set_visible(on_live)
+        self.grid_btn.set_sensitive(on_live)
+
     def set_connected(self, connected: bool) -> None:
         """Enable/disable controls based on connection state."""
         self._connected = connected
+        self._update_logout_button()
+        self.home_btn.set_visible(connected)
         self.home_btn.set_sensitive(connected)
+        self.sidebar_overlay.set_visible(connected)
+        self.notif_overlay.set_visible(connected)
         self.notif_btn.set_sensitive(connected)
-        self.grid_btn.set_sensitive(connected and self._page == "live")
+        self._update_grid_button()
         self.reload_btn.set_sensitive(connected and self._page == "live")

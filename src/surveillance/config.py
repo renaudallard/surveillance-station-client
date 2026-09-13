@@ -139,6 +139,12 @@ class AppConfig:
     # visiting the About page) — suppresses the update indicator for that
     # same release without needing to re-check it against the live tag.
     dismissed_update_version: str = ""
+    # Set once the user checks "Don't show this again" on the ffmpeg
+    # version warning (see window.py's _show_ffmpeg_warning_dialog).
+    # Unlike dismissed_update_version this isn't tied to a specific
+    # value, since the affected-ffmpeg check itself doesn't change
+    # per-launch the way a release tag does.
+    ffmpeg_warning_dismissed: bool = False
     grid_layout: str = "2x2"
     last_page: str = "live"
     layout_cameras: dict[str, list[int]] = field(default_factory=dict)
@@ -321,6 +327,7 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         sidebar_visible=general.get("sidebar_visible", True),
         timeline_visible=general.get("timeline_visible", True),
         dismissed_update_version=general.get("dismissed_update_version", ""),
+        ffmpeg_warning_dismissed=general.get("ffmpeg_warning_dismissed", False),
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
         layout_cameras=session.get("layout_cameras", {}),
@@ -404,6 +411,7 @@ def _write_config(config: AppConfig) -> None:
             "sidebar_visible": config.sidebar_visible,
             "timeline_visible": config.timeline_visible,
             "dismissed_update_version": config.dismissed_update_version,
+            "ffmpeg_warning_dismissed": config.ffmpeg_warning_dismissed,
             "snapshot_dir": config.snapshot_dir,
         },
         "session": {

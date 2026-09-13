@@ -233,6 +233,7 @@ theme = "auto"                  # "auto" (follow OS), "dark", or "light"
 sidebar_visible = true          # camera sidebar shown at startup
 timeline_visible = true         # Live View timeline strip shown at startup
 dismissed_update_version = ""   # release tag whose update notice was dismissed
+ffmpeg_warning_dismissed = false  # "Don't show this again" on the ffmpeg compatibility notice
 poll_interval_cameras = 30      # seconds, minimum 5; also how often a lost stream is retried
 poll_interval_alerts = 30
 poll_interval_homemode = 60
@@ -527,7 +528,9 @@ surveillance-station-client/
 ├── scripts/
 │   └── dump_event_map.py                diagnostic tool for extending EVENT_BITMASK.md
 ├── data/
-│   └── org.surveillance.desktop
+│   ├── org.surveillance.app.desktop
+│   └── icons/hicolor/scalable/apps/
+│       └── org.surveillance.app.svg  app icon
 ├── .github/ISSUE_TEMPLATE/
 │   ├── bug_report.yml                   bug report form
 │   └── config.yml                       issue template config
@@ -600,6 +603,7 @@ surveillance-station-client/
     ├── test_advanced_search.py
     ├── test_api_client.py
     ├── test_config.py
+    ├── test_date_time_picker.py
     ├── test_event_bits.py
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py

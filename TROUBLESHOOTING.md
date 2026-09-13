@@ -62,7 +62,7 @@ falls back to the same "Camera offline" placeholder rather than a frozen
 frame. "(attempting reconnect)" means it's currently retrying the real
 stream after such a failure.
 
-This also recovers automatically, no action needed &mdash; both transports
+This also recovers automatically, no action needed. Both transports
 retry on every camera-status poll while the camera is still reported
 enabled, so the wait between one attempt and the next is
 `poll_interval_cameras` (30s by default). If a specific camera never
@@ -71,6 +71,11 @@ sidebar and try switching protocol (e.g. RTSP instead of WebSocket, or
 vice versa) as a workaround.
 
 ## A camera with audio repeatedly stalls or loses its WebSocket stream
+
+The app checks the ffmpeg on its own `PATH` at startup and shows a one-time
+notice (with a "Don't show this again" checkbox) if it's a version known to
+have this problem, since History mode reaches it regardless of a camera's
+own Live protocol. The rest of this section covers what to do about it.
 
 The symptom in the log is a slot giving up with a stalled pipe write:
 
@@ -141,6 +146,13 @@ than a one-off recovery. Workarounds:
 - Turn the camera's audio off in Surveillance Station. With no audio
   codec to mux, the stream is piped straight to mpv, so this does not
   apply to it either. Keeps WebSocket, at the price of the audio.
+
+## Audio does not work for cameras using AAC encoding
+
+If ffmpeg is dynamically linked rather than a static build (see the PATH
+workaround above), also make sure its `libx264`/`libx265` libraries are
+actually installed, since some distros split or dlopen them separately and
+AAC audio silently fails to mux without them.
 
 ## Known limitations of the Live View timeline
 

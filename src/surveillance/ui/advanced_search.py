@@ -153,6 +153,14 @@ class AdvancedSearchDialog(Gtk.Window):
             self.from_date.connect(prop, self._on_calendar_date_changed)
         from_box.append(self.from_date)
 
+        # GtkCalendar's own selected-day highlight renders invisibly under
+        # at least one real GTK4 theme (Breeze). This label is the one
+        # guaranteed to actually show which day is selected regardless of
+        # theme.
+        self.from_date_label = Gtk.Label(xalign=0)
+        self.from_date_label.add_css_class("dim-label")
+        from_box.append(self.from_date_label)
+
         self.from_time_entry = Gtk.Entry()
         self.from_time_entry.set_placeholder_text("00:00:00")
         self.from_time_entry.set_max_length(8)
@@ -170,6 +178,10 @@ class AdvancedSearchDialog(Gtk.Window):
         for prop in ("notify::day", "notify::month", "notify::year"):
             self.to_date.connect(prop, self._on_calendar_date_changed)
         to_box.append(self.to_date)
+
+        self.to_date_label = Gtk.Label(xalign=0)
+        self.to_date_label.add_css_class("dim-label")
+        to_box.append(self.to_date_label)
 
         self.to_time_entry = Gtk.Entry()
         self.to_time_entry.set_placeholder_text("23:59:59")
@@ -325,6 +337,8 @@ class AdvancedSearchDialog(Gtk.Window):
             self._update_all_event_types_state()
             self._on_all_event_types_toggled(self.all_types_btn)
 
+        self._update_date_labels()
+
     def _on_all_cameras_toggled(self, btn: Gtk.CheckButton) -> None:
         active = btn.get_active()
         for check in self._camera_checks.values():
@@ -473,10 +487,15 @@ class AdvancedSearchDialog(Gtk.Window):
         selected across one of them makes the page recompute the range from
         the preset and discard the dates the user picked.
         """
+        self._update_date_labels()
         if self._syncing_fields:
             return
         self._time_range_set = True
         self._clear_preset_selection()
+
+    def _update_date_labels(self) -> None:
+        self.from_date_label.set_label(f"Selected: {self.from_date.get_date().format('%Y-%m-%d')}")
+        self.to_date_label.set_label(f"Selected: {self.to_date.get_date().format('%Y-%m-%d')}")
 
     def _get_from_time(self) -> datetime | None:
         """Return the start of the time range, or None if not set."""

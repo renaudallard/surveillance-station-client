@@ -58,7 +58,9 @@ _FIRST_AFFECTED_MAJOR = 7
 # "... version n7.1.5 ...", a git snapshot's "n" prefix, "... version
 # 6.0.1-static ...", a static build's suffix, or "... version
 # 7.1.5-0+deb13u1 ..." a distro's patch suffix) -- just the leading major
-# number, whatever comes after it.
+# number, whatever comes after it. A build straight from master carries no
+# major number at all ("ffmpeg version N-121055-g1a2b3c4d"), so it does not
+# match and the check stays quiet rather than guessing at one.
 _VERSION_RE = re.compile(rb"ffmpeg version n?(\d+)\.")
 
 

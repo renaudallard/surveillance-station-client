@@ -262,12 +262,14 @@ class MainWindow(Gtk.ApplicationWindow):
                 about_page.on_page_shown()
 
     def _check_ffmpeg_version(self) -> None:
-        """Warn once per launch if ffmpeg is a version known to stall
+        """Warn on connecting if ffmpeg is a version known to stall
         muxed audio (see TROUBLESHOOTING.md), unless already dismissed
-        for good. Not gated on any particular camera/protocol being
-        configured: History mode always goes through the muxed
-        WebSocket path regardless of a camera's own Live protocol, so
-        every camera can hit this eventually.
+        for good. Runs on every login rather than once per process, so
+        logging out and back in asks again; the dialog's own checkbox
+        is what settles it for good. Not gated on any particular
+        camera/protocol being configured: History mode always goes
+        through the muxed WebSocket path regardless of a camera's own
+        Live protocol, so every camera can hit this eventually.
         """
         if self.app.config.ffmpeg_warning_dismissed:
             return
@@ -300,8 +302,8 @@ class MainWindow(Gtk.ApplicationWindow):
             label=(
                 "Your ffmpeg version has a known issue that can stall or freeze "
                 "a camera's video when its audio is muxed in over WebSocket. "
-                "This has been observed on ffmpeg versions 7.0 through at least "
-                "9.0. Versions below 7 have been found to work well with this app."
+                "Every release from 7.0 onwards is affected, up to and including "
+                "9.0. ffmpeg 6.1.1 is the one version confirmed unaffected."
             )
         )
         label.set_wrap(True)

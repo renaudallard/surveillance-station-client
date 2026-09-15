@@ -3007,21 +3007,31 @@ class LiveView(Gtk.Box):
     def _on_slot_audio_ended(self, slot_idx: int, bridge: WebSocketBridge) -> None:
         """The gap watchdog ended this slot's audio for the session.
 
-        Greys the volume control, which the camera poll would get to on
-        its own eventually, but also tells mpv the track is gone. It is
-        still reading a container that declares one, and nothing in a
-        live stream ever marks a track as finished, so otherwise it goes
-        on holding a track that can never deliver another packet.
+        Greys the volume control at once, which the camera poll would
+        otherwise take up to its own interval to get to.
+
+        **Do not deselect the audio track here.** It looks like the tidy
+        thing to do, since the track can never deliver another packet and
+        mpv goes on holding a decoder for it. Measured against real
+        libmpv, deselecting is what wedges the whole stream: while the
+        track is still selected mpv keeps reading the pipe hoping for
+        audio, and dropping it leaves mpv needing only video, satisfied
+        by demuxer-readahead-secs, which at any ordinary camera bitrate
+        is far less than the 1 MiB already sitting in ffmpeg's output
+        pipe. mpv stops reading with the pipe full, ffmpeg blocks writing
+        to it, stops reading our video input, and the bridge gives the
+        stream up. Reproduced 3 of 3 with the deselection and 0 of 3
+        without, with everything else held constant, and it matched the
+        give-up seen live every 24-88s after this fires.
         """
         slot = self._slots[slot_idx]
         if slot._ws_bridge is not bridge:
             return  # the slot moved on to another stream meanwhile
         log.info(
-            "Audio ended for slot %d (%s); dropping the track from the player",
+            "Audio ended for slot %d (%s)",
             slot_idx,
             slot.camera.name if slot.camera else "no camera",
         )
-        slot.player.drop_audio_track()
         slot.set_audio_playable(False)
 
     def _start_rtsp_monitor(self, slot: CameraSlot, url: str) -> None:

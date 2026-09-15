@@ -762,23 +762,6 @@ class MpvGLArea(Gtk.GLArea):
             with contextlib.suppress(Exception):
                 self._mpv.pause = paused
 
-    def drop_audio_track(self) -> None:
-        """Deselect the audio track on the stream already playing.
-
-        For a muxed stream whose camera has gone quiet for good (see
-        WebSocketBridge.wait_audio_ended): the track stays in the
-        container, but no packet will ever arrive on it again. Leaving
-        it selected keeps a decoder and an audio output open on a track
-        that has nothing left to give.
-
-        Attribute access, not mpv[name]: aid is an option too, so
-        mpv["aid"] would write options/aid and leave the track selected
-        on the stream that is actually playing.
-        """
-        if self._mpv:
-            with contextlib.suppress(Exception):
-                self._mpv.aid = "no"
-
     def set_history_speed(self, value: float) -> None:
         """Update DSM's own History-speed multiplier for an already-
         playing stream (Live View's timeline speed dropdown, changed

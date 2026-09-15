@@ -2718,3 +2718,35 @@ class TestCancelDuringKeepaliveShutdown:
         assert pump.done(), "the cancel was swallowed with the keepalive wait"
         assert len(connections) == 1
         await bridge.stop()
+
+
+class TestVideoFormat:
+    """What the raw pipe's reader is told the codec is. DSM states it in
+    the codec-info frame and it was being dropped on exactly the path
+    with no container to fall back on."""
+
+    async def _format_for(self, connect: Any, codec: bytes) -> str:
+        connect(_FakeWS([_frame(b"vdoCodec=" + codec, b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        try:
+            return bridge.video_format
+        finally:
+            await bridge.stop()
+
+    async def test_h264_becomes_libavformats_name(self, connect: Any) -> None:
+        assert await self._format_for(connect, b"H264") == "h264"
+
+    async def test_h265_becomes_hevc(self, connect: Any) -> None:
+        """Not a pass-through of DSM's own string: libavformat calls it
+        hevc, and mpv is given libavformat's name."""
+        assert await self._format_for(connect, b"H265") == "hevc"
+
+    async def test_an_unknown_codec_says_nothing(self, connect: Any) -> None:
+        """Better to leave the reader detecting than to name a format
+        this client has never verified."""
+        assert await self._format_for(connect, b"AV1") == ""
+
+    async def test_empty_before_any_codec_frame(self) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        assert bridge.video_format == ""

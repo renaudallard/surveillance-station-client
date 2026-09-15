@@ -72,10 +72,16 @@ class _Recorder:
         self.options[name.replace("_", "-")] = value
 
 
-def _applied(*, low_latency: bool, muxed_audio: bool, history_speed: float = 1.0) -> dict[str, Any]:
+def _applied(
+    *,
+    low_latency: bool,
+    muxed_audio: bool,
+    history_speed: float = 1.0,
+    video_format: str = "",
+) -> dict[str, Any]:
     """The options one profile writes.
 
-    _apply_playback_options only reads four attributes, so it runs
+    _apply_playback_options only reads five attributes, so it runs
     against a stand-in rather than a real widget, which would need a GL
     context and libmpv.
     """
@@ -86,6 +92,7 @@ def _applied(*, low_latency: bool, muxed_audio: bool, history_speed: float = 1.0
             self._low_latency = low_latency
             self._muxed_audio = muxed_audio
             self._history_speed = history_speed
+            self._video_format = video_format
 
     widget = _Widget()
     MpvGLArea._apply_playback_options(widget)  # type: ignore[arg-type]
@@ -371,3 +378,46 @@ class TestDropAudioTrack:
                 self._mpv = None
 
         MpvGLArea.drop_audio_track(_Widget())  # type: ignore[arg-type]
+
+
+class TestForcedRawFormat:
+    """The raw pipe carries no container, so mpv is left scoring the
+    first bytes against every format it knows, on the 32 it is given.
+    A camera whose stream scores too low is refused outright with
+    "Failed to recognize file format", never decodes, and so never
+    drains the pipe, which surfaces as a stalled write seconds later.
+    DSM names the codec, so the guess is avoidable.
+    """
+
+    def test_low_latency_is_told_the_format(self) -> None:
+        opts = _applied(low_latency=True, muxed_audio=False, video_format="h264")
+        assert opts["demuxer-lavf-format"] == "h264"
+
+    def test_hevc_is_passed_through_too(self) -> None:
+        opts = _applied(low_latency=True, muxed_audio=False, video_format="hevc")
+        assert opts["demuxer-lavf-format"] == "hevc"
+
+    def test_a_raw_pipe_with_a_cache_is_still_told(self) -> None:
+        """A fast History rewind gives the low-latency profile a cache,
+        which makes it timed; the pipe is still raw either way."""
+        opts = _applied(
+            low_latency=True, muxed_audio=False, history_speed=32.0, video_format="h264"
+        )
+        assert opts["demuxer-lavf-format"] == "h264"
+
+    def test_a_container_profile_stays_on_auto_detection(self) -> None:
+        """Forcing h264 on the Matroska our own ffmpeg produces, or on
+        RTSP, would break exactly the streams that work today. The widget
+        is reused across protocols, so this has to be cleared, not just
+        left unset."""
+        for opts in (
+            _applied(low_latency=False, muxed_audio=True, video_format="h264"),
+            _applied(low_latency=False, muxed_audio=False, video_format="h264"),
+        ):
+            assert opts["demuxer-lavf-format"] == ""
+
+    def test_an_unknown_codec_falls_back_to_auto_detection(self) -> None:
+        """WebSocketBridge.video_format is "" for a codec this client has
+        no name for, which must leave mpv exactly as it behaved before."""
+        opts = _applied(low_latency=True, muxed_audio=False, video_format="")
+        assert opts["demuxer-lavf-format"] == ""

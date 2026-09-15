@@ -306,6 +306,11 @@ class MpvGLArea(Gtk.GLArea):
         self._tls_verify = tls_verify
         self._low_latency = False
         self._muxed_audio = False
+        # libavformat's name for the raw pipe's codec, handed over by
+        # play(). Empty means auto-detection, which is every profile
+        # with a real container and any stream started before one
+        # is known.
+        self._video_format = ""
         self._start_offset: float = 0
         self._zoom: float = 0.0
         self._pan_x: float = 0.0
@@ -578,6 +583,14 @@ class MpvGLArea(Gtk.GLArea):
         # detection everywhere else, and well below the probesize of
         # 5000000 the default profile used to inherit.
         self._mpv["demuxer-lavf-probesize"] = 32768 if timed else 32
+        # Only the raw pipe needs telling: it has no container, so
+        # libavformat is otherwise left scoring the first bytes against
+        # every format it knows, on the 32 bytes above. A stream that
+        # scores too low is refused outright rather than played badly
+        # (see WebSocketBridge.video_format). The other two profiles
+        # carry a real container and must stay on auto-detection, which
+        # is what "" restores on a widget reused across protocols.
+        self._mpv["demuxer-lavf-format"] = self._video_format if self._low_latency else ""
 
         self._cache_control_enabled = self._mpv["cache-secs"] > 0
 
@@ -678,6 +691,7 @@ class MpvGLArea(Gtk.GLArea):
         muxed_audio: bool = False,
         start_offset: float = 0,
         history_speed: float = 1.0,
+        video_format: str = "",
     ) -> None:
         """Start playing a stream URL.
 
@@ -703,6 +717,7 @@ class MpvGLArea(Gtk.GLArea):
         self._muxed_audio = muxed_audio
         self._start_offset = start_offset
         self._history_speed = history_speed
+        self._video_format = video_format
         if self._initialized and self._mpv:
             try:
                 self._apply_playback_options()

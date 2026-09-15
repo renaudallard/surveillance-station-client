@@ -418,6 +418,10 @@ class WebSocketBridge:
         self._video_write_in_flight = False
         self._audio_active = False
         self._audio_codec: str = ""
+        # libavformat's name for DSM's video codec, set from the
+        # codec-info frame (see _setup_pipes/video_format). Empty until
+        # one arrives, and for a codec this client does not know.
+        self._video_format: str = ""
         self._ready_event = asyncio.Event()
         # Raised once _watch_audio_gap has ended the audio stream, so the
         # player can be told the track is gone (see wait_audio_ended).
@@ -528,6 +532,12 @@ class WebSocketBridge:
         AacDetector's own video-frame cap, or _AAC_DETECTION_TIMEOUT.
         """
         self._audio_codec = audio_codec
+        # DSM names the video codec here, which is the only place it is
+        # ever stated. The muxed path hands it to ffmpeg below; the raw
+        # path hands the pipe straight to mpv, which would otherwise have
+        # to guess it back off the first bytes (see the video_format
+        # property for why that guess is worth sparing it).
+        self._video_format = _FFMPEG_VIDEO_FORMAT.get(video_codec, "")
         if video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _AAC_AUDIO_CODECS:
             self._pending_video_codec = video_codec
             self._aac.start(_AAC_DETECTION_TIMEOUT)
@@ -1355,6 +1365,26 @@ class WebSocketBridge:
         position. A thin public wrapper around
         _current_history_target() for callers outside this class."""
         return self._current_history_target() if self.is_history else None
+
+    @property
+    def video_format(self) -> str:
+        """libavformat's demuxer name for this stream's video, "" if
+        unknown, for a caller handing the raw pipe to a player.
+
+        The raw video-only pipe carries no container, so a player is left
+        probing the first bytes for the codec. mpv gives libavformat 32
+        bytes for it, its own minimum, chosen for the fastest possible
+        Live startup -- and whether a raw stream scores high enough to be
+        accepted on that much depends on the camera. One that does not
+        fails outright with "Failed to recognize file format", never
+        decodes, and so never drains the pipe, which the bridge then
+        reports as a stalled write about eight seconds later. Confirmed
+        live on a camera that did this every retry for as long as it ran.
+
+        Passing the name DSM already told us means that path never probes
+        at all, so it cannot fail this way on any camera.
+        """
+        return self._video_format
 
     def consume_last_real_tick(self) -> int | None:
         """Return the furthest real (frame-derived) absolute position

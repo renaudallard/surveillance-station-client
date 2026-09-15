@@ -50,6 +50,24 @@ that can't be reached is what used to wedge the slot permanently. Nothing
 to do here; the sidebar polls camera status periodically (30s by default),
 and the real feed comes back on its own once the camera is reachable again.
 
+## One camera never shows a picture, and its stream is given up every ~30s
+
+Look in a `--debug` log for `Failed to recognize file format` a few seconds
+before each `gave up (video pipe write stalled ...)` for that camera.
+
+A camera with no audio the client can mux gets a raw H.264/H.265 pipe with
+no container around it, so the player has to work the codec out from the
+first bytes. Whether a raw stream can be identified on that little depends
+on the camera. One that cannot is refused outright, never decodes, and so
+never reads from the pipe, which the client then reports as a stalled write
+about eight seconds later, retrying for as long as it runs.
+
+Fixed in 0.11.5: DSM names the codec when the stream opens, and the client
+now passes that name to the player instead of leaving it to guess. Nothing
+to configure. On an older release the workaround is
+`SURVEILLANCE_MPV_OPTS='demuxer-lavf-probescore=1'`, which lowers the bar
+the guess has to clear.
+
 ## A live view slot shows "(stream lost)" or "(attempting reconnect)"
 
 This means the stream stopped responding mid-session and didn't recover on

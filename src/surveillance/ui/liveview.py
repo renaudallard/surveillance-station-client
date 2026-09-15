@@ -2961,6 +2961,7 @@ class LiveView(Gtk.Box):
                     low_latency=not bridge.audio_active,
                     muxed_audio=bridge.audio_active,
                     history_speed=float(self._timeline_speed) if bridge.is_history else 1.0,
+                    video_format=bridge.video_format,
                 )
                 # Corrects the optimistic has_audio-based guess from
                 # _update_slot_audio() now that whether DSM's audio codec

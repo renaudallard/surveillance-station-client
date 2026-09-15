@@ -468,8 +468,15 @@ class AacDetector:
                 stderr=subprocess.PIPE,
             )
         except OSError:
-            # Can't validate without ffmpeg; say yes and let the
-            # bridge's own OSError handling drop us to video-only.
+            # No ffmpeg, so this cannot answer at all. Saying yes rather
+            # than raising is safe only because of what the answer feeds
+            # into: finish() hands the verdict to
+            # ws_bridge._finish_aac_detection, which calls
+            # _start_aac_pipeline, and that wraps its own _start_muxed
+            # spawn in except OSError and falls back to video-only when
+            # ffmpeg is missing there too. A future caller acting on this
+            # verdict without that second spawn behind it would read
+            # "could not check" as "the framing is fine".
             return True
         # Which framing was under test, on every line: this runs twice
         # per camera (payload-prefix first, then header-prepend), so an

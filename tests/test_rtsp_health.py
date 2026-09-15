@@ -145,3 +145,44 @@ class TestRtspHealth:
         assert not gave_up
         assert player.play_calls == 0
         assert recovered
+
+
+class TestFlappingStreamGivesUp:
+    """A camera that produces a few seconds of video between stalls used
+    to cycle indefinitely: the stall count was consecutive, and every
+    short-lived recovery cleared it, so the give-up was unreachable for
+    exactly the failure it was meant to catch (confirmed live on a 4x4
+    layout, roughly 8s of video and 22s of dropout, repeating).
+    """
+
+    @staticmethod
+    def _flapping(cycles: int) -> list[float]:
+        """Per cycle: a first frame, one that advances (so the monitor
+        marks the attempt good), then the same position again (the
+        stall). Positions keep climbing so no cycle looks like a replay
+        of the one before."""
+        positions: list[float] = []
+        for n in range(cycles):
+            base = 10.0 * n
+            positions += [base + 1.0, base + 2.0, base + 2.0]
+        return positions
+
+    def test_it_stops_cycling_and_hands_the_stream_back(self) -> None:
+        mon, player, (gave_up, _) = _monitor(self._flapping(8))
+        for _ in range(24):
+            if not mon._check():
+                break
+        assert gave_up, "a stream that never recovers for long must not cycle forever"
+        assert player.play_calls < 8, "it should stop restarting once the allowance is spent"
+
+    def test_a_pause_does_not_hand_back_a_fresh_allowance(self) -> None:
+        """Otherwise pausing and resuming a flapping camera resets the
+        count, which is the same endless cycle with an extra step."""
+        mon, _, _ = _monitor(self._flapping(8))
+        for _ in range(6):
+            mon._check()
+        spent = mon._restarts
+        assert spent > 0, "the scenario has to have restarted something to be worth asserting on"
+        mon.set_paused(True)
+        mon.set_paused(False)
+        assert mon._restarts == spent

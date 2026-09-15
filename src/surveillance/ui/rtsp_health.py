@@ -35,8 +35,8 @@ by reproducing that exact failure mode this investigation).
 
 This fills that gap for RTSP: watch mpv's own time_pos to confirm a
 stream is actually advancing, retry play() on the same URL if it isn't,
-and give up (report back) after too many failures in a row so a slot
-doesn't sit silently wedged forever.
+and give up (report back) once it has spent its restarts so a slot
+doesn't sit silently wedged, or endlessly flapping, forever.
 """
 
 from __future__ import annotations
@@ -53,7 +53,17 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _CHECK_INTERVAL_SECS = 5
-_MAX_CONSECUTIVE_STALLS = 3
+# How many mid-stream stalls one monitor will spend restarting before it
+# hands the stream back. Counted for the session, not consecutively: a
+# camera that produces a few seconds of video between stalls cleared a
+# consecutive count on every one of them, so it never reached this and
+# cycled indefinitely, a black flash and ~20s of dropout at a time.
+#
+# Giving up is not the end of the road. The slot is marked stream-lost
+# and the camera poll starts a fresh monitor, with a fresh allowance,
+# within its own interval, so this trades an endless fast cycle for a
+# slower and quieter one that also tells the user what is happening.
+_MAX_RESTARTS = 3
 # How long to wait for the first frame before deciding the stream will
 # never start. Cameras over a slow link can take well over one interval to
 # produce their first frame, so give a generous window rather than aborting
@@ -81,7 +91,7 @@ class RtspHealthMonitor:
         self._advancing = False  # has the current attempt produced a moving frame
         self._startup_checks = 0
         self._last_time_pos: float | None = None
-        self._consecutive_stalls = 0
+        self._restarts = 0
         # Set by Live View's timeline Pause button -- see set_paused.
         self._paused = False
         self._timer_id: int = GLib.timeout_add_seconds(_CHECK_INTERVAL_SECS, self._check)
@@ -111,7 +121,9 @@ class RtspHealthMonitor:
             return
         self._advancing = False
         self._startup_checks = 0
-        self._consecutive_stalls = 0
+        # self._restarts deliberately survives: a pause says nothing about
+        # whether the stream works, so it must not hand a flapping one a
+        # fresh allowance.
         self._last_time_pos = None
 
     def _check(self) -> bool:
@@ -126,7 +138,6 @@ class RtspHealthMonitor:
         if advancing:
             self._advancing = True
             self._startup_checks = 0
-            self._consecutive_stalls = 0
             if not self._reported_recovered and self._on_recovered is not None:
                 self._reported_recovered = True
                 self._on_recovered()
@@ -150,12 +161,12 @@ class RtspHealthMonitor:
 
         # The stream advanced before and has now frozen: a real mid-stream
         # stall, so retry play() on the same URL.
-        self._consecutive_stalls += 1
-        if self._consecutive_stalls >= _MAX_CONSECUTIVE_STALLS:
+        self._restarts += 1
+        if self._restarts >= _MAX_RESTARTS:
             log.error(
-                "RTSP stream for %s stalled (no progress for ~%ds) — giving up",
+                "RTSP stream for %s stalled %d times — giving up",
                 self._label,
-                _CHECK_INTERVAL_SECS * _MAX_CONSECUTIVE_STALLS,
+                self._restarts,
             )
             self._timer_id = 0
             self._on_gave_up("stalled: no progress")
@@ -164,8 +175,8 @@ class RtspHealthMonitor:
         log.warning(
             "RTSP stream for %s stalled — retrying play() (%d/%d)",
             self._label,
-            self._consecutive_stalls,
-            _MAX_CONSECUTIVE_STALLS,
+            self._restarts,
+            _MAX_RESTARTS,
         )
         self._player.stop()
         self._player.play(self._url)

@@ -679,12 +679,9 @@ class WebSocketBridge:
             # Decoding to PCM is what lets -af run at all, and it is
             # required for AAC regardless: stream-copying it straight
             # from ffmpeg's ADTS demuxer into Matroska fails outright
-            # however correct the ADTS headers are (confirmed live:
-            # "Error parsing AAC extradata, unable to determine
-            # samplerate" / "Could not write header" even with a
-            # verified-correct, consistent sample rate from the very
-            # first frame), because that demuxer does not populate the
-            # extradata Matroska's muxer needs for -c:a copy.
+            # however correct the ADTS headers are, because that demuxer
+            # does not populate the extradata Matroska's muxer needs for
+            # -c:a copy.
             "-c:a",
             "pcm_s16le",
             # Keeps the audio timeline glued to the wallclock stamps

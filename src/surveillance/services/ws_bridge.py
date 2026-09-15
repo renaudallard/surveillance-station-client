@@ -369,7 +369,10 @@ class WebSocketBridge:
         # consume_last_real_tick's own docstring). Deliberately separate
         # from self._last_video_msec, which this bridge keeps resetting
         # to None on its own reconnects/seeks for its own purposes --
-        # this one only ever moves forward, and only LiveView clears it.
+        # only LiveView clears it. "Highest" means furthest along in the
+        # direction of travel: the lowest tick while self._reverse, which
+        # is what compute_focus_marker_update already expects, taking the
+        # min across slots in reverse and the max going forward.
         self._last_real_tick: int | None = None
         # The currently connected socket, for seek() to send on from
         # outside _pump's own scope -- None whenever no connection is up
@@ -1073,8 +1076,18 @@ class WebSocketBridge:
                     self._last_video_msec = int(msec)
                     if self._history_recording is not None:
                         tick = self._history_recording.start_time + self._last_video_msec // 1000
-                        if self._last_real_tick is None or tick > self._last_real_tick:
+                        if self._last_real_tick is None:
                             self._last_real_tick = tick
+                        elif self._reverse:
+                            # Reverse playback walks msec downward, so the
+                            # position reached within a window is its lowest
+                            # tick, not its highest. Keeping the highest
+                            # reported where playback stood when the window
+                            # opened, leaving the shared marker roughly one
+                            # real second times the speed behind.
+                            self._last_real_tick = min(self._last_real_tick, tick)
+                        else:
+                            self._last_real_tick = max(self._last_real_tick, tick)
             # The payload arrives without the Annex B start code, so
             # prepend it and mpv/ffmpeg can find NAL boundaries. Where
             # DSM leaves it has never been checked here; the constant
@@ -1305,8 +1318,10 @@ class WebSocketBridge:
         return self._current_history_target() if self.is_history else None
 
     def consume_last_real_tick(self) -> int | None:
-        """Return the highest real (frame-derived) absolute position seen
-        since the last call, clearing it back to None.
+        """Return the furthest real (frame-derived) absolute position
+        reached since the last call, clearing it back to None. Furthest
+        along the direction of travel: the lowest position seen while
+        playing in reverse, the highest going forward.
 
         Unlike current_history_position, this never falls back to a
         wall-clock estimate -- None means "no real data from this camera
@@ -1524,6 +1539,13 @@ class WebSocketBridge:
         """
         if not self.is_history:
             return
+        if reverse != self._reverse:
+            # The tick kept in self._last_real_tick is the extreme for the
+            # old direction, so it no longer says where playback reached.
+            # Dropping it costs one marker tick of extrapolation, which is
+            # what the shared marker already does for a camera with no real
+            # data that second.
+            self._last_real_tick = None
         self._reverse = reverse
         await self._send_history_update()
 

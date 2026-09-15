@@ -2384,6 +2384,55 @@ class TestConsumeLastRealTick:
         assert bridge.consume_last_real_tick() == rec.start_time + 240
         await bridge.stop()
 
+    async def test_reverse_keeps_the_position_reached_not_the_highest(self, connect: Any) -> None:
+        """The mirror of the test above, same two frames, opposite answer.
+
+        Reverse playback walks msec downward, so a window's lowest tick is
+        where playback got to. Keeping the highest reports where it stood
+        when the window opened, which at speed is a real second times the
+        multiplier behind: about 16s at 16x.
+        """
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 300,
+            history_reverse=True,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        fake._messages.append(_frame(b"mediaType=1&msec=100000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 100)
+        assert bridge.consume_last_real_tick() == rec.start_time + 100
+        await bridge.stop()
+
+    async def test_changing_direction_drops_the_extreme_kept_for_the_old_one(
+        self, connect: Any
+    ) -> None:
+        """Whichever end was kept describes the direction it was chosen
+        under, so it says nothing about where reverse playback has reached."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+        )
+        await bridge.start()
+        fake._messages.append(_frame(b"mediaType=1&msec=240000", b"AAA"))
+        await _wait_until(lambda: bridge.current_history_position == rec.start_time + 240)
+        await bridge.set_reverse(True)
+        assert bridge.consume_last_real_tick() is None
+        await bridge.stop()
+
 
 class TestDeliberateReconnects:
     """A close the bridge asks for itself is not a connection failure."""

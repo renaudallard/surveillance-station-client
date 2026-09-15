@@ -330,3 +330,44 @@ class TestStartOption:
         assert recorder.options["start"] == "42.0"
         MpvGLArea.play(_widget(recorder), "fd://9")  # type: ignore[arg-type]
         assert recorder.options["start"] == "none"
+
+
+class _PropertyRecorder:
+    """Unlike _Recorder above, keeps attribute writes (mpv's runtime
+    properties) apart from item writes (options/*). Which of the two
+    drop_audio_track uses is its whole contract, and a stand-in that
+    folds them together cannot tell.
+    """
+
+    def __init__(self) -> None:
+        object.__setattr__(self, "props", {})
+        object.__setattr__(self, "opts", {})
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self.props[name] = value
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        self.opts[name] = value
+
+
+class TestDropAudioTrack:
+    """Told to a stream whose camera has gone quiet for good, so the
+    player stops holding a track that can never deliver another packet
+    (see WebSocketBridge.wait_audio_ended)."""
+
+    def test_deselects_the_track_as_a_property(self) -> None:
+        class _Widget:
+            def __init__(self) -> None:
+                self._mpv = _PropertyRecorder()
+
+        widget = _Widget()
+        MpvGLArea.drop_audio_track(widget)  # type: ignore[arg-type]
+        assert widget._mpv.props == {"aid": "no"}
+        assert widget._mpv.opts == {}, "options/aid leaves the playing stream alone"
+
+    def test_without_a_player_it_does_nothing(self) -> None:
+        class _Widget:
+            def __init__(self) -> None:
+                self._mpv = None
+
+        MpvGLArea.drop_audio_track(_Widget())  # type: ignore[arg-type]

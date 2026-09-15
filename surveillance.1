@@ -36,7 +36,8 @@ changed (or DSM reports a different codec) by right-clicking the camera
 in the sidebar. A camera with no audio track gets no mute button at all.
 A muxed camera that stops sending audio for three seconds while its video
 keeps arriving keeps playing without sound until its stream is restarted,
-rather than holding up its own video.
+rather than holding up its own video. Its volume control greys out as soon
+as that happens, and the player is told to drop the dead audio track.
 Cameras with a speaker also show a push-to-talk microphone button — tap to
 start talking, tap again to stop.
 Video is rendered via mpv with hardware acceleration.

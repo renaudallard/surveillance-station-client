@@ -549,6 +549,60 @@ class TestAudioGapWatchdog:
         await bridge.stop()
         assert bridge._audio_gap_watch is None, "stop() must not leave the task running"
 
+    async def test_wait_audio_ended_resolves_once_the_watchdog_fires(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What tells the player its audio track is finished. A live
+        Matroska stream carries no per-track end marker, so nothing
+        downstream can work this out on its own."""
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_TIMEOUT", 0.05)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_CHECK_INTERVAL", 0.01)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        audio_r, audio_w = os.pipe()
+        video_r, video_w = os.pipe()
+        bridge._audio_write_fd = audio_w
+        bridge._video_write_fd = video_w
+        bridge._last_audio_at = time.monotonic()
+
+        async def running_pump() -> None:
+            await asyncio.sleep(30)
+
+        async def keep_video_arriving() -> None:
+            while True:
+                await asyncio.sleep(0.005)
+                bridge._last_video_at = time.monotonic()
+
+        bridge._pump_task = asyncio.create_task(running_pump())
+        feeder = asyncio.create_task(keep_video_arriving())
+        watch = asyncio.create_task(bridge._watch_audio_gap())
+
+        ended = await asyncio.wait_for(bridge.wait_audio_ended(), timeout=2.0)
+
+        for task in (feeder, bridge._pump_task, watch):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        for fd in (audio_r, video_r, video_w):
+            os.close(fd)
+
+        assert ended is True
+        assert bridge.audio_active is False
+
+    async def test_wait_audio_ended_gives_up_with_the_pump(self) -> None:
+        """It must not outlive the stream it is watching: a slot that
+        moved on would otherwise be kept alive by the waiter for the
+        rest of the session."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        bridge._pump_task = asyncio.create_task(asyncio.sleep(0.01))
+
+        ended = await asyncio.wait_for(bridge.wait_audio_ended(), timeout=2.0)
+
+        assert ended is False, "the watchdog never fired, so nothing ended"
+
+    async def test_wait_audio_ended_is_false_before_a_stream_starts(self) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        assert await bridge.wait_audio_ended() is False
+
     async def test_a_reconnect_gives_the_new_session_time_to_send_audio(self, connect: Any) -> None:
         # Nothing else resets the stamp per session, so after an outage
         # longer than the gap timeout the first video frame back would

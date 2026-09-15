@@ -404,6 +404,9 @@ class WebSocketBridge:
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
+        # Raised once _watch_audio_gap has ended the audio stream, so the
+        # player can be told the track is gone (see wait_audio_ended).
+        self._audio_ended_event = asyncio.Event()
         # ffmpeg's Matroska muxer needs a correct, stable rate from its
         # very first probe to write valid output -- a wrong initial guess
         # that self-corrects a few frames in still poisons the muxer's
@@ -1727,6 +1730,33 @@ class WebSocketBridge:
             return 0.0
         return time.monotonic() - self._connected_at
 
+    async def wait_audio_ended(self) -> bool:
+        """Wait until the gap watchdog ends this stream's audio.
+
+        True once it has, False if the bridge stopped first.
+
+        Nothing downstream can work this out for itself. ffmpeg goes on
+        muxing video perfectly well (measured: 200s clean after the
+        close, output tracking input 1:1), so the Matroska stream the
+        player reads simply stops carrying audio packets, and a live
+        stream has no per-track end marker to say the track is over. The
+        player is left holding a selected track that can never deliver
+        another packet, which is why it wants telling.
+
+        Ends with the pump rather than waiting on the event alone, so a
+        caller left waiting on a slot that moved on is not kept alive by
+        it for the rest of the session.
+        """
+        pump = self._pump_task
+        if pump is None:
+            return False
+        waiter = asyncio.ensure_future(self._audio_ended_event.wait())
+        try:
+            await asyncio.wait([waiter, pump], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        return self._audio_ended_event.is_set()
+
     async def wait_closed(self) -> str:
         """Wait for the bridge to give up for good, and describe why.
 
@@ -1788,6 +1818,7 @@ class WebSocketBridge:
                 gap,
             )
             self._close_audio_write_fd()
+            self._audio_ended_event.set()
             return
 
     def _close_audio_write_fd(self) -> None:

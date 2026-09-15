@@ -2966,6 +2966,15 @@ class LiveView(Gtk.Box):
                 # _update_slot_audio() now that whether DSM's audio codec
                 # was actually mixable (PCMU or AAC) is known for certain.
                 s.set_audio_playable(bridge.audio_active)
+                if bridge.audio_active:
+                    # Only now, not back in _start_bridge: wait_audio_ended
+                    # needs the pump task start() creates, and a stream
+                    # with no audio to begin with has none to lose.
+                    def _on_audio_ended(ended: bool) -> None:
+                        if ended:
+                            self._on_slot_audio_ended(slot_idx, bridge)
+
+                    run_async(bridge.wait_audio_ended(), callback=_on_audio_ended)
 
         def _on_start_failed(exc: Exception) -> None:
             if self._slots[slot_idx]._ws_bridge is not bridge:
@@ -2993,6 +3002,26 @@ class LiveView(Gtk.Box):
             bridge.wait_closed(),
             callback=lambda reason: self._on_stream_gave_up(slot_idx, cam_id, bridge, reason),
         )
+
+    def _on_slot_audio_ended(self, slot_idx: int, bridge: WebSocketBridge) -> None:
+        """The gap watchdog ended this slot's audio for the session.
+
+        Greys the volume control, which the camera poll would get to on
+        its own eventually, but also tells mpv the track is gone. It is
+        still reading a container that declares one, and nothing in a
+        live stream ever marks a track as finished, so otherwise it goes
+        on holding a track that can never deliver another packet.
+        """
+        slot = self._slots[slot_idx]
+        if slot._ws_bridge is not bridge:
+            return  # the slot moved on to another stream meanwhile
+        log.info(
+            "Audio ended for slot %d (%s); dropping the track from the player",
+            slot_idx,
+            slot.camera.name if slot.camera else "no camera",
+        )
+        slot.player.drop_audio_track()
+        slot.set_audio_playable(False)
 
     def _start_rtsp_monitor(self, slot: CameraSlot, url: str) -> None:
         """Play a plain RTSP URL and watch it with an RtspHealthMonitor.

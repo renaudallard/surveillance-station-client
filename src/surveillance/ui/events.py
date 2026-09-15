@@ -51,6 +51,7 @@ from surveillance.services.event_bits import (
 from surveillance.services.recording import (
     PRESET_LAST7D,
     PRESET_LAST24H,
+    PRESET_LAST30D,
     PRESET_TODAY,
     PRESET_YESTERDAY,
     preset_range,
@@ -563,6 +564,7 @@ class EventsView(Gtk.Box):
             PRESET_YESTERDAY: "Yesterday",
             PRESET_LAST24H: "Last 24 hrs",
             PRESET_LAST7D: "Last 7 days",
+            PRESET_LAST30D: "Last 30 days",
         }
         if self._search_time_preset:
             label = _PRESET_LABELS.get(self._search_time_preset, self._search_time_preset)

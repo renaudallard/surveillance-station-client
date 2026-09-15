@@ -53,6 +53,20 @@ PRESET_LAST24H = "last24h"
 PRESET_LAST7D = "last7d"
 PRESET_LAST30D = "last30d"
 
+# The user-facing name for each preset. One mapping rather than a copy
+# per page: the three pages each kept their own identical dict until
+# Events was found short an entry, printing a raw "last30d" instead of a
+# label. Which presets a page actually offers still belongs to that page
+# (the quick-filter bars deliberately carry different subsets); only the
+# text is shared.
+PRESET_LABELS: dict[str, str] = {
+    PRESET_TODAY: "Today",
+    PRESET_YESTERDAY: "Yesterday",
+    PRESET_LAST24H: "Last 24 hrs",
+    PRESET_LAST7D: "Last 7 days",
+    PRESET_LAST30D: "Last 30 days",
+}
+
 # Recording.Download by recording id needs version 6 or later. Version 5
 # returns a 400 "Execution failed" with no file. The official web client
 # uses version 4 for its own downloads, but with a different, event-based

@@ -231,6 +231,35 @@ class TestRecordingFilterParams:
             assert params["cameraIds"] == "2,3"
 
 
+class TestPresetLabels:
+    """One mapping for the preset names, shared by every page.
+
+    The three pages each carried their own identical copy until Events
+    was found short the 30-day entry and printed a raw "last30d". With a
+    single mapping the remaining way back into that state is to add a
+    preset and forget to name it, which is what these guard.
+    """
+
+    def test_every_preset_has_a_label(self) -> None:
+        from surveillance.services import recording
+
+        keys = {
+            value
+            for name, value in vars(recording).items()
+            if name.startswith("PRESET_") and isinstance(value, str)
+        }
+        assert keys == set(recording.PRESET_LABELS)
+
+    def test_preset_range_serves_every_labelled_preset(self) -> None:
+        """A label for a preset preset_range cannot resolve would put the
+        name in front of the user and then raise when it is used."""
+        from surveillance.services.recording import PRESET_LABELS, preset_range
+
+        for key in PRESET_LABELS:
+            from_ts, to_ts = preset_range(key)
+            assert from_ts < to_ts, key
+
+
 class TestPresetRange:
     """preset_range() returns correct (from_time, to_time) windows."""
 

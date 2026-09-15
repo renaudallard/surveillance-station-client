@@ -39,6 +39,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.services.recording import (
+    PRESET_LABELS,
     PRESET_LAST7D,
     PRESET_LAST24H,
     PRESET_LAST30D,
@@ -120,20 +121,13 @@ class AdvancedSearchDialog(Gtk.Window):
         preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         preset_box.set_halign(Gtk.Align.START)
 
-        preset_defs = [
-            (PRESET_TODAY, "Today"),
-            (PRESET_YESTERDAY, "Yesterday"),
-            (PRESET_LAST24H, "Last 24 hrs"),
-        ]
+        preset_keys = [PRESET_TODAY, PRESET_YESTERDAY, PRESET_LAST24H]
         # Hidden for Events (see show_extended_presets) to match its
         # quick-filter toolbar, which only offers Today/Yesterday/Last 24 hrs.
         if show_extended_presets:
-            preset_defs += [
-                (PRESET_LAST7D, "Last 7 days"),
-                (PRESET_LAST30D, "Last 30 days"),
-            ]
-        for key, label in preset_defs:
-            btn = Gtk.ToggleButton(label=label)
+            preset_keys += [PRESET_LAST7D, PRESET_LAST30D]
+        for key in preset_keys:
+            btn = Gtk.ToggleButton(label=PRESET_LABELS[key])
             btn.set_active(key == self._selected_preset)
             btn.connect("toggled", self._on_preset_toggled, key)
             preset_box.append(btn)

@@ -49,9 +49,8 @@ from surveillance.services.event_bits import (
     event_matches_keys,
 )
 from surveillance.services.recording import (
-    PRESET_LAST7D,
+    PRESET_LABELS,
     PRESET_LAST24H,
-    PRESET_LAST30D,
     PRESET_TODAY,
     PRESET_YESTERDAY,
     preset_range,
@@ -225,12 +224,8 @@ class EventsView(Gtk.Box):
         # active — see _on_preset_toggled), same pattern as the Recordings
         # page's own quick-filter buttons.
         self._preset_buttons: dict[str, Gtk.ToggleButton] = {}
-        for key, text in [
-            (PRESET_TODAY, "Today"),
-            (PRESET_YESTERDAY, "Yesterday"),
-            (PRESET_LAST24H, "Last 24 hrs"),
-        ]:
-            btn = Gtk.ToggleButton(label=text)
+        for key in (PRESET_TODAY, PRESET_YESTERDAY, PRESET_LAST24H):
+            btn = Gtk.ToggleButton(label=PRESET_LABELS[key])
             btn.add_css_class("flat")
             btn.add_css_class("caption")
             btn.connect("toggled", self._on_preset_toggled, key)
@@ -559,15 +554,8 @@ class EventsView(Gtk.Box):
         return []
 
     def _time_filter_parts(self) -> list[str]:
-        _PRESET_LABELS = {
-            PRESET_TODAY: "Today",
-            PRESET_YESTERDAY: "Yesterday",
-            PRESET_LAST24H: "Last 24 hrs",
-            PRESET_LAST7D: "Last 7 days",
-            PRESET_LAST30D: "Last 30 days",
-        }
         if self._search_time_preset:
-            label = _PRESET_LABELS.get(self._search_time_preset, self._search_time_preset)
+            label = PRESET_LABELS.get(self._search_time_preset, self._search_time_preset)
             return [f"Time: {label}"]
         parts: list[str] = []
         if self._search_from_time:

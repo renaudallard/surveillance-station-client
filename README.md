@@ -140,7 +140,7 @@ surveillance --debug --log-file=/tmp/run.log  # log to a file of your own choosi
 python -m surveillance                        # run directly from the source tree
 ```
 
-Debug logs automatically redact passwords, session tokens, and usernames.
+Debug logs automatically redact passwords, session tokens, and usernames. A debug run also writes one line a minute recording the app's own memory use, open descriptors and thread count, so a long unattended session leaves a trend behind rather than just whatever state it ended in.
 
 `--log-file` writes at the same level as stderr (WARNING, or DEBUG with
 `--debug`), and additionally captures the traceback of an uncaught exception
@@ -602,7 +602,8 @@ surveillance-station-client/
 │   │   ├── icons.py                     icon loading helpers
 │   │   └── labels.py                    combo label helpers shared by the browser pages
 │   └── util/
-│       └── async_bridge.py              GLib + asyncio bridge
+│       ├── async_bridge.py              GLib + asyncio bridge
+│       └── resource_log.py              periodic memory/descriptor line on a debug run
 └── tests/
     ├── conftest.py
     ├── test_aac.py
@@ -618,6 +619,7 @@ surveillance-station-client/
     ├── test_models.py
     ├── test_mpv_env_options.py
     ├── test_mpv_profiles.py
+    ├── test_resource_log.py
     ├── test_rtsp_health.py
     ├── test_services.py
     ├── test_settings_registry.py

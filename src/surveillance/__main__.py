@@ -170,6 +170,13 @@ def main() -> None:
     for name in ("OpenGL", "websockets", "hpack", "httpcore", "httpx"):
         logging.getLogger(name).setLevel(max(level, logging.WARNING))
 
+    # Only does anything under --debug, and only where /proc exists. The
+    # long unattended runs this describes are the ones that end in an
+    # OOM kill, and nothing else in the app measures anything.
+    from surveillance.util import resource_log
+
+    resource_log.start_if_debugging()
+
     import os
     import signal
 

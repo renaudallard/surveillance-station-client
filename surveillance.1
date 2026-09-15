@@ -221,6 +221,9 @@ Enable debug logging to stderr.
 Passwords, session tokens, usernames, one-time codes, and credentials
 embedded in stream URLs are redacted from the output, including inside
 exception tracebacks.
+A debug run also records one line a minute giving the app's own memory
+use, open descriptor count and thread count, so a long unattended
+session leaves a trend behind rather than only its final state.
 .TP
 .BR \-\-log\-file [\fB=\fPPATH]
 Also write logs to a file, at the same redacted content and level

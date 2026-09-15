@@ -84,6 +84,7 @@ confirmed the same way (live capture) before implementing them.
 
 from __future__ import annotations
 
+import array
 import asyncio
 import contextlib
 import fcntl
@@ -93,6 +94,7 @@ import select
 import ssl
 import struct
 import subprocess
+import termios
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -2065,7 +2067,7 @@ class WebSocketBridge:
                     raise _PipeWriteStalled(
                         f"{'audio' if audio else 'video'} pipe write stalled for "
                         f"{_WRITE_TIMEOUT:.0f}s with {len(view)} of {len(data)} bytes "
-                        "left, downstream reader stopped draining"
+                        f"left, downstream reader stopped draining{self._stall_detail()}"
                     )
                 poller.poll(remaining * 1000)
                 try:
@@ -2081,6 +2083,37 @@ class WebSocketBridge:
             if not audio:
                 self._video_write_in_flight = False
             os.close(dup)
+
+    def _stall_detail(self) -> str:
+        """What the far side of a stalled muxed write was doing, as a
+        suffix for the give-up message. "" when there is nothing to say.
+
+        On the muxed path a stalled write means ffmpeg stopped reading,
+        and there are two very different reasons for that: it is blocked
+        writing its own output because the player is not draining, or it
+        is stuck for a reason of its own. The two look identical from
+        here, and the log has so far been read as the first without the
+        number that would say. Bytes already waiting in ffmpeg's output
+        tells them apart: a full pipe means it is producing and nobody is
+        taking it, near-empty means it is producing nothing at all.
+        """
+        if self._ffmpeg_proc is None or self._read_fd < 0:
+            return ""  # raw video-only: the player reads our pipe directly
+        parts = []
+        try:
+            pending = array.array("i", [0])
+            fcntl.ioctl(self._read_fd, termios.FIONREAD, pending, True)
+            parts.append(f"ffmpeg output holding {pending[0]} bytes")
+        except OSError:
+            pass
+        try:
+            with open(f"/proc/{self._ffmpeg_proc.pid}/wchan") as fh:
+                blocked = fh.read().strip()
+            if blocked:
+                parts.append(f"ffmpeg blocked in {blocked}")
+        except OSError:
+            pass
+        return f" ({', '.join(parts)})" if parts else ""
 
     def _close_write_fd(self) -> None:
         """Atomically close the write fd(s). Thread-safe, idempotent."""

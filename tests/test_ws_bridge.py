@@ -47,7 +47,8 @@ import time
 import types
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 from urllib.parse import parse_qsl
 
@@ -2750,3 +2751,45 @@ class TestVideoFormat:
     async def test_empty_before_any_codec_frame(self) -> None:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         assert bridge.video_format == ""
+
+
+class TestStallDetail:
+    """A stalled muxed write has two very different causes that look
+    identical in the log: ffmpeg blocked writing output nobody is
+    draining, or ffmpeg producing nothing at all. The bytes already
+    waiting in its output tell them apart."""
+
+    def test_raw_video_only_says_nothing(self) -> None:
+        """No ffmpeg in the path: the player reads our pipe directly, so
+        there is no third party to describe."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        assert bridge._stall_detail() == ""
+
+    def test_it_reports_what_is_waiting_in_ffmpegs_output(self) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        read_fd, write_fd = os.pipe()
+        bridge._read_fd = read_fd
+        bridge._ffmpeg_proc = cast("Any", SimpleNamespace(pid=os.getpid()))
+        try:
+            os.write(write_fd, b"x" * 4096)
+            detail = bridge._stall_detail()
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+            bridge._read_fd = -1
+            bridge._ffmpeg_proc = None
+        assert "ffmpeg output holding 4096 bytes" in detail
+
+    def test_an_empty_output_reads_as_nothing_produced(self) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        read_fd, write_fd = os.pipe()
+        bridge._read_fd = read_fd
+        bridge._ffmpeg_proc = cast("Any", SimpleNamespace(pid=os.getpid()))
+        try:
+            detail = bridge._stall_detail()
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+            bridge._read_fd = -1
+            bridge._ffmpeg_proc = None
+        assert "ffmpeg output holding 0 bytes" in detail

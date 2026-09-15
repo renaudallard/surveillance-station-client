@@ -41,6 +41,9 @@ as that happens, and the player is told to drop the dead audio track.
 Cameras with a speaker also show a push-to-talk microphone button — tap to
 start talking, tap again to stop.
 Video is rendered via mpv with hardware acceleration.
+While a slot plays recorded video from close to the live edge, the client
+also re-asks DSM every few seconds how far that recording now runs, since
+one still being written grows after it was first looked up.
 The client sends a periodic keepalive to hold each WebSocket session open;
 if a session is ever interrupted anyway, the slot reconnects on the same
 pipe transparently, with no visible interruption. A camera reported

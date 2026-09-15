@@ -2373,6 +2373,98 @@ class TestHistoryActualPosition:
         await bridge.stop()
 
 
+class TestHistoryTailRefresh:
+    """A recording DSM is still writing keeps growing. The bridge used to
+    learn that only on a reconnect, so playing near the live edge meant
+    running off the end of stale metadata and waiting out the idle
+    timeout before anything fresher arrived."""
+
+    @staticmethod
+    def _bridge(rec: Recording, target: int, resolver: Any) -> WebSocketBridge:
+        return WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_resolver=resolver,
+        )
+
+    async def test_picks_up_a_recording_that_has_grown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ws_bridge, "_HISTORY_TAIL_REFRESH_INTERVAL", 0.01)
+        rec = _recording()
+        grown = _recording(stop_time=rec.stop_time + 600)
+
+        async def resolver(target: int) -> Recording:
+            return grown
+
+        bridge = self._bridge(rec, rec.stop_time - 5, resolver)
+        watch = asyncio.create_task(bridge._watch_history_tail())
+        try:
+            await _wait_until(lambda: bridge._history_recording is grown)
+        finally:
+            watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch
+
+    async def test_does_not_ask_while_there_is_recording_left(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Near the live edge a camera sits inside the margin forever, so
+        one call per interval per camera is the real cost. An ordinary
+        rewind well into the past must not pay it."""
+        monkeypatch.setattr(ws_bridge, "_HISTORY_TAIL_REFRESH_INTERVAL", 0.01)
+        rec = _recording()
+        asked: list[int] = []
+
+        async def resolver(target: int) -> Recording | None:
+            asked.append(target)
+            return None
+
+        bridge = self._bridge(rec, rec.start_time + 100, resolver)
+        watch = asyncio.create_task(bridge._watch_history_tail())
+        await asyncio.sleep(0.08)
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+        assert asked == []
+
+    async def test_leaves_a_different_recording_to_the_reconnect_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A different recording means a different start_time, and
+        _last_video_msec is measured against the loaded one. Swapping it
+        in here would reinterpret the position; the reconnect path clears
+        that field when it does the same swap."""
+        monkeypatch.setattr(ws_bridge, "_HISTORY_TAIL_REFRESH_INTERVAL", 0.01)
+        rec = _recording()
+        other = _recording(id=999, start_time=rec.stop_time, stop_time=rec.stop_time + 1800)
+
+        async def resolver(target: int) -> Recording:
+            return other
+
+        bridge = self._bridge(rec, rec.stop_time - 5, resolver)
+        watch = asyncio.create_task(bridge._watch_history_tail())
+        await asyncio.sleep(0.08)
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+        assert bridge._history_recording is rec
+
+    async def test_stop_does_not_leave_it_running(self, connect: Any) -> None:
+        async def resolver(target: int) -> Recording | None:
+            return None
+
+        connect(_FakeWS([_codec_frame()], hang=True))
+        bridge = self._bridge(_recording(), _recording().start_time + 100, resolver)
+        await bridge.start()
+        assert bridge._history_tail_watch is not None
+        await bridge.stop()
+        assert bridge._history_tail_watch is None
+
+
 class TestConsumeLastRealTick:
     """WebSocketBridge.consume_last_real_tick -- the real-tick-only
     signal LiveView's shared timeline marker uses to detect "no active

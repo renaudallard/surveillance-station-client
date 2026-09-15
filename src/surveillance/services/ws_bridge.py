@@ -148,6 +148,15 @@ _WRITE_TIMEOUT = 5.0  # seconds
 # can't reliably serve yet.
 MIN_HISTORY_DELTA_SECONDS = 10.0
 
+# How often a History bridge playing near the end of its recording
+# re-asks DSM what that recording now covers, and how close to the end
+# it has to be for that to be worth asking. Near the live edge a camera
+# is permanently inside the margin, so this really is one resolver call
+# per interval per such camera: keep the margin tight enough that an
+# ordinary rewind well into the past never pays it.
+_HISTORY_TAIL_REFRESH_INTERVAL = 5.0  # seconds
+_HISTORY_TAIL_MARGIN = MIN_HISTORY_DELTA_SECONDS
+
 # How long a muxed camera may deliver no audio at all before its audio
 # stream is ended to stop it holding up the video (see _watch_audio_gap).
 # Must fire before the write timeout above does: the mux stops draining
@@ -397,6 +406,7 @@ class WebSocketBridge:
         self._ffmpeg_watch: asyncio.Task[None] | None = None
         self._ffmpeg_stderr: asyncio.Task[None] | None = None
         self._audio_gap_watch: asyncio.Task[None] | None = None
+        self._history_tail_watch: asyncio.Task[None] | None = None
         # When each stream last reached its pipe. Both armed when the
         # muxer starts, so a camera that announces an audio codec and then
         # never sends one is caught by the same deadline as one that goes
@@ -1171,6 +1181,8 @@ class WebSocketBridge:
         than waiting forever for a camera that never delivers anything.
         """
         self._pump_task = asyncio.create_task(self._pump())
+        if self.is_history and self._history_resolver is not None:
+            self._history_tail_watch = asyncio.create_task(self._watch_history_tail())
         ready_task = asyncio.create_task(self._ready_event.wait())
         await asyncio.wait({ready_task, self._pump_task}, return_when=asyncio.FIRST_COMPLETED)
         if self._ready_event.is_set():
@@ -1828,6 +1840,49 @@ class WebSocketBridge:
             return ""
         return self._error or "stream ended"
 
+    async def _watch_history_tail(self) -> None:
+        """Keep the loaded recording's metadata current while playback is
+        close to the end of it.
+
+        A recording DSM is still writing keeps growing, but this bridge
+        only ever learned that on a reconnect:
+        _refresh_history_recording_if_stale runs there and nowhere else.
+        So playing near the live edge means running off the end of what
+        the metadata claimed, going quiet, waiting out _IDLE_TIMEOUT, and
+        only then picking up a fresher copy, which is the shape of the
+        periodic stall seen in History near "now".
+
+        Asking while there is still something to play does not by itself
+        make DSM send more: the connection was opened with an end= taken
+        from the snapshot, and whether DSM treats that as a hard stop has
+        not been established on the wire. What it does do is make the
+        reconnect's own action=play describe what the recording covers
+        now rather than what it covered when it was first resolved.
+
+        Only ever swaps in the same recording grown longer. A different
+        one means a different start_time, which _last_video_msec is
+        measured against, and that case already has a home in
+        _refresh_history_recording_if_stale on the reconnect path.
+        """
+        while True:
+            await asyncio.sleep(_HISTORY_TAIL_REFRESH_INTERVAL)
+            rec = self._history_recording
+            resolver = self._history_resolver
+            if rec is None or resolver is None or self._paused:
+                continue
+            target = self._current_history_target()
+            if rec.stop_time - target > _HISTORY_TAIL_MARGIN:
+                continue  # still well inside the recording, nothing to ask
+            fresh = await resolver(target)
+            if fresh is not None and fresh.id == rec.id and fresh.stop_time > rec.stop_time:
+                log.debug(
+                    "WebSocket bridge for %s: recording %d now runs %ds further",
+                    self._label,
+                    rec.id,
+                    fresh.stop_time - rec.stop_time,
+                )
+                self._history_recording = fresh
+
     async def _watch_audio_gap(self) -> None:
         """End the audio stream if the camera stops delivering audio.
 
@@ -2044,6 +2099,10 @@ class WebSocketBridge:
         if self._audio_gap_watch is not None:
             self._audio_gap_watch.cancel()
             self._audio_gap_watch = None
+
+        if self._history_tail_watch is not None:
+            self._history_tail_watch.cancel()
+            self._history_tail_watch = None
 
         if self._ffmpeg_proc is not None:
             proc = self._ffmpeg_proc

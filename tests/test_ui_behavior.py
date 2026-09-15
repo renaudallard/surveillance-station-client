@@ -434,6 +434,39 @@ class TestRecordingDownloadRangeParams:
             assert mock.call_args[1]["extra_params"]["offsetTimeMs"] == "0"
 
     @pytest.mark.asyncio
+    async def test_play_time_clamped_to_recording_end(
+        self, api: SurveillanceAPI, tmp_path: Path
+    ) -> None:
+        """A range running past the recording's own stop_time (a selection
+        made close to "now", against metadata that was already stale) must
+        ask only for what the recording actually holds."""
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec(start_time=1000, stop_time=2000)
+
+        with patch.object(api, "stream_download", _stream_mock(b"x")) as mock:
+            await download_recording_range(api, rec, 1990.0, 2010.0, output)
+            params = mock.call_args[1]["extra_params"]
+            assert params["offsetTimeMs"] == "990000"
+            # 10s left in the recording, not the 20s asked for.
+            assert params["playTimeMs"] == "10000"
+
+    @pytest.mark.asyncio
+    async def test_range_starting_past_recording_end_raises(
+        self, api: SurveillanceAPI, tmp_path: Path
+    ) -> None:
+        """Nothing of the range is inside the recording, so there is no
+        shortened download to fall back to."""
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec(start_time=1000, stop_time=2000)
+
+        with pytest.raises(ValueError, match="starts after the end"):
+            await download_recording_range(api, rec, 2010.0, 2020.0, output)
+
+    @pytest.mark.asyncio
     async def test_end_before_start_raises(self, api: SurveillanceAPI, tmp_path: Path) -> None:
         from surveillance.services.recording import download_recording_range
 

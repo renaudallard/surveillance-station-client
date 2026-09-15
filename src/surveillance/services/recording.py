@@ -302,7 +302,8 @@ async def download_recording_range(
     recording without this client having to trim the file itself.
 
     Raises:
-        ValueError: end_unix does not come after start_unix.
+        ValueError: end_unix does not come after start_unix, or the range
+            starts past the end of *rec*.
         ApiError: Synology API error with numeric code.
         OSError: File-system write failure (partial file is cleaned up).
     """
@@ -310,6 +311,15 @@ async def download_recording_range(
     play_ms = round((end_unix - start_unix) * 1000)
     if play_ms <= 0:
         raise ValueError("end time must be after start time")
+    # The mirror of the offset clamp above, at the other end. A range
+    # chosen close to "now" sits inside a recording DSM is still writing,
+    # whose stop_time was already out of date when it was fetched, so the
+    # end can land past anything that exists yet. Without this, that asks
+    # DSM for a playTimeMs longer than the file it is cutting from.
+    available_ms = max(0, round((rec.stop_time - rec.start_time) * 1000)) - offset_ms
+    if available_ms <= 0:
+        raise ValueError("selected range starts after the end of the recording")
+    play_ms = min(play_ms, available_ms)
 
     log.debug(
         "Downloading recording %d range (offset=%dms, play=%dms) to %s",

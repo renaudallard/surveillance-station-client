@@ -34,6 +34,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from surveillance.api.models import CameraStatus
 from surveillance.ui import liveview
 from surveillance.ui.liveview import CameraSlot, LiveView
 
@@ -609,3 +610,63 @@ class TestReloadAllStreams:
         page = self._page(held={}, active=[0, 1, 4, 5])
         LiveView.reload_all_streams(page)  # type: ignore[arg-type]
         assert page.staggered == []
+
+
+class TestLostStreamRetryKeepsHistory:
+    """sync_camera_statuses retries a slot whose stream gave up. That went
+    through _start_stream, the live starter, which has no History
+    awareness at all: a slot playing recorded video came back on the live
+    edge instead, with no way back to where it was.
+    """
+
+    @staticmethod
+    def _camera(status: CameraStatus = CameraStatus.ENABLED) -> SimpleNamespace:
+        return SimpleNamespace(id=7, name="CAM 7", status=status)
+
+    @staticmethod
+    def _slot(history_position: float | None, status: CameraStatus) -> SimpleNamespace:
+        return SimpleNamespace(
+            index=0,
+            camera=SimpleNamespace(id=7, name="CAM 7", status=status),
+            # Already torn down by _on_stream_gave_up, which is why the
+            # position has to come off the slot rather than the bridge.
+            _ws_bridge=None,
+            _stream_lost=True,
+            _history_position=history_position,
+            update_camera=lambda camera: None,
+            set_audio_playable=lambda playable: None,
+        )
+
+    def _restarts(
+        self, slot: SimpleNamespace, cameras: list[SimpleNamespace]
+    ) -> list[tuple[int, int, float | None]]:
+        restarted: list[tuple[int, int, float | None]] = []
+        page = SimpleNamespace(
+            _cameras=[],
+            _active=[0],
+            _slots=[slot],
+            _streams_paused=False,
+            _restart_slot_stream=lambda idx, camera, target: restarted.append(
+                (idx, camera.id, target)
+            ),
+        )
+        LiveView.sync_camera_statuses(page, cameras)  # type: ignore[arg-type]
+        return restarted
+
+    def test_a_lost_history_slot_is_retried_where_it_left_off(self) -> None:
+        slot = self._slot(1_700_000_500.0, CameraStatus.ENABLED)
+        restarted = self._restarts(slot, [self._camera()])
+        assert restarted == [(0, 7, 1_700_000_500.0)]
+
+    def test_a_lost_live_slot_is_retried_live(self) -> None:
+        slot = self._slot(None, CameraStatus.ENABLED)
+        restarted = self._restarts(slot, [self._camera()])
+        assert restarted == [(0, 7, None)]
+
+    def test_a_camera_reported_offline_is_not_retried_into_history(self) -> None:
+        """_start_stream shows the offline card and drops the position;
+        asking it to seek into History for an unreachable camera would
+        leave the slot waiting on a recording it cannot fetch."""
+        slot = self._slot(1_700_000_500.0, CameraStatus.ENABLED)
+        restarted = self._restarts(slot, [self._camera(CameraStatus.DISCONNECTED)])
+        assert restarted == [(0, 7, None)]

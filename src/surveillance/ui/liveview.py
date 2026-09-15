@@ -3156,7 +3156,20 @@ class LiveView(Gtk.Box):
             # user's back — resume_streams restores them on return.
             if self._streams_paused:
                 continue
-            self._start_stream(i, fresh)
+            # A slot that gave up while playing recorded video comes back
+            # to the same moment, the way Reload already does. _start_stream
+            # is the live starter and has no History awareness at all, so it
+            # resolved the camera's protocol and began a plain live stream,
+            # dropping the slot out of History with no way back.
+            #
+            # slot._history_position, not _history_target(slot): the bridge
+            # is already gone by now (_on_stream_gave_up tears the stream
+            # down), while the position outlives it. It is None for a slot
+            # that was playing live, since every path back to live clears
+            # it, and _start_stream clears it for a camera that is no longer
+            # ENABLED, which is the branch that shows the offline card.
+            target = slot._history_position if fresh.status == CameraStatus.ENABLED else None
+            self._restart_slot_stream(i, fresh, target)
 
     def restart_camera(self, camera_id: int) -> None:
         """Restart the stream for a camera if it is currently displayed.

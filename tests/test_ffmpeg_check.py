@@ -26,6 +26,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -151,3 +153,31 @@ class TestVersionProbeTimeout:
 
         assert await ffmpeg_version_is_affected() is None
         assert proc.killed, "a probe left running is a process nothing will reap"
+
+
+class TestDocAgreesWithTheConstant:
+    """The notice tells the user to read TROUBLESHOOTING.md, so the two
+    have to name the same version. An earlier version of this test only
+    compared the constant with the literal it is defined as, which meant
+    editing one required editing the other and nothing was cross-checked;
+    this one reads the document.
+    """
+
+    def _doc(self) -> str:
+        path = Path(__file__).resolve().parents[1] / "TROUBLESHOOTING.md"
+        return path.read_text(encoding="utf-8")
+
+    def test_the_first_affected_major_is_the_one_documented(self) -> None:
+        match = re.search(r"On ffmpeg (\d+)\.0 and higher", self._doc())
+        assert match is not None, (
+            "TROUBLESHOOTING.md no longer says which ffmpeg major is affected; "
+            "the notice links users to a document that stopped answering that"
+        )
+        assert int(match.group(1)) == ffmpeg_check._FIRST_AFFECTED_MAJOR
+
+    def test_the_version_called_unaffected_really_is(self) -> None:
+        """The doc tells users to pin that build, so the check must agree
+        it is safe or the notice fires on the very fix it recommends."""
+        match = re.search(r"ffmpeg (\d+)\.[\d.]+ is unaffected", self._doc())
+        assert match is not None, "TROUBLESHOOTING.md no longer names a known-good build"
+        assert int(match.group(1)) < ffmpeg_check._FIRST_AFFECTED_MAJOR

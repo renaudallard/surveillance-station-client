@@ -37,6 +37,7 @@ return None rather than True/False (this should never raise).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import subprocess
@@ -53,6 +54,11 @@ TROUBLESHOOTING_URL = (
 # See TROUBLESHOOTING.md's own section (linked above) for the upstream
 # issue and workarounds.
 _FIRST_AFFECTED_MAJOR = 7
+
+# `ffmpeg -version` prints and exits; it does not read stdin or touch a
+# camera. A build that hangs here is broken in a way this check cannot
+# diagnose, so give up rather than leave the notice pending forever.
+_VERSION_PROBE_TIMEOUT = 5.0  # seconds
 
 # Matches ffmpeg's own version banner ("ffmpeg version 8.0.1 Copyright...",
 # "... version n7.1.5 ...", a git snapshot's "n" prefix, "... version
@@ -74,7 +80,8 @@ def _parse_major_version(version_output: bytes) -> int | None:
 async def ffmpeg_version_is_affected() -> bool | None:
     """True if the resolved ffmpeg is a known-affected version, False if
     it's a known-safe one, None if that couldn't be determined (ffmpeg
-    missing from PATH, or output this doesn't recognize)."""
+    missing from PATH, output this doesn't recognize, or a probe that
+    never finished)."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
@@ -82,9 +89,18 @@ async def ffmpeg_version_is_affected() -> bool | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
-        stdout, _ = await proc.communicate()
     except OSError as e:
         log.debug("ffmpeg version check failed (non-fatal): %s", e)
+        return None
+
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_VERSION_PROBE_TIMEOUT)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        log.debug(
+            "ffmpeg version check did not finish in %.0fs (non-fatal)", _VERSION_PROBE_TIMEOUT
+        )
         return None
 
     major = _parse_major_version(stdout)

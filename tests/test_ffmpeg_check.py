@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 
+from surveillance.services import ffmpeg_check
 from surveillance.services.ffmpeg_check import _parse_major_version, ffmpeg_version_is_affected
 
 
@@ -114,3 +115,39 @@ class TestFfmpegVersionIsAffected:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
         await ffmpeg_version_is_affected()
         assert seen == [("ffmpeg", "-version")]
+
+
+class _HangingVersionProc:
+    """An ffmpeg that never answers. Records whether it was killed, since
+    walking away without killing it leaves the process behind."""
+
+    def __init__(self) -> None:
+        self.killed = False
+
+    async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class TestVersionProbeTimeout:
+    """The check runs at startup off the main loop, so a hung probe never
+    freezes the UI, but it would leave the notice pending for the life of
+    the session and the process behind it running."""
+
+    @pytest.mark.asyncio
+    async def test_a_hung_probe_gives_up_and_kills_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = _HangingVersionProc()
+
+        async def _fake_exec(*args: Any, **kwargs: Any) -> Any:
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+        monkeypatch.setattr(ffmpeg_check, "_VERSION_PROBE_TIMEOUT", 0.05)
+
+        assert await ffmpeg_version_is_affected() is None
+        assert proc.killed, "a probe left running is a process nothing will reap"

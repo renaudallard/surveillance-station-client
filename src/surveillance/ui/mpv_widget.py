@@ -592,7 +592,13 @@ class MpvGLArea(Gtk.GLArea):
         # is what "" restores on a widget reused across protocols.
         self._mpv["demuxer-lavf-format"] = self._video_format if self._low_latency else ""
 
-        self._cache_control_enabled = self._mpv["cache-secs"] > 0
+        # An av:// source is generated locally by libavdevice, not pulled
+        # over a network: the offline placeholder. There is no delivery to
+        # drift against, so nudging its speed corrects nothing and only
+        # fills a debug log with ticks for a static card (measured: 306 of
+        # them in six minutes, all setting 1.08x, on one placeholder).
+        generated = self._url.startswith("av://")
+        self._cache_control_enabled = self._mpv["cache-secs"] > 0 and not generated
 
     def _restart_cache_control(self) -> None:
         """(Re)start the cache-speed ticker for the profile just applied

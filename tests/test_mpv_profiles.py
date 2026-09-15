@@ -78,6 +78,7 @@ def _applied(
     muxed_audio: bool,
     history_speed: float = 1.0,
     video_format: str = "",
+    url: str = "fd://7",
 ) -> dict[str, Any]:
     """The options one profile writes.
 
@@ -93,9 +94,11 @@ def _applied(
             self._muxed_audio = muxed_audio
             self._history_speed = history_speed
             self._video_format = video_format
+            self._url = url
 
     widget = _Widget()
     MpvGLArea._apply_playback_options(widget)  # type: ignore[arg-type]
+    _applied.last_widget = widget  # type: ignore[attr-defined]
     return widget._mpv.options
 
 
@@ -421,3 +424,26 @@ class TestForcedRawFormat:
         no name for, which must leave mpv exactly as it behaved before."""
         opts = _applied(low_latency=True, muxed_audio=False, video_format="")
         assert opts["demuxer-lavf-format"] == ""
+
+
+class TestCacheControlScope:
+    """Cache control nudges playback speed to hold the demuxer cache near
+    its target. That only means something for a stream arriving over a
+    network: an av:// source is generated locally by libavdevice, so
+    there is nothing to drift against and nothing to correct."""
+
+    @staticmethod
+    def _enabled(url: str) -> bool:
+        _applied(low_latency=False, muxed_audio=False, url=url)
+        return bool(_applied.last_widget._cache_control_enabled)  # type: ignore[attr-defined]
+
+    def test_a_real_stream_keeps_cache_control(self) -> None:
+        assert self._enabled("fd://7") is True
+
+    def test_the_offline_placeholder_does_not(self) -> None:
+        from surveillance.services.live import OFFLINE_PLACEHOLDER_URL
+
+        assert self._enabled(OFFLINE_PLACEHOLDER_URL) is False
+
+    def test_an_rtsp_url_keeps_it(self) -> None:
+        assert self._enabled("rtsp://cam/live") is True

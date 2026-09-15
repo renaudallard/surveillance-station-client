@@ -142,7 +142,8 @@ _WRITE_TIMEOUT = 5.0  # seconds
 
 # Floor for how close to wall clock any History target may land --
 # entering History mode, seeking, or resuming from pause, whichever is
-# asking (see _set_history_delta, the single place this is enforced).
+# asking (see _anchor_history_position, the single place this is
+# enforced).
 # A delta this small is inside the near-live window this bridge/DSM
 # can't reliably serve yet.
 MIN_HISTORY_DELTA_SECONDS = 10.0
@@ -310,21 +311,23 @@ class WebSocketBridge:
         # History one that's never outlived its original recording,
         # never calls it at all.
         self._history_resolver = history_resolver
-        # Stored as "seconds behind the wall clock" rather than the
-        # absolute target itself, so a reconnect long after the initial
-        # seek -- this bridge's own History sessions tend to get
+        # Where playback stood at self._history_anchor_at, so a
+        # reconnect long after the initial seek -- this bridge's own
+        # History sessions tend to get
         # dropped after roughly two minutes even with nothing wrong
         # client-side, most likely because it hasn't yet found whatever
         # DSM's own web client does to keep one open indefinitely --
-        # computes where playback should have reached by now instead of
-        # rewinding to the original target every time (see
-        # _current_history_target/_build_history_play_message). Set via
-        # _set_history_delta, not assigned directly, even here in the
-        # constructor -- entering History mode by clicking within
+        # computes where playback should have reached by now, at the
+        # speed it has been running at, instead of rewinding to the
+        # original target every time (see _current_history_target and
+        # _build_history_play_message). Set via _anchor_history_position,
+        # not assigned directly, even here in the constructor --
+        # entering History mode by clicking within
         # MIN_HISTORY_DELTA_SECONDS of live must clamp exactly like a
         # seek()/resume() landing there does.
-        self._history_delta_seconds: float = 0.0
-        self._set_history_delta(history_target)
+        self._history_anchor_position: float = 0.0
+        self._history_anchor_at: float = 0.0
+        self._anchor_history_position(history_target)
         self._history_stamp = 0
         # True while pause()/resume() has this bridge paused -- Live and
         # History act on it differently (see both methods' docstrings),
@@ -353,10 +356,9 @@ class WebSocketBridge:
         self._reverse: bool = history_reverse
         # Ground truth for _current_history_target(), taken from the
         # most recent video frame's own msec header field (see
-        # _dispatch_media_frame) rather than derived purely from
-        # self._history_delta_seconds/wall clock -- accurate at any
-        # speed, where the delta-based estimate is only ever right at
-        # 1x. None whenever nothing has arrived yet for whatever is
+        # _dispatch_media_frame) rather than extrapolated from the
+        # anchor -- a real position beats an estimate of one whatever
+        # the speed. None whenever nothing has arrived yet for whatever is
         # currently loaded (a fresh connect/reconnect, a seek, a
         # recording swap, or a resume from pause), all of which reset
         # it so a stale value from before that point is never reused.
@@ -1177,32 +1179,52 @@ class WebSocketBridge:
         ready_task.cancel()
         raise RuntimeError(self._error or "WebSocket bridge exited before becoming ready")
 
+    def _signed_speed(self) -> float:
+        """Seconds of recording covered per second of wall clock,
+        negative while playing in reverse.
+
+        DSM scales frame delivery by the multiplier rather than leaving
+        the client to pace it, so playback really does cover that much
+        recording per real second (see _history_play_params' own
+        "speed" bullet).
+        """
+        return (-1.0 if self._reverse else 1.0) * float(self._speed)
+
     def _current_history_target(self) -> int:
         """Where History playback should be *right now* -- frozen at
         self._history_paused_position while self._paused; otherwise
         self._last_video_msec if a frame has actually arrived for
-        whatever is currently loaded (accurate at any speed -- see
-        that attribute's own comment for why); otherwise derived from
-        self._history_delta_seconds and the current wall clock, which
-        is only ever right at 1x, as a fallback for the moment before
-        the first frame of a fresh connect/reconnect/seek arrives."""
+        whatever is currently loaded (a real position, see that
+        attribute's own comment); otherwise extrapolated from the
+        anchor and the speed playback has been running at since it, as
+        a fallback for the moment before the first frame of a fresh
+        connect/reconnect/seek arrives.
+
+        That fallback is exactly what a reconnect's own start= is built
+        from, and start= is a real DSM seek rather than a UI estimate,
+        so crediting the elapsed wall clock to the wrong speed rewinds
+        genuine video. Assuming 1x is invisible at 1x and the error
+        scales with the multiplier.
+        """
         if self._history_paused_position is not None:
             return self._history_paused_position
         if self._last_video_msec is not None and self._history_recording is not None:
             return self._history_recording.start_time + self._last_video_msec // 1000
-        return int(time.time() - self._history_delta_seconds)
+        elapsed = time.time() - self._history_anchor_at
+        return int(self._history_anchor_position + elapsed * self._signed_speed())
 
-    def _set_history_delta(self, target_unix: float) -> int:
-        """Store *target_unix* as self._history_delta_seconds, clamped
-        so the resulting delta is never less than
-        MIN_HISTORY_DELTA_SECONDS behind wall clock -- a delta that
-        small is inside the near-live window this bridge/DSM can't
-        reliably serve yet.
+    def _anchor_history_position(self, target_unix: float) -> int:
+        """Record *target_unix* as where playback is as of now, clamped
+        so it never lands less than MIN_HISTORY_DELTA_SECONDS behind
+        wall clock -- that close is inside the near-live window this
+        bridge/DSM can't reliably serve yet.
 
-        The single place that sets self._history_delta_seconds --
-        __init__, seek(), and resume() all go through this rather than
-        assigning it directly, so nothing can ask DSM to play within
-        that window no matter which of the three is doing the asking.
+        The single place that moves the anchor -- __init__, seek(),
+        resume(), set_speed() and set_reverse() all go through this
+        rather than assigning it directly. That keeps two things true
+        at once: nothing can ask DSM to play inside that window
+        whichever of them is asking, and no stretch of wall clock is
+        ever credited to a speed or direction it was not played at.
 
         Returns the clamped target actually stored, for a caller that
         needs to reflect what's really playing (e.g. seek()'s own
@@ -1211,7 +1233,12 @@ class WebSocketBridge:
         """
         now = time.time()
         clamped = min(target_unix, now - MIN_HISTORY_DELTA_SECONDS)
-        self._history_delta_seconds = now - clamped
+        self._history_anchor_position = clamped
+        # Wall clock, not monotonic: the anchor is itself an absolute
+        # wall-clock position and the clamp above measures against wall
+        # clock, so a step in it moves the clamp and the extrapolation
+        # together instead of pulling them apart.
+        self._history_anchor_at = now
         return int(clamped)
 
     def request_pause(self) -> None:
@@ -1292,10 +1319,10 @@ class WebSocketBridge:
             return None
         if self._history_paused_position is None:
             return None
-        resume_position = self._set_history_delta(self._history_paused_position)
+        resume_position = self._anchor_history_position(self._history_paused_position)
         self._history_paused_position = None
         # The frozen position may have just been clamped forward (see
-        # _set_history_delta) -- self._last_video_msec, last stamped
+        # _anchor_history_position) -- self._last_video_msec, last stamped
         # before the pause, would otherwise outrank that fresh delta
         # estimate in _current_history_target and undo the clamp.
         self._last_video_msec = None
@@ -1521,6 +1548,12 @@ class WebSocketBridge:
         """
         if not self.is_history:
             return
+        if speed != self._speed:
+            # Re-anchor first, while _signed_speed still reports the old
+            # multiplier: the wall clock already elapsed was played at
+            # that speed, and crediting it to the new one is what makes a
+            # later reconnect seek somewhere playback never was.
+            self._anchor_history_position(self._current_history_target())
         self._speed = speed
         await self._send_history_update()
 
@@ -1540,6 +1573,10 @@ class WebSocketBridge:
         if not self.is_history:
             return
         if reverse != self._reverse:
+            # Same reason set_speed re-anchors: the elapsed wall clock was
+            # played in the old direction, and _signed_speed still reports
+            # it until the assignment below.
+            self._anchor_history_position(self._current_history_target())
             # The tick kept in self._last_real_tick is the extreme for the
             # old direction, so it no longer says where playback reached.
             # Dropping it costs one marker tick of extrapolation, which is
@@ -1561,16 +1598,16 @@ class WebSocketBridge:
         the same machinery an ordinary connection drop already uses,
         rather than a second reconnect path living here too.
 
-        Either way, self._history_delta_seconds is updated too, via
-        _set_history_delta rather than directly -- target_unix within
+        Either way, the anchor is moved too, via
+        _anchor_history_position rather than directly -- target_unix within
         MIN_HISTORY_DELTA_SECONDS of wall clock (a click right near
         the live edge of the ruler) must clamp exactly like resume()
         landing there does, never asking DSM to play that close to
         live. A *later* reconnect -- caller-requested, or _pump's own
         after this bridge's own History session drops on its own after
         a couple of minutes regardless of activity -- resumes from
-        where playback should have reached by then, derived from that
-        delta, rather than rewinding to this seek's target again.
+        where playback should have reached by then, extrapolated from
+        that anchor, rather than rewinding to this seek's target again.
 
         Also clears pause() unconditionally: a seek is "go here and
         play", the same as clicking play on a paused video always
@@ -1592,10 +1629,10 @@ class WebSocketBridge:
         # A seek moves the position outright, same or different
         # recording alike -- self._last_video_msec belongs to wherever
         # playback was *before* this, and _current_history_target must
-        # fall back to the (freshly set, below) delta estimate until a
+        # fall back to the (freshly set, below) anchor estimate until a
         # frame actually arrives for the new target.
         self._last_video_msec = None
-        clamped_target = self._set_history_delta(target_unix)
+        clamped_target = self._anchor_history_position(target_unix)
         if self._history_recording is not None and recording.id == self._history_recording.id:
             if self._current_ws is not None:
                 if was_paused:

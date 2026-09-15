@@ -1601,6 +1601,88 @@ class TestHistoryMode:
         assert dict(parse_qsl(fake2.sent[0]))["start"] == "145"
         await bridge.stop()
 
+    async def test_reconnect_at_speed_resumes_where_playback_actually_reached(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The 1x version above, run at 16x. The reconnect's start= is a
+        real DSM seek rather than a UI estimate, so extrapolating the
+        elapsed wall clock at the wrong rate rewinds genuine video, by
+        the elapsed time times the multiplier."""
+        rec = _recording()
+        fake1 = _FakeWS([_codec_frame()])  # exhausted -> clean close -> reconnect
+        fake2 = _FakeWS([_codec_frame()], hang=True)
+        connect([fake1, fake2])
+        target = rec.start_time + 100
+        clock = [float(target + 600)]  # clear of the near-live clamp
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_speed="16",
+        )
+        await bridge.start()
+        assert dict(parse_qsl(fake1.sent[0]))["start"] == "100"
+
+        clock[0] += 10  # ten wall seconds at 16x is 160s of recording
+        await _wait_until(lambda: len(fake2.sent) >= 1)
+        assert dict(parse_qsl(fake2.sent[0]))["start"] == "260"
+        await bridge.stop()
+
+    async def test_changing_speed_keeps_what_was_played_at_the_old_one(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wall clock elapsed before the change was played at the old
+        multiplier. Re-extrapolating all of it at the new one would move
+        playback somewhere it never was."""
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 100
+        clock = [float(target + 600)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+        )
+        await bridge.start()
+        clock[0] += 10  # ten seconds at 1x
+        await bridge.set_speed("16")
+        clock[0] += 10  # then ten at 16x
+        assert bridge.current_history_position == target + 10 + 160
+        await bridge.stop()
+
+    async def test_reverse_extrapolates_backwards(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rec = _recording()
+        fake = _FakeWS([_codec_frame()], hang=True)
+        connect(fake)
+        target = rec.start_time + 600
+        clock = [float(target + 600)]
+        monkeypatch.setattr(ws_bridge.time, "time", lambda: clock[0])
+
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=target,
+            history_speed="4",
+            history_reverse=True,
+        )
+        await bridge.start()
+        clock[0] += 10  # ten wall seconds at 4x reverse is 40s back
+        assert bridge.current_history_position == target - 40
+        await bridge.stop()
+
     async def test_reconnect_resolves_a_fresh_recording_once_the_loaded_one_runs_out(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

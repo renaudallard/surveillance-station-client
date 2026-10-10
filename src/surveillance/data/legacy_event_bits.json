@@ -3,17 +3,17 @@
     "0": [
       {
         "brands": ["*"],
-        "label": "Event happened",
+        "label": "Scheduled continuous recording",
         "confirmed": true,
-        "notes": "Base flag, always set on every real event."
+        "notes": "SCHE_CONT in Surveillance Station's own REC_TRIG_LABEL table (EventCommon.js). Describes the recording, not the event, so it is set on every bucket of a camera that records continuously. Modifier bit, never shown as a filter category."
       }
     ],
     "1": [
       {
         "brands": ["*"],
-        "label": "Unresolved",
+        "label": "Advanced continuous recording",
         "confirmed": false,
-        "notes": "Doesn't reliably track event type, visual motion, or audio — the same real-world event has produced different bit 1 values on two different camera instances filming the same thing. Points to something per-camera/instance (sensitivity, firmware, internal bucketing) rather than anything about the event itself. Modifier bit, never shown as a filter category."
+        "notes": "ADV_CONT in Surveillance Station's own REC_TRIG_LABEL table (EventCommon.js). A per-camera recording mode, which explains why two cameras filming the same real-world event have shown different bit 1 values. Not yet checked against each camera's recording settings. Modifier bit, never shown as a filter category."
       }
     ],
     "8": [
@@ -141,7 +141,7 @@
         "brands": ["hikvision"],
         "label": "Object Removal Detection",
         "confirmed": true,
-        "notes": "The 32-bit flag budget is fully spoken for, so this detection type is signaled through the previously-always-0 reserved RLE field instead. Only ever observed as 0 or 1 so far."
+        "notes": "The 32-bit flag budget is fully spoken for, so this detection type is signaled through the previously-always-0 reserved RLE field instead. Only ever observed as 0 or 1 before Surveillance Station 9.3, where reserved carries a full bitmask instead."
       }
     ]
   }

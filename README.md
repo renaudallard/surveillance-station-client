@@ -28,7 +28,7 @@ Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid l
 <details>
 <summary><b>Timeline</b></summary>
 
-A shared timeline strip below the video grid, toggled from the header bar (persists across restarts). Scroll or use the zoom buttons to zoom the time scale (centered on the cursor), click-and-drag to pan; a thin blue border marks which slot's camera the timeline is currently tracking &mdash; it follows the last-clicked slot, defaults to the upper-left slot on layout load, and fades after 10 seconds of no activity anywhere in the window. Hovering the ruler shows a small preview thumbnail of that camera at the hovered time, with its date/time overlaid. In History mode, a date/time bubble follows the marker as it moves. Below the ruler, a recording-presence bar shows two rows: where the tracked slot's own camera has a recording, and where any camera in the current layout does. Clicking a point on the ruler switches every slot in the current layout into History mode, each playing its own camera's recorded video from that time; a **Live** button returns every slot to the real-time stream. Picking a different camera into a slot already in History mode keeps playing recorded video, for the newly picked camera, at the same point in time, rather than dropping back to live; switching grid layout always returns to live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are unavailable while a slot shows recorded video (mute/volume and Snapshot remain available). Jump &plusmn;10s buttons seek every slot in the current layout the same way clicking the ruler does, coalescing a burst of rapid clicks into a single request rather than firing one per click. A **Pause** button freezes every active slot in place &mdash; a live slot just freezes locally without leaving Live mode, while a History slot asks DSM to actually stop sending, so the gap behind wall clock grows for as long as it stays paused; resuming a History slot paused for under 10 seconds lands at least 10 seconds behind live rather than right at the edge. A Pause ends by itself on pressing **Live**, on leaving the page and coming back, and on switching layout: a page round-trip starts every slot afresh, while the other two resume whatever they leave running and restart only what they replace. A stream that starts while a Pause is on joins it, so a camera picked into a paused layout is frozen with the rest. A playback-speed dropdown (History mode only) offers 1/8x through 100x plus a Fwd/Rev direction toggle, applied to every active History slot at once; it resets to 1x/Fwd whenever a slot returns to Live or the layout switches. The higher speeds are greyed out on the larger layouts, since DSM really does send that many more frames per second and every slot has to decode them: by default, 1&times;1 offers the full range, 2&times;2 stops at 16x, 3&times;3 at 8x, and 4&times;4 at 4x &mdash; adjustable from the Settings page, with 1x always on offer whatever the budget. Real motion/alarm events are overlaid on the same two presence rows as orange markers. **Previous event**/**Next event** jump to the nearest one on either side of the current position, across every camera in the layout; Previous stays available in Live mode (dropping into History first, like Back 10s), while Next is History-only, like Forward 10s. Events within 10 seconds of wall clock are skipped, since a seek that close would just be clamped back to the live edge anyway. A calendar button opens a date/time picker, its own days marked and any day without a recording (across the current layout) refused, and its **Jump** button greyed out until the exact date/time selected falls within a real recording; jumping there re-centers the timeline at its default zoom, while Back/Forward 10s and Previous/Next event instead just pan (at whatever zoom is already set) if their own target would otherwise land off-screen. A **Filter events** button narrows the presence bar's event markers and Previous/Next event navigation down to chosen event types (Any or All of a multi-select, decoded per camera brand &mdash; see `EVENT_BITMASK.md`); opening it scans each layout camera's full recording history for the types it has ever produced (a persisted, incrementally-updated cache, so only the first scan and any time elapsed since the last one cost real seconds), showing a per-camera progress checklist meanwhile. A **Download** button opens a popup with a camera picker (only cameras currently assigned to a slot in the layout, since some may be empty, and defaulting to the tracked slot's own camera), above two tabs: Quick Save, whose three one-click buttons immediately prompt for a save location and download around the tracked slot's current position &mdash; **Download last 1/2/5 min** up to it in Live mode, or **Download &minus;1/2/5 to +1/2/5 min** centered on it in History mode, since both directions are already available once paused on a moment of interest &mdash; and Custom Save, with Start/End date-time fields (defaulting to a short clip ending at the same point) for an exact range. Either tab can pick a range that starts before or runs past what has actually been recorded, easy to do close to live; the clip is trimmed to what exists rather than refused. A range with no recording in it at all is refused rather than filled from the nearest recording.
+A shared timeline strip below the video grid, toggled from the header bar (persists across restarts). Scroll or use the zoom buttons to zoom the time scale (centered on the cursor), click-and-drag to pan; a thin blue border marks which slot's camera the timeline is currently tracking &mdash; it follows the last-clicked slot, defaults to the upper-left slot on layout load, and fades after 10 seconds of no activity anywhere in the window. Hovering the ruler shows a small preview thumbnail of that camera at the hovered time, with its date/time overlaid. In History mode, a date/time bubble follows the marker as it moves. Below the ruler, a recording-presence bar shows two rows: where the tracked slot's own camera has a recording, and where any camera in the current layout does. Clicking a point on the ruler switches every slot in the current layout into History mode, each playing its own camera's recorded video from that time; a **Live** button returns every slot to the real-time stream. Picking a different camera into a slot already in History mode keeps playing recorded video, for the newly picked camera, at the same point in time, rather than dropping back to live; switching grid layout always returns to live first. Pan/tilt/zoom, focus, preset, patrol, and push-to-talk are unavailable while a slot shows recorded video (mute/volume and Snapshot remain available). Jump &plusmn;10s buttons seek every slot in the current layout the same way clicking the ruler does, coalescing a burst of rapid clicks into a single request rather than firing one per click. A **Pause** button freezes every active slot in place &mdash; a live slot just freezes locally without leaving Live mode, while a History slot asks DSM to actually stop sending, so the gap behind wall clock grows for as long as it stays paused; resuming a History slot paused for under 10 seconds lands at least 10 seconds behind live rather than right at the edge. A Pause ends by itself on pressing **Live**, on leaving the page and coming back, and on switching layout: a page round-trip starts every slot afresh, while the other two resume whatever they leave running and restart only what they replace. A stream that starts while a Pause is on joins it, so a camera picked into a paused layout is frozen with the rest. A playback-speed dropdown (History mode only) offers 1/8x through 100x plus a Fwd/Rev direction toggle, applied to every active History slot at once; it resets to 1x/Fwd whenever a slot returns to Live or the layout switches. The higher speeds are greyed out on the larger layouts, since DSM really does send that many more frames per second and every slot has to decode them: by default, 1&times;1 offers the full range, 2&times;2 stops at 16x, 3&times;3 at 8x, and 4&times;4 at 4x &mdash; adjustable from the Settings page, with 1x always on offer whatever the budget. Real motion/alarm events are overlaid on the same two presence rows as orange markers. **Previous event**/**Next event** jump to the nearest one on either side of the current position, across every camera in the layout; Previous stays available in Live mode (dropping into History first, like Back 10s), while Next is History-only, like Forward 10s. Shortly after landing on an event, Previous goes on to the one before it; once you have watched it for a while, Previous returns to its start instead. How long counts as "shortly" grows with how wide the timeline is zoomed (10 to 30 seconds) and with the playback speed. Next skips only what a jump has just landed on. Playing in reverse it is all mirrored: events are entered at their end, and the grace period applies to Next. Events already loaded for the timeline are used straight away; past those, the search widens step by step (an hour, a day, a week) while the button pulses. Events within 10 seconds of wall clock are skipped, since a seek that close would just be clamped back to the live edge anyway. A calendar button opens a date/time picker, its own days marked and any day without a recording (across the current layout) refused, and its **Jump** button greyed out until the exact date/time selected falls within a real recording; jumping there re-centers the timeline at its default zoom, while Back/Forward 10s and Previous/Next event instead just pan (at whatever zoom is already set) if their own target would otherwise land off-screen. A **Filter events** button narrows the presence bar's event markers and Previous/Next event navigation down to chosen event types (a multi-select; on Surveillance Station 9.3 and later it lists every event type the NAS supports and matches Any of them). Before 9.3 it matches Any or All of them, and opening it scans each layout camera's full recording history for the types it has ever produced (a persisted, incrementally-updated cache, so only the first scan and any time elapsed since the last one cost real seconds), showing a per-camera progress checklist meanwhile. While a filter is active, the button's icon is drawn in the same orange as the event markers. A **Download** button opens a popup with a camera picker (only cameras currently assigned to a slot in the layout, since some may be empty, and defaulting to the tracked slot's own camera), above two tabs: Quick Save, whose three one-click buttons immediately prompt for a save location and download around the tracked slot's current position &mdash; **Download last 1/2/5 min** up to it in Live mode, or **Download &minus;1/2/5 to +1/2/5 min** centered on it in History mode, since both directions are already available once paused on a moment of interest &mdash; and Custom Save, with Start/End date-time fields (defaulting to a short clip ending at the same point) for an exact range. Either tab can pick a range that starts before or runs past what has actually been recorded, easy to do close to live; the clip is trimmed to what exists rather than refused. A range with no recording in it at all is refused rather than filled from the nearest recording.
 </details>
 <details>
 <summary><b>Recordings</b></summary>
@@ -53,7 +53,7 @@ Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings
 <details>
 <summary><b>Events & Alerts</b></summary>
 
-Browse real events decoded from each camera's own detected categories (motion, audio, tampering, person/vehicle/pet, and more, brand-dependent &mdash; see `EVENT_BITMASK.md`) with their type and time, filter by event type (quick filter plus a multi-select in advanced search, matching Any or All of the selected types) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
+Browse real events by their type and time, filter by event type (quick filter plus a multi-select in advanced search, matching Any or All of the selected types) and by camera. On Surveillance Station 9.3 and later, events and their types come from the Event Center, the same as DSM's own Event Center app: motion, audio, tampering, people/vehicle/animal object detection, intrusion, enter/exit, missing and unattended objects, and more. The type filters then always list every event type the NAS supports, as DSM's own Event Center does, and match Any of the selected ones: one event has exactly one type there. Before 9.3, events are decoded from each camera's own detected categories in the recording-interval bitmask, brand-dependent &mdash; see `LEGACY_EVENT_BITMASK.md`. Notification bell with unread badge and alert popover, polled every 30 seconds.
 </details>
 <details>
 <summary><b>Home Mode</b></summary>
@@ -68,12 +68,12 @@ View, add, and delete camera licenses. Online and offline activation.
 <details>
 <summary><b>Settings</b></summary>
 
-Tune the demuxer cache sizes used for each streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added automatically at high History playback speeds, the shared demuxer byte cap, and the speed&times;slots budget the Live View timeline's History speed dropdown enforces, plus an on-screen readout of cache depth/target/effective speed for diagnosing buffering. Each setting has its own reset-to-default button, plus one that resets everything on the page at once. Changes apply to the next stream that starts (the on-screen readout takes effect immediately, and the speed budget the next time the speed dropdown opens) and persist across restarts.
+Choose which Surveillance Station stream profile Live View plays (see [Live View stream profile](#live-view-stream-profile) below), tune the demuxer cache sizes used for each streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added automatically at high History playback speeds, the shared demuxer byte cap, the cap on each player's back buffer, and the speed&times;slots budget the Live View timeline's History speed dropdown enforces, plus an on-screen readout of cache depth/target/effective speed for diagnosing buffering. Each setting has its own reset-to-default button, plus one that resets everything on the page at once. Changes apply to the next stream that starts (the on-screen readout takes effect immediately, and the speed budget the next time the speed dropdown opens) and persist across restarts.
 </details>
 <details>
 <summary><b>Session Persistence</b></summary>
 
-Grid layout, active page, camera assignments, sidebar and timeline visibility, per-camera volume, mute and stream protocol, and the search filters of each browser page (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
+Grid layout, active page, camera assignments, sidebar and timeline visibility, per-camera volume, mute, stream protocol and Live View stream profile, and the search filters of each browser page (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
 </details>
 <details>
 <summary><b>Two-Factor Authentication</b></summary>
@@ -264,6 +264,11 @@ last_page = "live"             # last active page
 [setting_overrides_bool]
 # Same, for the Settings page's on/off toggles.
 # osd_enabled = true
+# force_legacy_events = true  # pre-9.3 event decoding, from the next login
+
+[setting_overrides_choice]
+# Same, for the Settings page's dropdowns.
+# live_view_stream_profile = "low"  # camera (default), high, balanced, low
 
 [profiles.home-nas]
 host = "192.168.1.100"
@@ -294,12 +299,15 @@ verify_ssl = false
 # Live View mute state per camera ID. Cameras start muted.
 # 5 = false
 
-[profiles.home-nas.event_type_history]
-# Event types each camera has ever produced, discovered by the Live View
-# timeline's "Filter events" popover and kept so a later open only has to
-# scan forward from checked_until instead of the whole history again.
+[profiles.home-nas.legacy_event_type_history]
+# Event types each camera has ever produced before Surveillance Station
+# 9.3, discovered by the Live View timeline's "Filter events" popover and
+# kept so a later open only has to scan forward from checked_until
+# instead of the whole history again.
 # Written automatically; delete a camera's entry to force a full rescan.
-# [profiles.home-nas.event_type_history.5]
+# Also read under its old name, event_type_history; saving writes only
+# legacy_event_type_history.
+# [profiles.home-nas.legacy_event_type_history.5]
 # types = [[3, 0], [33554435, 2]]  # (event type flag, reserved) pairs
 # checked_until = 1771200000       # unix time this camera was scanned up to
 
@@ -312,24 +320,51 @@ verify_ssl = false
 # muxing in real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
 # "direct" uses the URL from camera_overrides.
 # 5 = "direct"
+
+[profiles.home-nas.camera_live_view_stream_profiles]
+# Live View stream profile per camera ID, for WebSocket streams: high,
+# balanced, low. A camera with no entry follows its Live View setting in
+# Surveillance Station. See "Live View stream profile" below for how this
+# combines with the Settings page.
+# 5 = "high"
 ```
 
 The `[session]` section and each profile's camera assignments are managed
 automatically &mdash; the application restores the grid layout, active page,
 and camera assignments from the previous session on restart.
 
-Settings keyed by camera ID (layouts, direct RTSP URLs, protocols, volume,
-mute, the event-type cache and the cameras picked for searches) are kept per
-profile, under its own `[profiles.<name>]` table, since every NAS numbers its
-cameras from 1. A config from an earlier version kept one shared set at the top
-level and in `[session]`; it is read as the default profile's.
+Settings keyed by camera ID (layouts, direct RTSP URLs, protocols, stream
+profiles, volume, mute, the event-type cache and the cameras picked for
+searches) are kept per profile, under its own `[profiles.<name>]` table, since
+every NAS numbers its cameras from 1. A config from an earlier version kept one
+shared set at the top level and in `[session]`; it is read as the default
+profile's.
 
-Stream protocols and direct RTSP overrides can also be configured from the UI:
-right-click a camera in the sidebar to choose the protocol.
+Stream protocols, direct RTSP overrides and Live View stream profiles can also
+be configured from the UI: right-click a camera in the sidebar for its
+**Camera Settings**.
 
-`[setting_overrides]`/`[setting_overrides_bool]` are written by the
-**Settings** page (Licenses &rarr; Settings &rarr; About in the sidebar), not
-meant for hand-editing &mdash; use the page's own reset buttons instead.
+#### Live View stream profile
+
+Surveillance Station gives each camera up to three stream profiles (High
+quality, Balanced, Low bandwidth), each mapped to one of the camera's streams
+in its Live View settings there. Which one Live View plays is decided in this
+order:
+
+1. **Settings page &rarr; Live View stream profile**, when set to anything but
+   "Use camera settings": every camera uses that profile.
+2. **The camera's own Live View stream profile** in Camera Settings.
+3. **The camera's Live View setting in Surveillance Station**, the default.
+
+This applies to WebSocket streams only. An RTSP stream from Surveillance
+Station always carries the camera's Live View setting there, and a direct URL
+decides its stream itself. A lower profile saves network, decoding and memory,
+which matters most in a 3&times;3 or 4&times;4 grid.
+
+`[setting_overrides]`/`[setting_overrides_bool]`/`[setting_overrides_choice]`
+are written by the **Settings** page (Licenses &rarr; Settings &rarr; About in
+the sidebar), not meant for hand-editing &mdash; use the page's own reset
+buttons instead.
 
 Credentials are **never** stored in the config file. They are kept in the
 system keyring under the service name `surveillance-station`.
@@ -536,14 +571,14 @@ surveillance-station-client/
 ├── LICENSE
 ├── TROUBLESHOOTING.md                   troubleshooting guide
 ├── surveillance.1                       man page
-├── EVENT_BITMASK.md                     event_map bitmask reverse-engineering reference
+├── LEGACY_EVENT_BITMASK.md              event_map bitmask reverse-engineering reference (SSS before Event Center)
 ├── build-appimage.sh                    AppImage build script
 ├── appimage_entry.py                    PyInstaller entry point
 ├── assets/
 │   ├── banner.svg                       README banner image
 │   └── divider.svg                      README section divider
 ├── scripts/
-│   └── dump_event_map.py                diagnostic tool for extending EVENT_BITMASK.md
+│   └── dump_event_map.py                diagnostic tool for extending LEGACY_EVENT_BITMASK.md
 ├── data/
 │   ├── org.surveillance.app.desktop
 │   └── icons/hicolor/scalable/apps/
@@ -565,7 +600,8 @@ surveillance-station-client/
 │   ├── settings_registry.py             tunable constants behind the Settings page
 │   ├── data/
 │   │   ├── style.css
-│   │   └── event_bits.json              event_map bit -> label table (see EVENT_BITMASK.md)
+│   │   ├── legacy_event_bits.json       event_map bit -> label table (see LEGACY_EVENT_BITMASK.md)
+│   │   └── icons/                       the app's own symbolic icons (surveillance-*-symbolic)
 │   ├── api/
 │   │   ├── client.py                    SurveillanceAPI (httpx)
 │   │   ├── auth.py                      login / logout / SID
@@ -581,8 +617,11 @@ surveillance-station-client/
 │   │   ├── g711.py                      G.711 mu-law encoder
 │   │   ├── aac.py                       AAC frame recovery + ADTS headers
 │   │   ├── snapshot.py                  snapshot management
-│   │   ├── event.py                     events + alerts
-│   │   ├── event_bits.py                event_map bitmask decoder (see EVENT_BITMASK.md)
+│   │   ├── event.py                     shared event/recording-interval helpers + alerts
+│   │   ├── event_backend.py             EventBackend protocol + backend selection
+│   │   ├── event_center.py              EventCenterBackend (Event Center API, SSS 9.3+)
+│   │   ├── legacy_event.py              LegacyEventBackend (event_map decoding, SSS before Event Center)
+│   │   ├── legacy_event_bits.py         event_map bitmask decoder (see LEGACY_EVENT_BITMASK.md)
 │   │   ├── homemode.py                  home mode toggle
 │   │   ├── license.py                   license management
 │   │   ├── timelapse.py                 time lapse management
@@ -593,6 +632,7 @@ surveillance-station-client/
 │   │   ├── login.py                     login dialog
 │   │   ├── headerbar.py                 header bar controls
 │   │   ├── sidebar.py                   camera list sidebar
+│   │   ├── camera_settings.py           per-camera settings dialog (protocol, direct URL)
 │   │   ├── liveview.py                  live stream grid
 │   │   ├── layouts.py                   grid layout definitions
 │   │   ├── timeline.py                  Live View timeline strip
@@ -610,7 +650,6 @@ surveillance-station-client/
 │   │   ├── timelapse.py                 time lapse browser
 │   │   ├── notifications.py             alert popover
 │   │   ├── settings.py                  Settings page
-│   │   ├── icons.py                     icon loading helpers
 │   │   └── labels.py                    combo label helpers shared by the browser pages
 │   └── util/
 │       ├── async_bridge.py              GLib + asyncio bridge
@@ -620,9 +659,11 @@ surveillance-station-client/
     ├── test_aac.py
     ├── test_advanced_search.py
     ├── test_api_client.py
+    ├── test_camera_settings.py
     ├── test_config.py
     ├── test_date_time_picker.py
-    ├── test_event_bits.py
+    ├── test_legacy_event_bits.py
+    ├── test_icons.py
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py
     ├── test_logging.py
@@ -655,7 +696,8 @@ surveillance-station-client/
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
 | `SYNO.SurveillanceStation.AudioOut` | Push-to-talk busy-check (CheckOccupied) — the actual audio upload is a raw WebSocket, not a REST call |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download recordings |
-| `SYNO.SurveillanceStation.RecordingPicker` | Per-camera event intervals behind the Events page and the Live View timeline: recording presence and the motion/alarm history, decoded bit-by-bit into brand-aware categories &mdash; see `EVENT_BITMASK.md` |
+| `SYNO.SurveillanceStation.RecordingPicker` | Per-camera recording intervals behind the Events page and the Live View timeline: recording presence and the recording file each event plays back from; before 9.3, also the motion/alarm history, decoded bit-by-bit into brand-aware categories &mdash; see `LEGACY_EVENT_BITMASK.md` |
+| `SYNO.SurveillanceStation.EventCenter.Event` | Typed events behind the Events page and the Live View timeline (List), and the event types the NAS supports (Capability), on 9.3 and later |
 | `SYNO.SurveillanceStation.Stream` | Recording playback URL (`EventStream`), with `SYNO.SurveillanceStation.Streaming` as the legacy fallback |
 | `SYNO.SurveillanceStation.SnapShot` | List, take, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |

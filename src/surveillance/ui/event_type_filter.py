@@ -30,7 +30,7 @@ LiveView from growing a whole checklist-widget's worth of construction
 code. Unlike DateTimePicker, the two states here are structural, not
 just data updates -- scanning per-camera event history is a real,
 sometimes slow-on-first-use network cost (see AppConfig.
-event_type_history and LiveView._on_filter_popover_show), so this
+legacy_event_type_history and LiveView._on_filter_popover_show), so this
 shows a running per-camera checklist while that happens, then swaps to
 the real interactive event-type checklist (mirroring
 AdvancedSearchDialog's own "All Event Types" + per-type checkboxes +
@@ -114,9 +114,9 @@ class EventTypeFilterView(Gtk.Box):
         title.set_hexpand(True)
         header_row.append(title)
         # Any/All: same purely-client-side combination as Advanced
-        # Search's own event-type filter (see services.event_bits) --
-        # DSM has no concept of these decoded categories to filter on
-        # server-side.
+        # Search's own event-type filter (see EventBackend.matches in
+        # services.event_backend) -- DSM has no concept of these decoded
+        # categories to filter on server-side.
         self._match_all_combo = Gtk.ComboBoxText()
         self._match_all_combo.append("or", "Any")
         self._match_all_combo.append("and", "All")
@@ -189,13 +189,16 @@ class EventTypeFilterView(Gtk.Box):
         options: list[tuple[str, str, str]],
         selected_keys: set[str] | None,
         match_all: bool,
+        show_match_all: bool = True,
     ) -> None:
         """Switch to the checklist page, built fresh from *options*
         (key, display_label, tooltip_notes) triples -- e.g. from
-        services.event_bits.build_filter_options -- since the set of
-        known types can grow between one popover open and the next.
+        EventBackend.filter_options (services.event_backend) -- since the
+        set of known types can grow between one popover open and the next.
         *selected_keys*/*match_all* restore a previous selection (None
-        selected_keys means "All Event Types" was in effect). An empty
+        selected_keys means "All Event Types" was in effect).
+        *show_match_all* False hides Any/All, left on Any, where an event
+        only ever has one type. An empty
         *options* -- nothing has ever been recorded for any camera in
         the layout -- shows a dedicated message instead of a checklist
         with nothing in it.
@@ -219,7 +222,8 @@ class EventTypeFilterView(Gtk.Box):
             self._type_box.append(check)
 
         self._all_types_btn.set_active(selected_keys is None)
-        self._match_all_combo.set_active_id("and" if match_all else "or")
+        self._match_all_combo.set_visible(show_match_all)
+        self._match_all_combo.set_active_id("and" if match_all and show_match_all else "or")
         # Explicitly, the same way AdvancedSearchDialog does after
         # populating its own checklist: set_active above only emits when
         # it changes something, and on the common path ("All Event

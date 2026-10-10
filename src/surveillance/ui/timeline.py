@@ -50,7 +50,6 @@ from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.ui.date_time_picker import DateTimePicker
 from surveillance.ui.event_type_filter import EventTypeFilterView
-from surveillance.ui.icons import filter_icon, history_direction_icon, magnifier_zoom_icon
 
 # Candidate tick spacings (seconds); the smallest that still leaves each
 # label enough room on screen is picked at draw time. Up to a week, so
@@ -121,7 +120,6 @@ _THUMBNAIL_DEBOUNCE_MS = 100
 # own _DRAG_CLICK_THRESHOLD, for a consistent click/drag feel.
 _DRAG_CLICK_THRESHOLD = 4
 
-_TOOLBAR_ICON_SIZE = 16
 # Approximate width of one icon button (icon + padding), used as the
 # floor for the spacers flanking the transport cluster so it never
 # crowds the buttons on either side.
@@ -1199,10 +1197,37 @@ class Timeline(Gtk.Box):
         self._event_type_filter.mark_camera_scanned(name)
 
     def show_filter_options(
-        self, options: list[tuple[str, str, str]], selected_keys: set[str] | None, match_all: bool
+        self,
+        options: list[tuple[str, str, str]],
+        selected_keys: set[str] | None,
+        match_all: bool,
+        show_match_all: bool = True,
     ) -> None:
         """Forward to the view -- see EventTypeFilterView.show_options."""
-        self._event_type_filter.show_options(options, selected_keys, match_all)
+        self._event_type_filter.show_options(options, selected_keys, match_all, show_match_all)
+
+    def set_event_search_busy(self, forward: bool | None) -> None:
+        """Pulse Next event (*forward* True) or Previous event (False)
+        while it searches past the events already on the timeline; None
+        stops both."""
+        for button, busy in (
+            (self.prev_event_btn, forward is False),
+            (self.next_event_btn, forward is True),
+        ):
+            if busy:
+                button.add_css_class("timeline-searching")
+            else:
+                button.remove_css_class("timeline-searching")
+
+    def set_filter_active(self, active: bool) -> None:
+        """Mark the Filter events button while a filter narrows the event
+        markers and Previous/Next, so the narrowing isn't forgotten."""
+        if active:
+            self._filter_btn.add_css_class("timeline-filter-active")
+            self._filter_btn.set_tooltip_text("Filter events (filter active)")
+        else:
+            self._filter_btn.remove_css_class("timeline-filter-active")
+            self._filter_btn.set_tooltip_text("Filter events")
 
     def _build_filter_popover(self) -> Gtk.Popover:
         """EventTypeFilterView in a popover-on-a-MenuButton, same shape
@@ -1446,13 +1471,13 @@ class Timeline(Gtk.Box):
         reverse_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         reverse_row.set_halign(Gtk.Align.CENTER)
         self._reverse_btn = Gtk.ToggleButton()
-        self._reverse_btn.set_child(history_direction_icon(reverse=True, size=_TOOLBAR_ICON_SIZE))
+        self._reverse_btn.set_icon_name("surveillance-play-reverse-symbolic")
         self._reverse_btn.set_tooltip_text("Play backward")
         self._reverse_btn.connect("toggled", self._on_direction_toggled, True)
         reverse_row.append(self._reverse_btn)
         self._forward_btn = Gtk.ToggleButton()
         self._forward_btn.set_group(self._reverse_btn)
-        self._forward_btn.set_child(history_direction_icon(reverse=False, size=_TOOLBAR_ICON_SIZE))
+        self._forward_btn.set_icon_name("surveillance-play-forward-symbolic")
         self._forward_btn.set_tooltip_text("Play forward")
         self._forward_btn.set_active(True)
         self._forward_btn.connect("toggled", self._on_direction_toggled, False)
@@ -1544,7 +1569,7 @@ class Timeline(Gtk.Box):
         button_cluster = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self._filter_btn = Gtk.MenuButton()
-        self._filter_btn.set_child(filter_icon(size=_TOOLBAR_ICON_SIZE))
+        self._filter_btn.set_icon_name("surveillance-filter-symbolic")
         self._filter_btn.set_tooltip_text("Filter events")
         self._filter_btn.set_popover(self._build_filter_popover())
         button_cluster.append(self._filter_btn)
@@ -1565,7 +1590,7 @@ class Timeline(Gtk.Box):
         # centered on the canvas midpoint since a button click has no
         # cursor position of its own to zoom toward.
         zoom_out_btn = Gtk.Button()
-        zoom_out_btn.set_child(magnifier_zoom_icon(zoom_in=False, size=_TOOLBAR_ICON_SIZE))
+        zoom_out_btn.set_icon_name("surveillance-zoom-out-symbolic")
         zoom_out_btn.set_tooltip_text("Zoom out timeline")
         zoom_out_btn.connect(
             "clicked", lambda _btn: self.canvas.zoom_at(-_ZOOM_STEP, self.canvas.get_width() / 2)
@@ -1573,7 +1598,7 @@ class Timeline(Gtk.Box):
         button_cluster.append(zoom_out_btn)
 
         zoom_in_btn = Gtk.Button()
-        zoom_in_btn.set_child(magnifier_zoom_icon(zoom_in=True, size=_TOOLBAR_ICON_SIZE))
+        zoom_in_btn.set_icon_name("surveillance-zoom-in-symbolic")
         zoom_in_btn.set_tooltip_text("Zoom in timeline")
         zoom_in_btn.connect(
             "clicked", lambda _btn: self.canvas.zoom_at(_ZOOM_STEP, self.canvas.get_width() / 2)
@@ -1625,7 +1650,7 @@ class Timeline(Gtk.Box):
         # Public (like back_10s_btn): stays live in both modes -- a
         # click while Live drops into History first, same as Back 10s.
         self.prev_event_btn = Gtk.Button()
-        self.prev_event_btn.set_icon_name("go-previous-symbolic")
+        self.prev_event_btn.set_icon_name("surveillance-previous-event-symbolic")
         self.prev_event_btn.set_tooltip_text("Previous event")
         transport.append(self.prev_event_btn)
 
@@ -1647,7 +1672,7 @@ class Timeline(Gtk.Box):
         # Public (like forward_10s_btn/live_btn): only reachable in
         # History mode, same as Forward 10s -- nothing is "ahead" of live.
         self.next_event_btn = Gtk.Button()
-        self.next_event_btn.set_icon_name("go-next-symbolic")
+        self.next_event_btn.set_icon_name("surveillance-next-event-symbolic")
         self.next_event_btn.set_tooltip_text("Next event")
         self._history_only_box.append(self.next_event_btn)
 

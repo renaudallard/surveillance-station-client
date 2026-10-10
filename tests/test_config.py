@@ -133,19 +133,19 @@ def _in_profile(state: dict[str, object]) -> dict[str, object]:
 class TestEventTypeHistory:
     def test_defaults_to_empty(self) -> None:
         cfg = _config_from_data({})
-        assert cfg.event_type_history == {}
+        assert cfg.legacy_event_type_history == {}
 
     def test_loads_types_and_checked_until(self) -> None:
         cfg = _config_from_data(
             _in_profile(
                 {
-                    "event_type_history": {
+                    "legacy_event_type_history": {
                         "63": {"types": [[513, 0], [257, 1]], "checked_until": 1700000000}
                     }
                 }
             )
         )
-        assert cfg.event_type_history[63] == EventTypeHistory(
+        assert cfg.legacy_event_type_history[63] == EventTypeHistory(
             types=[(513, 0), (257, 1)], checked_until=1700000000
         )
 
@@ -153,7 +153,7 @@ class TestEventTypeHistory:
         cfg = _config_from_data(
             _in_profile(
                 {
-                    "event_type_history": {
+                    "legacy_event_type_history": {
                         "not-a-number": {"types": [], "checked_until": 0},
                         "63": {"types": [[513, 0]], "checked_until": 5},
                         "64": ["not", "a", "table"],
@@ -161,7 +161,7 @@ class TestEventTypeHistory:
                 }
             )
         )
-        assert list(cfg.event_type_history.keys()) == [63]
+        assert list(cfg.legacy_event_type_history.keys()) == [63]
 
     def test_round_trips_through_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
         import surveillance.config as cfg
@@ -172,14 +172,114 @@ class TestEventTypeHistory:
 
         config = AppConfig(default_profile="nas", active_profile="nas")
         config.profiles["nas"] = ConnectionProfile("nas", "192.168.1.10")
-        config.event_type_history[63] = EventTypeHistory(
+        config.legacy_event_type_history[63] = EventTypeHistory(
             types=[(513, 0), (257, 1)], checked_until=1700000000
         )
         _write_config(config)
         loaded = load_config()
-        assert loaded.event_type_history[63] == EventTypeHistory(
+        assert loaded.legacy_event_type_history[63] == EventTypeHistory(
             types=[(513, 0), (257, 1)], checked_until=1700000000
         )
+
+    def test_reads_the_old_key(self) -> None:
+        cfg = _config_from_data(
+            _in_profile({"event_type_history": {"63": {"types": [[513, 0]], "checked_until": 5}}})
+        )
+        assert cfg.legacy_event_type_history[63] == EventTypeHistory(
+            types=[(513, 0)], checked_until=5
+        )
+
+    def test_reads_the_old_key_from_before_profiles(self) -> None:
+        cfg = _config_from_data(
+            {
+                "general": {"default_profile": "nas"},
+                "profiles": {"nas": {"host": "192.168.1.10"}},
+                "event_type_history": {"63": {"types": [[513, 0]], "checked_until": 5}},
+            }
+        )
+        assert cfg.legacy_event_type_history[63] == EventTypeHistory(
+            types=[(513, 0)], checked_until=5
+        )
+
+    def test_reads_the_old_key_from_before_profiles_session(self) -> None:
+        cfg = _config_from_data(
+            {
+                "general": {"default_profile": "nas"},
+                "profiles": {"nas": {"host": "192.168.1.10"}},
+                "session": {
+                    "event_type_history": {"63": {"types": [[513, 0]], "checked_until": 5}}
+                },
+            }
+        )
+        assert cfg.legacy_event_type_history[63] == EventTypeHistory(
+            types=[(513, 0)], checked_until=5
+        )
+
+    def test_new_key_wins_per_camera_over_the_old_one(self) -> None:
+        cfg = _config_from_data(
+            _in_profile(
+                {
+                    "event_type_history": {
+                        "63": {"types": [[513, 0]], "checked_until": 5},
+                        "64": {"types": [[257, 0]], "checked_until": 6},
+                    },
+                    "legacy_event_type_history": {
+                        "63": {"types": [[771, 0]], "checked_until": 9},
+                    },
+                }
+            )
+        )
+        assert cfg.legacy_event_type_history == {
+            63: EventTypeHistory(types=[(771, 0)], checked_until=9),
+            64: EventTypeHistory(types=[(257, 0)], checked_until=6),
+        }
+
+    def test_saving_writes_only_the_new_key(self, tmp_path: Path, monkeypatch: object) -> None:
+        import tomllib
+
+        import surveillance.config as cfg
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(cfg, "CONFIG_FILE", config_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+        config_file.write_text(
+            '[general]\ndefault_profile = "nas"\n'
+            '[profiles.nas]\nhost = "192.168.1.10"\n'
+            "[profiles.nas.event_type_history.63]\ntypes = [[513, 0]]\nchecked_until = 5\n"
+        )
+
+        _write_config(load_config())
+        saved = tomllib.loads(config_file.read_text())["profiles"]["nas"]
+        assert "event_type_history" not in saved
+        assert saved["legacy_event_type_history"]["63"] == {
+            "types": [[513, 0]],
+            "checked_until": 5,
+        }
+
+    def test_saving_a_config_from_before_profiles_writes_only_the_new_key(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        import tomllib
+
+        import surveillance.config as cfg
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(cfg, "CONFIG_FILE", config_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+        config_file.write_text(
+            '[general]\ndefault_profile = "nas"\n'
+            '[profiles.nas]\nhost = "192.168.1.10"\n'
+            "[event_type_history.63]\ntypes = [[513, 0]]\nchecked_until = 5\n"
+        )
+
+        _write_config(load_config())
+        saved = tomllib.loads(config_file.read_text())
+        assert "event_type_history" not in saved
+        assert "event_type_history" not in saved["profiles"]["nas"]
+        assert saved["profiles"]["nas"]["legacy_event_type_history"]["63"] == {
+            "types": [[513, 0]],
+            "checked_until": 5,
+        }
 
 
 class TestSettingOverrides:
@@ -245,9 +345,35 @@ class TestBoolSettingOverrides:
         assert loaded.setting_overrides_bool == {"osd_enabled": True}
 
 
+class TestChoiceSettingOverrides:
+    """setting_overrides_choice is the text-valued twin, for the Settings
+    page's dropdowns (ChoiceSetting.key -> value)."""
+
+    def test_defaults_to_empty(self) -> None:
+        cfg = _config_from_data({})
+        assert cfg.setting_overrides_choice == {}
+
+    def test_a_non_text_value_is_dropped(self) -> None:
+        cfg = _config_from_data(
+            {"setting_overrides_choice": {"live_view_stream_profile": "low", "other": 3}}
+        )
+        assert cfg.setting_overrides_choice == {"live_view_stream_profile": "low"}
+
+    def test_round_trips_through_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
+        import surveillance.config as cfg
+
+        monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+
+        config = AppConfig()
+        config.setting_overrides_choice["live_view_stream_profile"] = "low"
+        _write_config(config)
+        assert load_config().setting_overrides_choice == {"live_view_stream_profile": "low"}
+
+
 class TestEventsSearchEventTypesMigration:
     """events_search_event_types switched from raw int flag values to
-    string filter keys (see services.event_bits) — a config saved before
+    string filter keys (see services.legacy_event_bits) — a config saved before
     that change has int entries, which must be dropped rather than
     crashing or being misinterpreted as filter keys."""
 
@@ -375,10 +501,13 @@ class TestPerProfileCameraSettings:
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
         config = self._two_profiles()
         config.camera_protocols[5] = "direct"
+        config.camera_live_view_stream_profiles[5] = "low"
         _write_config(config)
 
         data = tomllib.loads((tmp_path / "config.toml").read_text())
         assert data["profiles"]["home"]["camera_protocols"] == {"5": "direct"}
+        assert data["profiles"]["home"]["camera_live_view_stream_profiles"] == {"5": "low"}
+        assert load_config().camera_live_view_stream_profiles == {5: "low"}
         assert "camera_protocols" not in data
         assert "camera_protocols" not in data["profiles"]["office"]
 

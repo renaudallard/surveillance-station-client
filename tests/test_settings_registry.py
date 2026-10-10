@@ -30,16 +30,21 @@ each Setting's get/set actually round-trips through its live constant.
 
 from __future__ import annotations
 
+import pytest
+
 from surveillance.config import AppConfig
 from surveillance.settings_registry import (
     SECTIONS,
     BoolSetting,
+    ChoiceSetting,
     Setting,
     apply_persisted_settings,
     reset_all_settings,
     reset_bool_setting,
+    reset_choice_setting,
     reset_setting,
     update_bool_setting,
+    update_choice_setting,
     update_setting,
 )
 
@@ -50,6 +55,14 @@ def _find(key: str) -> Setting:
             if setting.key == key:
                 return setting
     raise AssertionError(f"no such setting: {key}")
+
+
+def _find_choice(key: str) -> ChoiceSetting:
+    for section in SECTIONS:
+        for setting in section.choice_settings:
+            if setting.key == key:
+                return setting
+    raise AssertionError(f"no such choice setting: {key}")
 
 
 def _find_bool(key: str) -> BoolSetting:
@@ -69,6 +82,7 @@ class TestRegistryShape:
             "cache_seconds_low_latency",
             "cache_high_speed_max_seconds",
             "demuxer_max_bytes_mib",
+            "demuxer_max_back_bytes_mib",
         }
 
     def test_timeline_section_has_the_expected_keys(self) -> None:
@@ -79,12 +93,25 @@ class TestRegistryShape:
         section = next(s for s in SECTIONS if s.title == "Media player settings")
         assert {setting.key for setting in section.bool_settings} == {"osd_enabled"}
 
+    def test_event_section_has_the_legacy_switch(self) -> None:
+        section = next(s for s in SECTIONS if s.title == "Event settings")
+        assert [s.key for s in section.bool_settings] == ["force_legacy_events"]
+
+    def test_live_view_section_has_the_stream_profile(self) -> None:
+        section = next(s for s in SECTIONS if s.title == "Live View settings")
+        assert [s.key for s in section.choice_settings] == ["live_view_stream_profile"]
+        setting = section.choice_settings[0]
+        assert list(setting.options) == ["camera", "high", "balanced", "low"]
+        assert setting.default == "camera"
+
     def test_every_setting_has_a_tooltip(self) -> None:
         for section in SECTIONS:
             for setting in section.settings:
                 assert setting.tooltip.strip()
             for bool_setting in section.bool_settings:
                 assert bool_setting.tooltip.strip()
+            for choice_setting in section.choice_settings:
+                assert choice_setting.tooltip.strip()
 
 
 class TestGetSetRoundTrip:
@@ -103,6 +130,19 @@ class TestGetSetRoundTrip:
         try:
             setting.set(not original)
             assert setting.get() is (not original)
+        finally:
+            setting.set(original)
+
+    @pytest.mark.parametrize("key", ["demuxer_max_bytes_mib", "demuxer_max_back_bytes_mib"])
+    def test_byte_caps_take_whole_mib_only(self, key: str) -> None:
+        """mpv refuses a size like "2.5MiB", so the spinner shows no
+        decimals and a hand-edited config value is rounded."""
+        setting = _find(key)
+        original = setting.get()
+        try:
+            assert setting.digits == 0
+            setting.set(2.6)
+            assert setting.get() == 3.0
         finally:
             setting.set(original)
 
@@ -168,6 +208,36 @@ class TestUpdateAndReset:
             assert "osd_enabled" not in config.setting_overrides_bool
         finally:
             setting.set(setting.default)
+
+    def test_choice_setting_applies_persists_and_resets(self) -> None:
+        setting = _find_choice("live_view_stream_profile")
+        config = AppConfig()
+        try:
+            update_choice_setting(config, setting, "low")
+            assert setting.get() == "low"
+            assert config.setting_overrides_choice == {"live_view_stream_profile": "low"}
+            reset_choice_setting(config, setting)
+            assert setting.get() == setting.default
+            assert config.setting_overrides_choice == {}
+        finally:
+            setting.set(setting.default)
+
+    def test_reset_all_settings_drops_every_choice_override(self) -> None:
+        """Kept apart from the numeric/switch version below only to stay
+        under ruff's branch limit."""
+        config = AppConfig()
+        choices = [s for section in SECTIONS for s in section.choice_settings]
+        try:
+            for setting in choices:
+                other = next(v for v in setting.options if v != setting.default)
+                update_choice_setting(config, setting, other)
+            reset_all_settings(config)
+            for setting in choices:
+                assert setting.get() == setting.default
+            assert config.setting_overrides_choice == {}
+        finally:
+            for setting in choices:
+                setting.set(setting.default)
 
     def test_reset_all_settings_drops_every_override(self) -> None:
         config = AppConfig()

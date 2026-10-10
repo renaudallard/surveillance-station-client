@@ -40,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from surveillance.services import event_backend, live
 from surveillance.ui import mpv_widget, timeline
 
 if TYPE_CHECKING:
@@ -53,7 +54,8 @@ class Setting:
     *get*/*set* read and write the actual live value; *default* is a
     snapshot of the constant's own hardcoded value, captured at import
     time before any persisted override is applied: what "Reset to
-    default" restores.
+    default" restores. *digits* is how many decimals the spinner
+    offers; at 0 it only takes whole numbers.
     """
 
     key: str
@@ -65,6 +67,7 @@ class Setting:
     minimum: float = 0.0
     maximum: float = 100.0
     step: float = 0.1
+    digits: int = 2
 
 
 @dataclass(frozen=True)
@@ -82,12 +85,49 @@ class BoolSetting:
 
 
 @dataclass(frozen=True)
+class ChoiceSetting:
+    """One user-configurable choice among fixed values, rendered as a
+    dropdown. *options* maps each value to its label, in display order."""
+
+    key: str
+    label: str
+    tooltip: str
+    default: str
+    options: dict[str, str]
+    get: Callable[[], str]
+    set: Callable[[str], None]
+
+
+@dataclass(frozen=True)
 class SettingSection:
     """A named group of settings, e.g. "Media player settings"."""
 
     title: str
     settings: list[Setting] = field(default_factory=list)
     bool_settings: list[BoolSetting] = field(default_factory=list)
+    choice_settings: list[ChoiceSetting] = field(default_factory=list)
+
+
+def _live_view_choice_settings() -> list[ChoiceSetting]:
+    return [
+        ChoiceSetting(
+            key="live_view_stream_profile",
+            label="Live View stream profile",
+            tooltip=(
+                "Which Surveillance Station stream profile Live View plays "
+                'for each camera. "Use camera settings" follows '
+                "each camera's own choice in Camera Settings (right-click "
+                "it in the sidebar), and otherwise its Live View setting "
+                "in Surveillance Station. Any other value applies to every "
+                "camera. WebSocket streams only: RTSP always uses the "
+                "camera's Live View setting in Surveillance Station."
+            ),
+            default=live.StreamProfile.CAMERA,
+            options={str(k): v for k, v in live.STREAM_PROFILE_LABELS.items()},
+            get=live.app_stream_profile,
+            set=live.set_app_stream_profile,
+        ),
+    ]
 
 
 def _player_settings() -> list[Setting]:
@@ -165,6 +205,25 @@ def _player_settings() -> list[Setting]:
             minimum=1.0,
             maximum=512.0,
             step=1.0,
+            digits=0,
+        ),
+        Setting(
+            key="demuxer_max_back_bytes_mib",
+            label="Demuxer back buffer cap (MiB)",
+            tooltip=(
+                "How much already-played video each player keeps for "
+                "seeking backwards. Live View never uses it, so a small "
+                "value saves a lot of memory on a full grid. Larger "
+                "values only help the Recordings player's skip-back, "
+                "which otherwise reads the recording again."
+            ),
+            default=mpv_widget._DEMUXER_MAX_BACK_BYTES_MIB,
+            get=lambda: mpv_widget._DEMUXER_MAX_BACK_BYTES_MIB,
+            set=mpv_widget.set_demuxer_max_back_bytes_mib,
+            minimum=0.0,
+            maximum=512.0,
+            step=1.0,
+            digits=0,
         ),
     ]
 
@@ -183,6 +242,25 @@ def _player_bool_settings() -> list[BoolSetting]:
             default=mpv_widget._OSD_ENABLED,
             get=lambda: mpv_widget._OSD_ENABLED,
             set=mpv_widget.set_osd_enabled,
+        ),
+    ]
+
+
+def _event_bool_settings() -> list[BoolSetting]:
+    return [
+        BoolSetting(
+            key="force_legacy_events",
+            label="Decode events as before Surveillance Station 9.3 (testing)",
+            tooltip=(
+                "Reads events from the recording-interval bitmask the way "
+                "Surveillance Station before 9.3 requires, even where the "
+                "Event Center is available. For testing that path on a "
+                "newer NAS: on 9.3 and later some event types come out "
+                "wrong this way. Takes effect at the next login."
+            ),
+            default=event_backend._FORCE_LEGACY_EVENTS,
+            get=lambda: event_backend._FORCE_LEGACY_EVENTS,
+            set=event_backend.set_force_legacy_events,
         ),
     ]
 
@@ -212,20 +290,23 @@ def _timeline_settings() -> list[Setting]:
 
 
 SECTIONS: list[SettingSection] = [
+    SettingSection(title="Live View settings", choice_settings=_live_view_choice_settings()),
     SettingSection(
         title="Media player settings",
         settings=_player_settings(),
         bool_settings=_player_bool_settings(),
     ),
     SettingSection(title="Timeline settings", settings=_timeline_settings()),
+    SettingSection(title="Event settings", bool_settings=_event_bool_settings()),
 ]
 
 
 def apply_persisted_settings(config: AppConfig) -> None:
     """Push every persisted override in *config.setting_overrides* /
-    *config.setting_overrides_bool* onto its live constant. Called once
-    at startup, before any stream can start, so a saved value is in
-    effect from the very first camera played."""
+    *config.setting_overrides_bool* / *config.setting_overrides_choice*
+    onto its live constant. Called once at startup, before any stream
+    can start, so a saved value is in effect from the very first camera
+    played."""
     for section in SECTIONS:
         for setting in section.settings:
             if setting.key in config.setting_overrides:
@@ -233,6 +314,9 @@ def apply_persisted_settings(config: AppConfig) -> None:
         for bool_setting in section.bool_settings:
             if bool_setting.key in config.setting_overrides_bool:
                 bool_setting.set(config.setting_overrides_bool[bool_setting.key])
+        for choice_setting in section.choice_settings:
+            if choice_setting.key in config.setting_overrides_choice:
+                choice_setting.set(config.setting_overrides_choice[choice_setting.key])
 
 
 def update_setting(config: AppConfig, setting: Setting, value: float) -> None:
@@ -245,6 +329,12 @@ def update_bool_setting(config: AppConfig, setting: BoolSetting, value: bool) ->
     """Apply and persist a new value for one on/off setting."""
     setting.set(value)
     config.setting_overrides_bool[setting.key] = value
+
+
+def update_choice_setting(config: AppConfig, setting: ChoiceSetting, value: str) -> None:
+    """Apply and persist a new value for one dropdown setting."""
+    setting.set(value)
+    config.setting_overrides_choice[setting.key] = value
 
 
 def reset_setting(config: AppConfig, setting: Setting) -> None:
@@ -266,6 +356,13 @@ def reset_bool_setting(config: AppConfig, setting: BoolSetting) -> None:
     config.setting_overrides_bool.pop(setting.key, None)
 
 
+def reset_choice_setting(config: AppConfig, setting: ChoiceSetting) -> None:
+    """Apply one dropdown setting's default and drop its override, for
+    the same reason as reset_setting."""
+    setting.set(setting.default)
+    config.setting_overrides_choice.pop(setting.key, None)
+
+
 def reset_all_settings(config: AppConfig) -> None:
     """Reset every registered setting to its default and persist that."""
     for section in SECTIONS:
@@ -273,3 +370,5 @@ def reset_all_settings(config: AppConfig) -> None:
             reset_setting(config, setting)
         for bool_setting in section.bool_settings:
             reset_bool_setting(config, bool_setting)
+        for choice_setting in section.choice_settings:
+            reset_choice_setting(config, choice_setting)

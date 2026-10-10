@@ -117,9 +117,17 @@ and
 jump to the nearest one on either side of the current position, across
 every camera in the layout; Previous stays available in Live mode
 (dropping into History first, like Back 10s), while Next is
-History-only, like Forward 10s. Events within 10 seconds of wall clock
-are skipped, since a seek that close would just be clamped back to the
-live edge anyway. A calendar button opens a date/time picker, its own
+History-only, like Forward 10s. Shortly after landing on an event,
+Previous goes on to the one before it; once it has been watched for a
+while, Previous returns to its start instead. How long counts as
+shortly grows with how wide the timeline is zoomed (10 to 30 seconds)
+and with the playback speed. Next skips only what a jump has just
+landed on. Playing in reverse it is all mirrored: events are entered at
+their end, and the grace period applies to Next. Events already loaded
+for the timeline are used straight away; past those, the search widens
+step by step (an hour, a day, a week) while the button pulses. Events
+within 10 seconds of wall clock are skipped, since a seek that close
+would just be clamped back to the live edge anyway. A calendar button opens a date/time picker, its own
 days marked and any day without a recording (across the current
 layout) refused, and its
 .B Jump
@@ -130,12 +138,15 @@ zoom, while Back/Forward 10s and Previous/Next event instead just pan
 land off-screen. A
 .B Filter events
 button narrows the presence bar's event markers and Previous/Next
-event navigation down to chosen event types (Any or All of a
-multi-select, decoded per camera brand). Opening it scans each layout
-camera's full recording history for the types it has ever produced (a
-persisted, incrementally-updated cache, so only the first scan and any
-time elapsed since the last one cost real seconds), showing a
-per-camera progress checklist meanwhile. A
+event navigation down to chosen event types. On Surveillance Station 9.3
+and later it lists every event type the NAS supports and matches any of
+the selected ones. Before 9.3 it matches any or all of them, decoded per
+camera brand, and opening it scans each layout camera's full recording
+history for the types it has ever produced (a persisted,
+incrementally-updated cache, so only the first scan and any time elapsed
+since the last one cost real seconds), showing a per-camera progress
+checklist meanwhile. While a filter is active, the button's icon is
+drawn in the same orange as the event markers. A
 .B Download
 button opens a popup with a camera picker (only cameras currently
 assigned to a slot in the layout, since some may be empty, and
@@ -205,10 +216,13 @@ logins.
 View, add, and delete camera licenses. Supports online and offline activation.
 .TP
 .B Settings
-Tune the demuxer cache sizes used for each streaming profile (plain RTSP,
-WebSocket muxed-audio, and silent WebSocket), the extra buffer added
+Choose which Surveillance Station stream profile Live View plays (see
+.B camera_live_view_stream_profiles
+under CONFIGURATION), tune the demuxer cache sizes used for each
+streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added
 automatically at high History playback speeds, the shared demuxer byte
-cap, and the speed-times-active-slots budget the Live View timeline's
+cap, the cap on each player's back buffer, and the
+speed-times-active-slots budget the Live View timeline's
 History speed dropdown enforces, plus an on-screen readout of cache
 depth/target/effective speed for diagnosing buffering. Each setting has
 its own reset-to-default button, plus one that resets everything on the
@@ -325,7 +339,23 @@ When set to
 the URL from
 .B camera_overrides
 is used instead of Synology's RTSP proxy.
-These settings can be configured by right-clicking a camera in the sidebar.
+.PP
+The
+.B camera_live_view_stream_profiles
+section selects the Surveillance Station stream profile per camera
+(high, balanced, low) for a WebSocket stream; a camera with no entry
+follows its Live View setting in Surveillance Station. The Settings
+page's
+.B Live View stream profile
+overrides every camera's entry unless it is set to
+.BR "Use camera settings" ,
+its default. An RTSP stream always carries the camera's Live View
+setting in Surveillance Station, and a direct URL decides its stream
+itself.
+.PP
+These settings can be configured from
+.B Camera Settings
+by right-clicking a camera in the sidebar.
 .PP
 The
 .B camera_volume
@@ -335,8 +365,10 @@ sections hold the Live View volume (0-100) and mute state per camera, as set
 from the slot's hover toolbar. Cameras start muted.
 .PP
 The
-.B event_type_history
-section caches which event types each camera has ever produced, as
+.B legacy_event_type_history
+section (also read under its old name,
+.BR event_type_history )
+caches which event types each camera has ever produced, as
 discovered by the Live View timeline's
 .B Filter events
 popover. Each camera's entry holds
@@ -346,17 +378,23 @@ a list of (event type flag, reserved) pairs, and
 the unix time its recording history has been scanned up to, so a later
 open only scans forward from there rather than repeating the whole
 history. Written automatically; deleting a camera's entry forces a full
-rescan the next time the popover is opened.
+rescan the next time the popover is opened. Not used on Surveillance
+Station 9.3 and later, where the popover lists every event type the NAS
+supports without scanning.
 .PP
 The
-.B [setting_overrides]
-and
+.BR [setting_overrides] ,
 .B [setting_overrides_bool]
+and
+.B [setting_overrides_choice]
 sections hold every value changed from its default on the
 .B Settings
-page (player cache sizes, the demuxer byte cap, the on-screen cache/speed
-readout, and the History speed dropdown's speed-times-slots budget), split
-by value type since TOML distinguishes numbers from booleans. Written by
+page (the Live View stream profile, player cache sizes, the demuxer byte
+and back buffer caps, the on-screen cache/speed
+readout, the History speed dropdown's speed-times-slots budget, and the
+switch that decodes events as before Surveillance Station 9.3 from the next
+login, for testing), split
+by value type since TOML distinguishes numbers, booleans and text. Written by
 the Settings page itself; use its own reset buttons rather than
 hand-editing these.
 .SH KEYBOARD SHORTCUTS

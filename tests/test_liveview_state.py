@@ -152,9 +152,11 @@ def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespa
         _history_target=LiveView._history_target,
         _slot_seek_generation={},
         _event_nav_generation=0,
+        _event_search_running=False,
         _pending_nudge_seconds=0.0,
     )
     page._forget_pending_lookups = lambda: LiveView._forget_pending_lookups(page)  # type: ignore[arg-type]
+    page._set_event_search_busy = lambda f: LiveView._set_event_search_busy(page, f)  # type: ignore[arg-type]
     page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
     page._reset_playback_speed = lambda: LiveView._reset_playback_speed(page)  # type: ignore[arg-type]
     page._resume_all_slots = lambda **kw: LiveView._resume_all_slots(page, **kw)  # type: ignore[arg-type]
@@ -969,3 +971,240 @@ class TestPtzCommandOrder:
             LiveView._ptz_in_order(page, 2, command("cam2", 0.0)),  # type: ignore[arg-type]
         )
         assert reached == ["cam2", "cam1"]
+
+
+def _nav_event(start: int, camera_id: int = 1, stop: int = 0) -> object:
+    from surveillance.api.models import Event
+
+    return Event(
+        id=1,
+        camera_id=camera_id,
+        camera_name="Cam",
+        event_type=0,
+        start_time=start,
+        stop_time=stop,
+    )
+
+
+class TestEventNavGrace:
+    """How long after an event's start Previous event goes on to the one
+    before it: a share of the visible timeline, held to 10-30s, then
+    scaled by max(1, 1 + ln(speed))."""
+
+    @pytest.mark.parametrize(("view_span", "expected"), [(60, 10.0), (500, 20.0), (3600, 30.0)])
+    def test_follows_the_visible_span_within_bounds(
+        self, view_span: float, expected: float
+    ) -> None:
+        assert liveview.event_nav_grace_seconds(1.0, view_span) == pytest.approx(expected)
+
+    def test_slow_motion_keeps_the_1x_grace_period(self) -> None:
+        assert liveview.event_nav_grace_seconds(0.125, 60) == pytest.approx(10.0)
+
+    def test_grows_with_speed(self) -> None:
+        import math
+
+        assert liveview.event_nav_grace_seconds(16.0, 60) == pytest.approx(
+            10.0 * (1 + math.log(16))
+        )
+
+
+class TestPickNavTarget:
+    # Latest start that still counts: wall clock minus the near-live floor.
+    LATEST = 10_000.0
+
+    def _pick(
+        self,
+        starts: list[int],
+        reference: float,
+        forward: bool,
+        grace: float = 10,
+        reverse: bool = False,
+        length: int = 20,
+    ) -> float | None:
+        events = [_nav_event(s, stop=s + length) for s in starts]
+        return liveview.pick_nav_target(events, reference, forward, grace, self.LATEST, reverse)
+
+    def test_previous_just_after_an_event_goes_to_the_one_before(self) -> None:
+        assert self._pick([500, 1000], reference=1006, forward=False) == 500
+
+    def test_previous_well_into_an_event_returns_to_its_start(self) -> None:
+        assert self._pick([500, 1000], reference=1030, forward=False) == 1000
+
+    def test_previous_skips_a_cluster_starting_within_the_grace_period(self) -> None:
+        # Motion at 1000 and an object detection a second later: one stop.
+        assert self._pick([500, 1000, 1001], reference=1003, forward=False) == 500
+
+    def test_next_skips_what_a_seek_just_landed_on(self) -> None:
+        assert self._pick([1000, 1001, 1500], reference=1000, forward=True) == 1500
+
+    def test_events_near_wall_clock_never_count(self) -> None:
+        assert self._pick([1000, 10_001], reference=2000, forward=True) is None
+
+    # Playing in reverse, events are entered at their end (start + 20 here).
+
+    def test_reverse_lands_on_the_end(self) -> None:
+        assert self._pick([500, 1000], reference=1015, forward=False, reverse=True) == 520
+
+    def test_reverse_next_just_after_landing_goes_further_on(self) -> None:
+        # Landed on 1020 (the end of 1000) and played back 4s.
+        assert self._pick([1000, 1500], reference=1016, forward=True, reverse=True) == 1520
+
+    def test_reverse_next_well_into_an_event_returns_to_its_end(self) -> None:
+        assert self._pick([1000, 1500], reference=1005, forward=True, reverse=True) == 1020
+
+    def test_reverse_previous_skips_what_a_seek_just_landed_on(self) -> None:
+        assert self._pick([500, 1000], reference=1020, forward=False, reverse=True) == 520
+
+
+class TestEventNavSearchWindows:
+    def test_previous_steps_back_without_overlap(self) -> None:
+        windows = liveview.event_nav_search_windows(100_000, False, None, 200_000)
+        assert windows == [(96_400, 100_000), (13_600, 96_400), (-504_800, 13_600)]
+
+    def test_previous_starts_past_what_the_timeline_already_has(self) -> None:
+        windows = liveview.event_nav_search_windows(100_000, False, (98_000, 101_000), 200_000)
+        assert windows[0] == (96_400, 98_000)
+
+    def test_a_range_not_containing_the_position_is_ignored(self) -> None:
+        windows = liveview.event_nav_search_windows(100_000, False, (0, 50_000), 200_000)
+        assert windows[0] == (96_400, 100_000)
+
+    def test_next_never_searches_past_now(self) -> None:
+        windows = liveview.event_nav_search_windows(100_000, True, None, 102_000)
+        assert windows == [(100_000, 102_000)]
+
+
+class TestEventNavSearch:
+    """Previous/Next event picks from the events the timeline already
+    has when it can, and only searches past them otherwise."""
+
+    def _page(self, monkeypatch: pytest.MonkeyPatch, cached: dict[int, tuple]) -> SimpleNamespace:
+        requested: list[tuple[int, int]] = []
+        responses: dict[tuple[int, int], list[object]] = {}
+
+        def list_events(_api: object, _ids: object, _names: object, start: int, end: int) -> object:
+            requested.append((start, end))
+            return (start, end)
+
+        def run_async(window: tuple[int, int], callback: Callable, error_callback: object) -> None:
+            callback(responses.get(window, []))
+
+        monkeypatch.setattr(liveview, "run_async", run_async)
+        monkeypatch.setattr(liveview.time, "time", lambda: 1_000_000.0)
+        busy: list[object] = []
+        seeks: list[float] = []
+        canvas = SimpleNamespace(get_view_range=lambda: (0.0, 60.0))
+        page = SimpleNamespace(
+            app=SimpleNamespace(
+                api=object(), event_backend=SimpleNamespace(list_events=list_events)
+            ),
+            timeline=SimpleNamespace(canvas=canvas, set_event_search_busy=busy.append),
+            _active=[0],
+            _active_timeline_cameras=lambda: (0, [1]),
+            _focus_reference_time=lambda: 500_000.0,
+            _timeline_speed="1",
+            _timeline_reverse=False,
+            _event_nav_generation=0,
+            _event_search_running=False,
+            _event_cache=cached,
+            _event_passes_filter=lambda _ev: True,
+            _camera_name=str,
+            _on_timeline_seek=seeks.append,
+            requested=requested,
+            responses=responses,
+            busy=busy,
+            seeks=seeks,
+        )
+        page._cached_event_coverage = lambda ids: LiveView._cached_event_coverage(page, ids)
+        page._set_event_search_busy = lambda f: LiveView._set_event_search_busy(page, f)
+        page._search_event_window = lambda *args: LiveView._search_event_window(page, *args)
+        return page
+
+    def test_a_cached_event_needs_no_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        page = self._page(monkeypatch, {1: (499_000.0, 501_000.0, [_nav_event(499_500)])})
+        LiveView._seek_to_nearest_event(page, forward=False)
+        assert page.requested == []
+        assert page.seeks == [499_500]
+        assert page.busy == []  # never shown busy
+
+    def test_searches_on_past_the_cache_until_something_turns_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        page = self._page(monkeypatch, {1: (499_000.0, 501_000.0, [])})
+        page.responses[(413_600, 496_400)] = [_nav_event(420_000)]
+        LiveView._seek_to_nearest_event(page, forward=False)
+        assert page.requested == [(496_400, 499_000), (413_600, 496_400)]
+        assert page.seeks == [420_000]
+        # Busy while searching, cleared once found.
+        assert page.busy == [False, None]
+
+    def test_nothing_anywhere_clears_the_busy_indicator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        page = self._page(monkeypatch, {})
+        LiveView._seek_to_nearest_event(page, forward=False)
+        assert len(page.requested) == 3
+        assert page.seeks == []
+        assert page.busy == [False, None]
+
+
+class TestEventSearchBusyBeforeTheTimeline:
+    """_forget_pending_lookups runs while Live View is still being built,
+    before the timeline exists: clearing the busy indicator then must not
+    touch it, or building the page fails and login never completes."""
+
+    def test_nothing_running_leaves_the_timeline_alone(self) -> None:
+        page = SimpleNamespace(
+            _slot_seek_generation={},
+            _event_nav_generation=0,
+            _event_search_running=False,
+            _pending_nudge_seconds=0.0,
+        )
+        page._set_event_search_busy = lambda f: LiveView._set_event_search_busy(page, f)
+        LiveView._forget_pending_lookups(page)  # no timeline attribute at all
+        assert page._event_nav_generation == 1
+
+
+class TestMarkerWithoutAFocusStream:
+    """The shared marker follows whichever slots still play, even once
+    the focus slot's own stream has given up and left it bridgeless."""
+
+    def _page(self, paused: bool) -> SimpleNamespace:
+        class _Bridge:
+            def __init__(self, tick: int) -> None:
+                self.tick = tick
+
+            def consume_last_real_tick(self) -> int:
+                return self.tick
+
+        focus = SimpleNamespace(index=0, _ws_bridge=None, _history_position=1000.0, player=None)
+        other = SimpleNamespace(index=1, _ws_bridge=_Bridge(1016), _history_position=1016.0)
+        marker: list[float | None] = []
+        page = SimpleNamespace(
+            _timeline_paused=paused,
+            _timeline_focus_slot=0,
+            _slots=[focus, other],
+            _active=[0, 1],
+            _leaving_history_slots=set(),
+            _history_gap_last_set_position=1000.0,
+            _history_gap_started_at=None,
+            _history_gap_reference_position=0.0,
+            _timeline_speed="16",
+            _timeline_reverse=False,
+            timeline=SimpleNamespace(canvas=SimpleNamespace(set_history_position=marker.append)),
+            marker=marker,
+        )
+        page._set_history_position = lambda slot, pos: LiveView._set_history_position(
+            page, slot, pos
+        )
+        return page
+
+    def test_the_marker_keeps_moving(self) -> None:
+        page = self._page(paused=False)
+        LiveView._advance_focus_history_position(page)
+        assert page.marker == [1016.0]
+
+    def test_a_paused_timeline_keeps_it_still(self) -> None:
+        page = self._page(paused=True)
+        LiveView._advance_focus_history_position(page)
+        assert page.marker == []

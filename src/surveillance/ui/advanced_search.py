@@ -83,6 +83,7 @@ class AdvancedSearchDialog(Gtk.Window):
         event_types: list[tuple[str, str]] | None = None,
         selected_event_type_ids: list[str] | None = None,
         selected_event_types_match_all: bool = False,
+        show_event_types_match_all: bool = True,
         show_extended_presets: bool = True,
     ) -> None:
         super().__init__(
@@ -259,6 +260,8 @@ class AdvancedSearchDialog(Gtk.Window):
                 "Any: events matching at least one checked type.\n"
                 "All: events matching every checked type at once."
             )
+            # Hidden (left on Any) where an event only ever has one type.
+            self.event_types_mode_combo.set_visible(show_event_types_match_all)
             type_header.append(self.event_types_mode_combo)
             type_outer.append(type_header)
 

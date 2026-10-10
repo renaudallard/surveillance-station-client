@@ -34,7 +34,6 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, PtzPatrol, PtzPreset
-from surveillance.ui.icons import magnifier_zoom_icon, pan_tilt_icon
 from surveillance.ui.mpv_widget import MpvGLArea
 
 
@@ -91,7 +90,7 @@ class SlotToolbar(Gtk.Revealer):
         # numeric-direction Move exists for free-angle click-to-pan.
         self._ptz_btn = Gtk.Button()
         self._ptz_btn.add_css_class("flat")
-        self._ptz_btn.set_child(pan_tilt_icon())
+        self._ptz_btn.set_icon_name("surveillance-pan-tilt-symbolic")
         self._ptz_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._ptz_btn.set_tooltip_text("Pan / Tilt")
         toolbar.append(self._ptz_btn)
@@ -99,7 +98,7 @@ class SlotToolbar(Gtk.Revealer):
         # Zoom — services.ptz.zoom() Start/Stop calls.
         self._zoom_btn = Gtk.Button()
         self._zoom_btn.add_css_class("flat")
-        self._zoom_btn.set_child(magnifier_zoom_icon(zoom_in=True))
+        self._zoom_btn.set_icon_name("surveillance-zoom-in-symbolic")
         self._zoom_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._zoom_btn.set_tooltip_text("Zoom")
         toolbar.append(self._zoom_btn)
@@ -108,7 +107,7 @@ class SlotToolbar(Gtk.Revealer):
         # web UI (network capture): a distinct, newer PTZ API version.
         self._focus_btn = Gtk.Button()
         self._focus_btn.add_css_class("flat")
-        self._focus_btn.set_icon_name("edit-select-all-symbolic")
+        self._focus_btn.set_icon_name("surveillance-focus-symbolic")
         self._focus_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._focus_btn.set_tooltip_text("Focus")
         toolbar.append(self._focus_btn)

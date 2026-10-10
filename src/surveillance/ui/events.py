@@ -41,13 +41,6 @@ from gi.repository import Gtk, Pango  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Event, Recording
 from surveillance.config import load_search_filters, save_config, save_search_filters
-from surveillance.services.event import list_granular_events
-from surveillance.services.event_bits import (
-    build_filter_options,
-    decode_flag,
-    event_matches_key,
-    event_matches_keys,
-)
 from surveillance.services.recording import (
     PRESET_LABELS,
     PRESET_LAST24H,
@@ -64,11 +57,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Event.event_type here is the *raw* event_map flag value (see
-# services.event module docstring) — not Synology's documented "reason"
-# enum (0-10), which is a different field on a different, currently-unused
-# API path (Event::List's "mode"). Decoded per-bit, per camera brand, by
-# services.event_bits — see EVENT_BITMASK.md for how each bit was confirmed.
+# Events come from, and are classified by, self.app.event_backend (see
+# services.event_backend) — this page never looks at how a backend
+# encodes an event's type.
 
 _PAGE_SIZE = 100
 
@@ -82,8 +73,8 @@ class EventsView(Gtk.Box):
         self.app = window.app
         self._events: list[Event] = []
         self._camera_id: int | None = None
-        # Filter keys, not raw flag values — see services.event_bits
-        # (e.g. "08", "25:hikvision", "R0").
+        # Filter keys (EventKind.key), in the event backend's own format —
+        # see services.event_backend.
         self._event_type_filter: str | None = None
         self._page: int = 0
         self._search_camera_ids: list[int] | None = None
@@ -99,7 +90,7 @@ class EventsView(Gtk.Box):
         # meaningful alongside _search_event_types. See _render_events().
         self._search_event_types_match_all: bool = False
         # camera_id -> vendor, refreshed alongside self._events in
-        # _load_events() — needed to decode event_type per camera brand.
+        # _load_events() — event backends classify per camera brand.
         self._camera_vendor: dict[int, str] = {}
         # (key, label, notes) options built the last time the type filter
         # combo was synced — reused by _type_filter_parts() and the
@@ -169,13 +160,13 @@ class EventsView(Gtk.Box):
         refresh_btn.connect("clicked", lambda _: self._load_events())
         toolbar.append(refresh_btn)
 
-        # Event type filter — client-side only: list_granular_events() already
-        # classifies each event locally from event_map, so switching this
-        # doesn't need a new server query, just re-rendering the list we have.
-        # Populated dynamically from whatever bits are actually present in
-        # the current unfiltered result (see _sync_event_type_combo) since
-        # event_type is a raw flag decoded per camera brand, not a fixed
-        # enum we can list up front.
+        # Event type filter — client-side only: the event backend classifies
+        # each event locally, so switching this doesn't need a new server
+        # query, just re-rendering the list we have. Populated dynamically
+        # from whatever types are actually present in the current
+        # unfiltered result (see _sync_event_type_combo), since a type is
+        # classified per camera brand, not a fixed enum we can list up
+        # front.
         #
         # Gtk.DropDown, not Gtk.ComboBoxText: rows here can be too long to
         # show in full, and ComboBoxText's rows are plain strings with no
@@ -258,10 +249,10 @@ class EventsView(Gtk.Box):
         scroll.set_child(self.listbox)
         self.append(scroll)
 
-        # Pagination — client-side: RecordingPicker::EnumInterval (unlike
-        # Recording::List) has no offset/limit, so list_granular_events()
-        # always returns the complete, correctly-filtered list for the
-        # selected range. Rendering all of it as GTK rows at once is what
+        # Pagination — client-side: the event backend's list_events()
+        # (unlike Recording::List) has no offset/limit, so it always
+        # returns the complete, correctly-filtered list for the selected
+        # range. Rendering all of it as GTK rows at once is what
         # broke down with large result sets; this only limits how many rows
         # are built at a time, it doesn't re-query the server per page.
         page_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -437,6 +428,7 @@ class EventsView(Gtk.Box):
             event_types=[(key, label) for key, label, _notes in self._current_type_options()],
             selected_event_type_ids=self._search_event_types,
             selected_event_types_match_all=self._search_event_types_match_all,
+            show_event_types_match_all=self.app.event_backend.supports_match_all,
             show_extended_presets=False,
         )
         dialog.present()
@@ -497,7 +489,9 @@ class EventsView(Gtk.Box):
         self._camera_vendor = {cam.id: cam.vendor for cam in self.window.sidebar.cameras}
 
         run_async(
-            list_granular_events(self.app.api, camera_ids, camera_names, from_time, to_time),
+            self.app.event_backend.list_events(
+                self.app.api, camera_ids, camera_names, from_time, to_time
+            ),
             callback=self._on_events_loaded,
             error_callback=self._on_load_error,
         )
@@ -589,9 +583,19 @@ class EventsView(Gtk.Box):
         # Not part of load_search_filters()/save_search_filters() — those
         # are shared with Recordings/Snapshots, which have no event-type
         # filter at all.
-        if self.app.config.events_search_event_types:
-            self._search_event_types = self.app.config.events_search_event_types
-        self._search_event_types_match_all = self.app.config.events_search_event_types_match_all
+        # Keys saved under another event backend (e.g. before the NAS was
+        # upgraded) would match nothing here, emptying the list unexplained.
+        event_types = [
+            key
+            for key in self.app.config.events_search_event_types
+            if self.app.event_backend.is_filter_key(key)
+        ]
+        if event_types:
+            self._search_event_types = event_types
+        self._search_event_types_match_all = (
+            self.app.config.events_search_event_types_match_all
+            and self.app.event_backend.supports_match_all
+        )
 
     def _save_search_to_config(self) -> None:
         """Save search filters to config."""
@@ -608,15 +612,19 @@ class EventsView(Gtk.Box):
         save_config(self.app.config)
 
     def _current_type_options(self) -> list[tuple[str, str, str]]:
-        """(key, label, notes) options for every bit actually present across
-        self._events, decoded per each event's own camera brand — the single
-        source both the quick combo and the advanced-search dialog build
-        their entries from, so they can never drift apart."""
-        occurrences = [
-            (e.event_type, e.reserved, self._camera_vendor.get(e.camera_id, ""))
+        """(key, label, notes) options: every type the event backend knows
+        of when it has a fixed list, otherwise every type actually present
+        across self._events, classified per each event's own camera brand
+        — the single source both the quick combo and the advanced-search
+        dialog build their entries from, so they can never drift apart."""
+        backend = self.app.event_backend
+        fixed = backend.fixed_filter_options()
+        if fixed is not None:
+            return fixed
+        return backend.filter_options(
+            (backend.type_signature(e), self._camera_vendor.get(e.camera_id, ""))
             for e in self._events
-        ]
-        return build_filter_options(occurrences)
+        )
 
     def _setup_event_type_row(
         self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem
@@ -636,13 +644,13 @@ class EventsView(Gtk.Box):
         label = list_item.get_child()
         text = list_item.get_item().get_string()
         label.set_text(text)
-        # Tooltip is just the full (untruncated) name — event_bits.json's
-        # `notes` are internal confidence/methodology caveats for
-        # contributors (see EVENT_BITMASK.md), not end-user-facing text.
+        # Tooltip is just the full (untruncated) name — EventKind.notes are
+        # internal confidence/methodology caveats for contributors, not
+        # end-user-facing text.
         label.set_tooltip_text(text)
 
     def _sync_event_type_combo(self) -> None:
-        """Repopulate the type filter from bits actually present in self._events."""
+        """Repopulate the type filter from types actually present in self._events."""
         self._type_options = self._current_type_options()
         previous_key = self._event_type_filter
 
@@ -679,10 +687,10 @@ class EventsView(Gtk.Box):
         """Rebuild the visible list from self._events, applying the type
         filter and paging.
 
-        Purely local — list_granular_events() already classified every event
-        from event_map, so changing the type filter or page doesn't need a
-        new query; it just re-slices what's already in memory. Only limiting
-        how many GTK rows get built at once (self._page) is new here — the
+        Purely local — the event backend classifies every event locally,
+        so changing the type filter or page doesn't need a new query; it
+        just re-slices what's already in memory. Only limiting how many
+        GTK rows get built at once (self._page) is new here — the
         underlying list is still the complete, correct result for the
         selected time range, unlike Recording::List's server-side paging.
         """
@@ -690,26 +698,20 @@ class EventsView(Gtk.Box):
         # Advanced search's plural Event Types filter takes precedence over
         # the quick single-select Type: combo, same precedence the camera
         # filters use (see _load_events()).
+        backend = self.app.event_backend
+
         def _vendor(e: Event) -> str:
             return self._camera_vendor.get(e.camera_id, "")
 
         if self._search_event_types:
             keys = self._search_event_types
             match_all = self._search_event_types_match_all
-            events = [
-                e
-                for e in self._events
-                if event_matches_keys(e.event_type, e.reserved, _vendor(e), keys, match_all)
-            ]
+            events = [e for e in self._events if backend.matches(e, _vendor(e), keys, match_all)]
         elif self._event_type_filter is None:
             events = self._events
         else:
-            key = self._event_type_filter
-            events = [
-                e
-                for e in self._events
-                if event_matches_key(e.event_type, e.reserved, _vendor(e), key)
-            ]
+            quick_keys = [self._event_type_filter]
+            events = [e for e in self._events if backend.matches(e, _vendor(e), quick_keys, False)]
 
         total_pages = max(1, (len(events) + _PAGE_SIZE - 1) // _PAGE_SIZE)
         self._page = max(0, min(self._page, total_pages - 1))
@@ -749,10 +751,10 @@ class EventsView(Gtk.Box):
         row._event = event  # type: ignore[attr-defined]
 
         vendor = self._camera_vendor.get(event.camera_id, "")
-        decoded = decode_flag(event.event_type, event.reserved, vendor)
-        is_motion = any(d.bit == 8 for d in decoded)
-        label_text = " + ".join(d.label for d in decoded) if decoded else "Unclassified"
-        tooltip_text = "\n".join(d.notes for d in decoded if d.notes)
+        kinds = self.app.event_backend.classify(event, vendor)
+        is_motion = any(k.is_motion for k in kinds)
+        label_text = " + ".join(k.label for k in kinds) if kinds else "Unclassified"
+        tooltip_text = "\n".join(k.notes for k in kinds if k.notes)
 
         if is_motion:
             row.add_css_class("motion")
@@ -835,13 +837,13 @@ class EventsView(Gtk.Box):
             camera_name=event.camera_name,
             start_time=event.start_time,
             stop_time=event.stop_time,
-            # NOT event.event_type: that holds the raw event_map flag (see
-            # services.event_bits) used for the type icon/label, not a real
-            # "recEvtType" value. The raw API response has no
-            # separate "type" field for playback purposes — Recording.from_api's
-            # event_type always defaults to 0 in practice, and passing the
-            # classification value instead as recEvtType to EventStream causes
-            # playback to fail ("Playback failed" / stream URL rejected) for
+            # NOT anything from the event's classification (see
+            # services.event_backend): that's not a real "recEvtType"
+            # value. The raw API response has no separate "type" field for
+            # playback purposes — Recording.from_api's event_type always
+            # defaults to 0 in practice, and passing the classification
+            # value instead as recEvtType to EventStream causes playback to
+            # fail ("Playback failed" / stream URL rejected) for
             # event-triggered recordings.
             event_type=0,
             mount_id=event.mount_id,

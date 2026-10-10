@@ -23,62 +23,77 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Event and alert management service."""
+"""Event-related code shared by every event backend, plus alerts.
+
+What the Events page and the Live View timeline list as events, and how
+they classify them, depends on the Surveillance Station version: see
+services.event_backend for the EventBackend protocol and how one is
+picked. This module holds what doesn't: the RecordingPicker::EnumInterval
+request (recording presence and the recording files events play back
+from), the EventKind every backend classifies into, and alerts.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from surveillance.api.models import Alert, Event
+from surveillance.api.models import Alert
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
 
 log = logging.getLogger(__name__)
 
-# RecordingPicker::EnumInterval's event_map is a run-length-encoded bitmap:
-# each [value, flag, reserved] entry means "value * _EVENT_MAP_INTERVAL_SEC
-# seconds in state `flag`". flag == 1 means "recording, nothing detected";
-# any other known flag value is a real, short motion/alarm event, confirmed
-# by decoding the exact requests DSM's own Monitor Center web UI makes
-# (interval=5) and by watching the source video at several decoded event
-# windows. flag == 0 is a separate, non-event state: it only ever appears
-# as the last few minutes of the *currently still-recording* (not yet
-# closed) segment, i.e. "not processed yet" rather than "something
-# happened" — confirmed by re-querying minutes later and finding it had
-# resolved to flag 1 once that segment closed. Treating it as an event
-# produced a phantom event that didn't match DSM's own timeline.
-_EVENT_MAP_INTERVAL_SEC = 5
-_EVENT_MAP_NON_EVENT_FLAGS = {0, 1}
+# EnumInterval's `interval`: the bucket size, in seconds, of the event_map
+# it returns alongside the per-file recording list. 5 is what DSM's own
+# Monitor Center web UI asks for.
+ENUM_INTERVAL_SEC = 5
 
 # EnumInterval over a wide range (e.g. Last 7 days) with many cameras selected
 # has been observed to exceed the API client's default 30s timeout and fail
 # outright (httpx.ReadTimeout) rather than just being slow — confirmed with
 # a 7-day/22-camera query against the real NAS. This doesn't speed up the
 # request, it just gives DSM enough room to actually finish it.
-_EVENT_MAP_REQUEST_TIMEOUT = 120.0
-
-# Event.event_type is always the *raw* flag value, never a guess. See
-# services.event_bits for the decoder and data/event_bits.json for the bit
-# table (brand-dependent); EVENT_BITMASK.md documents how it was derived.
+_ENUM_INTERVAL_REQUEST_TIMEOUT = 120.0
 
 
-def _advance_to_parent(
+@dataclass(frozen=True)
+class EventKind:
+    """One detected category of an event, as an EventBackend classifies it.
+
+    An event can carry several at once (e.g. motion + audio). *key* is
+    the filter key the type filters select and persist; each backend
+    keeps its keys in a format of its own, so a key saved under one
+    backend can never match an event from another. *filter_label* is
+    the menu text for a filter entry, *label* the shorter text an event
+    row shows, and *notes* contributor-facing caveats about how sure
+    the classification is (never shown to end users).
+    """
+
+    key: str
+    label: str
+    filter_label: str
+    notes: str = ""
+    is_motion: bool = False
+
+
+def find_parent_recording(
     recordings: list[dict[str, Any]], idx: int, timestamp: int
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the coarse recording-file entry containing *timestamp*, resuming
     the scan from *idx* rather than restarting at the beginning each time.
 
-    event_map covers the whole queried [from, to] range, spanning possibly
-    several (or zero, in a real gap) underlying recording files. Playback
-    needs that file's id/mountId/archId; the precise moment is reached via
-    Event.seek_offset instead. Both `recordings` (blStartTimeAsc=true) and
-    the timestamps this is called with (event_map decoded in order) are
-    chronological, so a rescan-from-scratch per event — O(events *
-    recordings) — was pure waste on a large result set; this is O(events +
-    recordings) per camera.
+    An event backend's events span possibly several (or zero, in a real
+    gap) underlying recording files of the queried range. Playback needs
+    that file's id/mountId/archId; the precise moment is reached via
+    Event.seek_offset instead. Both `recordings` (blStartTimeAsc=true)
+    and the timestamps this is called with must be chronological: a
+    rescan-from-scratch per event, O(events * recordings), was pure
+    waste on a large result set; this is O(events + recordings) per
+    camera.
     """
     while idx < len(recordings) and timestamp >= recordings[idx].get(
         "stop", recordings[idx].get("start", 0)
@@ -89,13 +104,13 @@ def _advance_to_parent(
     return None, idx
 
 
-async def _fetch_enum_interval(
+async def fetch_enum_interval(
     api: SurveillanceAPI, camera_ids: list[int], from_time: int, to_time: int
 ) -> list[dict[str, Any]]:
-    """Shared RecordingPicker::EnumInterval request behind both
-    list_granular_events (event_map) and list_recording_presence (the
-    same response's own per-file `event` list) -- one call, two
-    different fields of the same per-camera result.
+    """The RecordingPicker::EnumInterval request behind both
+    list_recording_presence (each camera's per-file `event` list) and
+    LegacyEventBackend's events (the same response's `event_map`) --
+    one call, two different fields of the same per-camera result.
     """
     if not camera_ids:
         return []
@@ -112,10 +127,10 @@ async def _fetch_enum_interval(
             "recording": "true",
             "blStartTimeAsc": "true",
             "blGetMetaMap": "true",
-            "interval": str(_EVENT_MAP_INTERVAL_SEC),
+            "interval": str(ENUM_INTERVAL_SEC),
             "blExcludeC2": "true",
         },
-        timeout=_EVENT_MAP_REQUEST_TIMEOUT,
+        timeout=_ENUM_INTERVAL_REQUEST_TIMEOUT,
     )
     cameras: list[dict[str, Any]] = []
     for entry in data.get("cameras", []):
@@ -126,7 +141,7 @@ async def _fetch_enum_interval(
 def merge_intervals(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Sort *spans* and merge every overlapping/adjacent pair.
 
-    Shared by _decode_camera_presence's per-camera merge and the Live
+    Shared by decode_camera_presence's per-camera merge and the Live
     View timeline's own cross-camera OR union (see
     LiveView._apply_timeline_data_to_canvas) -- same operation either way.
     """
@@ -139,7 +154,7 @@ def merge_intervals(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def _decode_camera_presence(cam: dict[str, Any]) -> list[tuple[int, int]]:
+def decode_camera_presence(cam: dict[str, Any]) -> list[tuple[int, int]]:
     """One camera's recording-presence spans, from EnumInterval's own
     per-file `event` list -- see list_recording_presence."""
     spans = [
@@ -150,139 +165,27 @@ def _decode_camera_presence(cam: dict[str, Any]) -> list[tuple[int, int]]:
     return merge_intervals(spans)
 
 
-def _decode_camera_events(
-    cam: dict[str, Any], camera_id: int, camera_name: str, from_time: int
-) -> list[Event]:
-    """One camera's real, short-duration events, decoded from
-    EnumInterval's event_map -- see list_granular_events."""
-    recordings = cam.get("event", [])
-    events: list[Event] = []
-    t = from_time
-    parent_idx = 0
-    for value, flag, reserved in cam.get("event_map", []):
-        duration = value * _EVENT_MAP_INTERVAL_SEC
-        run_start, run_stop = t, t + duration
-        t = run_stop
-        # A flag of 0/1 alone means "nothing happened" — but not if
-        # `reserved` is set: that's Object Removal Detection firing
-        # via overflow with nothing else in this bucket (see
-        # EVENT_BITMASK.md), a real event that must not be dropped.
-        if flag in _EVENT_MAP_NON_EVENT_FLAGS and not reserved:
-            continue
-
-        parent, parent_idx = _advance_to_parent(recordings, parent_idx, run_start)
-        if parent is None:
-            continue
-
-        events.append(
-            Event(
-                id=parent.get("id", 0),
-                camera_id=camera_id,
-                camera_name=camera_name,
-                event_type=flag,
-                start_time=run_start,
-                stop_time=run_stop,
-                # mountId/archId sit on the camera object, not the
-                # individual event entry, so they must come from cam.
-                mount_id=cam.get("mountId", 0),
-                arch_id=cam.get("archId", 0),
-                seek_offset=max(0, run_start - parent.get("start", run_start)),
-                reserved=reserved,
-            )
-        )
-    return events
-
-
 async def list_recording_presence(
     api: SurveillanceAPI, camera_ids: list[int], from_time: int, to_time: int
 ) -> dict[int, list[tuple[int, int]]]:
     """Per-camera recording-presence spans for the Live View timeline's
     presence bar, read from RecordingPicker::EnumInterval's own per-file
-    `event` list -- the same underlying recording-file segments
-    list_granular_events uses to resolve a flag's parent file, used
-    directly here instead: each entry's start/stop already marks
-    exactly where a recording exists, with no need to go through
-    event_map's bitmap at all.
+    `event` list -- the same underlying recording-file segments an event
+    backend resolves an event's parent file from, used directly here
+    instead: each entry's start/stop already marks exactly where a
+    recording exists.
 
     Returns {camera_id: [(start, stop), ...]}, merged and sorted; a
     camera with nothing recorded in range is simply absent from the
     result.
     """
-    cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
+    cameras = await fetch_enum_interval(api, camera_ids, from_time, to_time)
     result: dict[int, list[tuple[int, int]]] = {}
     for cam in cameras:
-        spans = _decode_camera_presence(cam)
+        spans = decode_camera_presence(cam)
         if spans:
             result[cam.get("camera_id", 0)] = spans
     return result
-
-
-async def list_granular_events(
-    api: SurveillanceAPI,
-    camera_ids: list[int],
-    camera_names: dict[int, str],
-    from_time: int,
-    to_time: int,
-) -> list[Event]:
-    """List real, short-duration events decoded from event_map.
-
-    Unlike SYNO.SurveillanceStation.Event::List, which only exposes
-    coarse ~30-minute recording-file segments, this decodes
-    RecordingPicker::EnumInterval's event_map to recover the actual
-    irregular motion/alarm windows shown in DSM's own Monitor Center
-    timeline. Returns every event within [from_time, to_time], newest first —
-    deliberately uncapped, since silently dropping older-but-in-range events
-    would make the time-range filter (Today/Yesterday/Last 7 days/...) lie
-    about what it's actually showing.
-    """
-    if not camera_ids:
-        return []
-
-    cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
-
-    events: list[Event] = []
-    for cam in cameras:
-        camera_id = cam.get("camera_id", 0)
-        camera_name = camera_names.get(camera_id, str(camera_id))
-        events.extend(_decode_camera_events(cam, camera_id, camera_name, from_time))
-
-    events.sort(key=lambda e: e.start_time, reverse=True)
-    return events
-
-
-async def list_presence_and_events(
-    api: SurveillanceAPI,
-    camera_ids: list[int],
-    camera_names: dict[int, str],
-    from_time: int,
-    to_time: int,
-) -> tuple[dict[int, list[tuple[int, int]]], list[Event]]:
-    """list_recording_presence and list_granular_events together, off a
-    single EnumInterval call -- for a caller needing both (the Live
-    View timeline, which shows presence and event markers on the same
-    bar and refreshes them on the same pan/zoom/live-tick cadence),
-    fetching this same per-camera data twice would double the request
-    rate for no benefit.
-
-    Returns (presence, events) exactly as the two functions would
-    individually.
-    """
-    if not camera_ids:
-        return {}, []
-
-    cameras = await _fetch_enum_interval(api, camera_ids, from_time, to_time)
-    presence: dict[int, list[tuple[int, int]]] = {}
-    events: list[Event] = []
-    for cam in cameras:
-        camera_id = cam.get("camera_id", 0)
-        spans = _decode_camera_presence(cam)
-        if spans:
-            presence[camera_id] = spans
-        camera_name = camera_names.get(camera_id, str(camera_id))
-        events.extend(_decode_camera_events(cam, camera_id, camera_name, from_time))
-
-    events.sort(key=lambda e: e.start_time, reverse=True)
-    return presence, events
 
 
 async def list_alerts(

@@ -234,6 +234,25 @@ is still being characterized, and the default may move once it is. If a
 speed the dropdown does allow still causes instability, drop to a smaller
 layout (or lower the budget back down) and please report it.
 
+## A camera plays a higher (or lower) resolution than expected
+
+Live View plays one of the camera's Surveillance Station stream profiles
+(High quality, Balanced, Low bandwidth). Which stream each profile maps to
+is set per camera in Surveillance Station (Edit Camera → Live View). Which
+profile plays is decided in this order:
+
+1. **Settings page → Live View stream profile**, when set to anything but
+   "Use camera settings": every camera uses that profile.
+2. The camera's own **Live View stream profile** in Camera Settings
+   (right-click it in the sidebar).
+3. The camera's **Live view** setting in Surveillance Station.
+
+This only applies to WebSocket streams. An RTSP stream always carries the
+camera's Live View setting in Surveillance Station, so change it there, or
+switch the camera to WebSocket. In a 3×3 or 4×4 grid, Balanced or Low
+bandwidth saves a lot of network, decoding and memory over a 4K main
+stream.
+
 ## Tuning playback buffering for your setup
 
 The **Settings** page (Licenses → Settings → About in the sidebar) exposes
@@ -253,6 +272,11 @@ treated as fixed:
   raising a cache size has no effect once this cap is reached first, so
   the two need to move together for a high-bitrate camera or a high
   History playback speed.
+- **Demuxer back buffer cap** limits how much already-played video each
+  player keeps for seeking backwards. Live View never seeks within it, so
+  the small default saves a lot of memory on a full grid (mpv's own
+  default is 50 MiB per player). Raising it only helps the Recordings
+  player's skip-back, which otherwise reads the recording again.
 - **Show stream cache details overlaid on video** draws a small live
   readout (cache depth, target, and effective playback speed) in the
   corner of each video slot, for seeing what the numbers above actually

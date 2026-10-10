@@ -39,11 +39,14 @@ from surveillance.config import save_config
 from surveillance.settings_registry import (
     SECTIONS,
     BoolSetting,
+    ChoiceSetting,
     Setting,
     reset_all_settings,
     reset_bool_setting,
+    reset_choice_setting,
     reset_setting,
     update_bool_setting,
+    update_choice_setting,
     update_setting,
 )
 
@@ -54,7 +57,7 @@ if TYPE_CHECKING:
 class SettingsView(Gtk.Box):
     """App settings view: a toolbar (Reset all) plus one section per
     surveillance.settings_registry.SECTIONS entry, each a list of rows
-    (label, value spinner or switch, per-row reset button)."""
+    (label, value spinner, switch or dropdown, per-row reset button)."""
 
     def __init__(self, window: MainWindow) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
@@ -62,6 +65,7 @@ class SettingsView(Gtk.Box):
         self.app = window.app
         self._spin_buttons: dict[str, Gtk.SpinButton] = {}
         self._switches: dict[str, Gtk.Switch] = {}
+        self._dropdowns: dict[str, Gtk.DropDown] = {}
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -104,6 +108,8 @@ class SettingsView(Gtk.Box):
                 section_box.append(self._create_setting_row(setting))
             for bool_setting in section.bool_settings:
                 section_box.append(self._create_bool_setting_row(bool_setting))
+            for choice_setting in section.choice_settings:
+                section_box.append(self._create_choice_setting_row(choice_setting))
 
             body.append(section_box)
 
@@ -127,7 +133,10 @@ class SettingsView(Gtk.Box):
             upper=setting.maximum,
             step_increment=setting.step,
         )
-        spin = Gtk.SpinButton(adjustment=adjustment, digits=2)
+        spin = Gtk.SpinButton(adjustment=adjustment, digits=setting.digits)
+        # Without snapping, a typed "2.5" keeps its fraction even with
+        # no decimals shown.
+        spin.set_snap_to_ticks(setting.digits == 0)
         spin.set_tooltip_text(setting.tooltip)
         spin.connect("value-changed", self._on_value_changed, setting)
         self._spin_buttons[setting.key] = spin
@@ -164,6 +173,33 @@ class SettingsView(Gtk.Box):
         reset_btn.set_icon_name("edit-undo-symbolic")
         reset_btn.set_tooltip_text("Reset to default")
         reset_btn.connect("clicked", self._on_reset_one_bool_clicked, setting)
+        row.append(reset_btn)
+
+        return row
+
+    def _create_choice_setting_row(self, setting: ChoiceSetting) -> Gtk.Widget:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.set_margin_top(4)
+        row.set_margin_bottom(4)
+
+        label = Gtk.Label(label=setting.label)
+        label.set_xalign(0)
+        label.set_hexpand(True)
+        label.set_tooltip_text(setting.tooltip)
+        row.append(label)
+
+        values = list(setting.options)
+        dropdown = Gtk.DropDown.new_from_strings(list(setting.options.values()))
+        dropdown.set_selected(values.index(setting.get()))
+        dropdown.set_tooltip_text(setting.tooltip)
+        dropdown.connect("notify::selected", self._on_choice_changed, setting)
+        self._dropdowns[setting.key] = dropdown
+        row.append(dropdown)
+
+        reset_btn = Gtk.Button()
+        reset_btn.set_icon_name("edit-undo-symbolic")
+        reset_btn.set_tooltip_text("Reset to default")
+        reset_btn.connect("clicked", self._on_reset_one_choice_clicked, setting)
         row.append(reset_btn)
 
         return row
@@ -205,6 +241,26 @@ class SettingsView(Gtk.Box):
         save_config(self.app.config)
         self._set_switch_quietly(setting, setting.default)
 
+    def _set_dropdown_quietly(self, setting: ChoiceSetting, value: str) -> None:
+        """Same division of responsibility as _set_spin_quietly, for a
+        dropdown row."""
+        dropdown = self._dropdowns[setting.key]
+        dropdown.handler_block_by_func(self._on_choice_changed)
+        dropdown.set_selected(list(setting.options).index(value))
+        dropdown.handler_unblock_by_func(self._on_choice_changed)
+
+    def _on_choice_changed(
+        self, dropdown: Gtk.DropDown, pspec: object, setting: ChoiceSetting
+    ) -> None:
+        value = list(setting.options)[dropdown.get_selected()]
+        update_choice_setting(self.app.config, setting, value)
+        save_config(self.app.config)
+
+    def _on_reset_one_choice_clicked(self, btn: Gtk.Button, setting: ChoiceSetting) -> None:
+        reset_choice_setting(self.app.config, setting)
+        save_config(self.app.config)
+        self._set_dropdown_quietly(setting, setting.default)
+
     def _on_reset_all_clicked(self, btn: Gtk.Button) -> None:
         dialog = Gtk.AlertDialog()
         dialog.set_message("Reset all settings to default?")
@@ -231,3 +287,5 @@ class SettingsView(Gtk.Box):
                 self._set_spin_quietly(setting, setting.default)
             for bool_setting in section.bool_settings:
                 self._set_switch_quietly(bool_setting, bool_setting.default)
+            for choice_setting in section.choice_settings:
+                self._set_dropdown_quietly(choice_setting, choice_setting.default)

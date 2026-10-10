@@ -40,12 +40,18 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.client import SurveillanceAPI
 from surveillance.config import AppConfig, load_config
+from surveillance.services.event_backend import EventBackend
+from surveillance.services.legacy_event import LegacyEventBackend
 from surveillance.util.async_bridge import setup_async
 
 log = logging.getLogger(__name__)
 
 APP_ID = "org.surveillance.app"
 CSS_PATH = Path(__file__).parent / "data" / "style.css"
+# The app's own symbolic icons (surveillance-*-symbolic), for glyphs no
+# icon theme ships under one name on every desktop. GTK recolours them
+# to the theme like any stock symbolic icon.
+ICONS_PATH = Path(__file__).parent / "data" / "icons"
 
 
 class SurveillanceApp(Gtk.Application):
@@ -87,6 +93,9 @@ class SurveillanceApp(Gtk.Application):
         # launch over to the instance already running.
         self._config_loaded = False
         self.api: SurveillanceAPI | None = None
+        # Where the Events page and the Live View timeline get events
+        # from, picked per NAS at login (see services.event_backend).
+        self.event_backend: EventBackend = LegacyEventBackend()
         self._window: Gtk.ApplicationWindow | None = None
         # (tag_name, html_url) of the latest GitHub release, once the
         # startup update check completes and finds something newer than
@@ -121,6 +130,12 @@ class SurveillanceApp(Gtk.Application):
             # "light" and "auto": False lets the OS color-scheme preference take effect
             settings.set_property("gtk-application-prefer-dark-theme", False)
 
+    def _add_icon_path(self) -> None:
+        """Let icon lookups find the app's own icons in ICONS_PATH."""
+        display = Gdk.Display.get_default()
+        if display:
+            Gtk.IconTheme.get_for_display(display).add_search_path(str(ICONS_PATH))
+
     def _load_css(self) -> None:
         """Load application CSS."""
         if not CSS_PATH.exists():
@@ -153,6 +168,8 @@ class SurveillanceApp(Gtk.Application):
         if self._window is None:
             from surveillance.ui.window import MainWindow
 
+            # Before the window, whose widgets look the icons up.
+            self._add_icon_path()
             self._window = MainWindow(application=self)
             # Once per process, alongside the window. A second launch of a
             # single-instance app activates the running one again, and
@@ -162,12 +179,13 @@ class SurveillanceApp(Gtk.Application):
         self.apply_theme(self.config.theme)
         self._window.present()
 
-    def set_api(self, api: SurveillanceAPI) -> None:
-        """Set the active API connection, and with it whose camera-keyed
-        settings are in effect. Before the pages are built: each reads
-        its cameras' settings as it starts."""
+    def set_api(self, api: SurveillanceAPI, event_backend: EventBackend) -> None:
+        """Set the active API connection and its event backend, and with
+        them whose camera-keyed settings are in effect. Before the pages
+        are built: each reads its cameras' settings as it starts."""
         self.config.activate_profile(api.profile.name)
         self.api = api
+        self.event_backend = event_backend
 
     def exit_now(self) -> NoReturn:
         """Save the config, mark the log complete and exit at once.

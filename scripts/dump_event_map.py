@@ -25,7 +25,7 @@
 
 """Dump raw `event_map` entries for one or more cameras over a time window.
 
-Diagnostic tool for EVENT_BITMASK.md — see its "Contributing" section for
+Diagnostic tool for LEGACY_EVENT_BITMASK.md — see its "Contributing" section for
 the full procedure. Prints every `event_map` bucket whose `flag` isn't
 just 0/1 (i.e. every bucket carrying real event information), so you can
 line them up against an `eventlog` cross-reference.

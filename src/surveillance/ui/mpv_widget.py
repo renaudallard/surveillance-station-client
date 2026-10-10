@@ -132,6 +132,16 @@ _DEMUXER_MAX_BYTES_MIB = 32.0
 # never approaches it.
 _DEMUXER_MAX_BYTES_UNCACHED = "512KiB"
 
+# Cap on the demuxer's back buffer, the already-played data mpv keeps
+# so a backward seek can be served without reading the source again.
+# mpv's own default is 50 MiB per player, which a live stream fills
+# and holds for nothing: Live never seeks, and a History seek restarts
+# DSM's stream rather than seeking within it. On a full grid that adds
+# up to a large share of the app's memory growth over a day. Applied to
+# every profile, so the Recordings player's skip-back re-reads its
+# source instead of using the buffer.
+_DEMUXER_MAX_BACK_BYTES_MIB = 1.0
+
 
 # Runtime setters for the constants above, used by the Settings page's
 # player-settings registry (surveillance.settings_registry) to override
@@ -150,9 +160,15 @@ def set_cache_seconds_muxed_audio(value: float) -> None:
     _CACHE_SECONDS_MUXED_AUDIO = max(value, 0.0)
 
 
+# The two byte caps are whole MiB: mpv refuses a size like "2.5MiB".
 def set_demuxer_max_bytes_mib(value: float) -> None:
     global _DEMUXER_MAX_BYTES_MIB
-    _DEMUXER_MAX_BYTES_MIB = max(value, 0.1)
+    _DEMUXER_MAX_BYTES_MIB = float(max(round(value), 1))
+
+
+def set_demuxer_max_back_bytes_mib(value: float) -> None:
+    global _DEMUXER_MAX_BACK_BYTES_MIB
+    _DEMUXER_MAX_BACK_BYTES_MIB = float(max(round(value), 0))
 
 
 def set_cache_seconds_low_latency(value: float) -> None:
@@ -615,6 +631,7 @@ class MpvGLArea(Gtk.GLArea):
         self._mpv["demuxer-max-bytes"] = (
             f"{_DEMUXER_MAX_BYTES_MIB:g}MiB" if cache_enabled else _DEMUXER_MAX_BYTES_UNCACHED
         )
+        self._mpv["demuxer-max-back-bytes"] = f"{_DEMUXER_MAX_BACK_BYTES_MIB:g}MiB"
         self._mpv["demuxer-readahead-secs"] = target_seconds
         self._mpv["cache-secs"] = target_seconds
         self._mpv["correct-pts"] = timed

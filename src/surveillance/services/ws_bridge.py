@@ -160,6 +160,13 @@ _VIDEO_QUEUE_LIMIT = 256 * 1024  # bytes
 # can't reliably serve yet.
 MIN_HISTORY_DELTA_SECONDS = 10.0
 
+# After a jump, how far (in recording seconds, per 1x of speed) a frame
+# may be from the jump's target and still count as the new position,
+# and how long to wait for one before counting every frame again -- see
+# WebSocketBridge.expect_history_position.
+_TICK_GATE_TOLERANCE_SECONDS = 3.0
+_TICK_GATE_TIMEOUT_SECONDS = 5.0
+
 # How often a History bridge playing near the end of its recording
 # re-asks DSM what that recording now covers, and how close to the end
 # it has to be for that to be worth asking. Near the live edge a camera
@@ -487,6 +494,10 @@ class WebSocketBridge:
         # is what compute_focus_marker_update already expects, taking the
         # min across slots in reverse and the max going forward.
         self._last_real_tick: int | None = None
+        # (position, monotonic time) a jump was just made to, while
+        # frames from before it may still be arriving -- see
+        # expect_history_position. None once a frame near it has come.
+        self._tick_gate: tuple[int, float] | None = None
         # The currently connected socket, for seek() to send on from
         # outside _pump's own scope -- None whenever no connection is up
         # (including between reconnect attempts), so seek() knows to fold
@@ -1323,18 +1334,7 @@ class WebSocketBridge:
                     self._last_video_msec = int(msec)
                     if self._history_recording is not None:
                         tick = self._history_recording.start_time + self._last_video_msec // 1000
-                        if self._last_real_tick is None:
-                            self._last_real_tick = tick
-                        elif self._reverse:
-                            # Reverse playback walks msec downward, so the
-                            # position reached within a window is its lowest
-                            # tick, not its highest. Keeping the highest
-                            # reported where playback stood when the window
-                            # opened, leaving the shared marker roughly one
-                            # real second times the speed behind.
-                            self._last_real_tick = min(self._last_real_tick, tick)
-                        else:
-                            self._last_real_tick = max(self._last_real_tick, tick)
+                        self._record_real_tick(tick)
             # The payload arrives without the Annex B start code, so
             # prepend it and mpv/ffmpeg can find NAL boundaries. Where
             # DSM leaves it has never been checked here; the constant
@@ -1617,6 +1617,53 @@ class WebSocketBridge:
         at all, so it cannot fail this way on any camera.
         """
         return self._video_format
+
+    def expect_history_position(self, position: int) -> None:
+        """Count only frames near *position* towards consume_last_real_tick
+        until the first one arrives: a jump has just been made there.
+
+        Frames from before the jump keep arriving for a moment, from a
+        seek still in flight or from a slot whose own seek hasn't landed
+        yet, and the shared timeline marker takes the furthest frame
+        across every slot, so one of them would put the marker back where
+        it was for a tick. Gives up after _TICK_GATE_TIMEOUT_SECONDS, so
+        a seek that lands somewhere unexpected can't silence this bridge.
+        """
+        self._last_real_tick = None
+        self._tick_gate = (position, time.monotonic())
+
+    def _record_real_tick(self, tick: int) -> None:
+        """Fold a History video frame at *tick* into what
+        consume_last_real_tick reports: the furthest along the direction
+        of travel, unless it's from before a jump just made."""
+        if not self._passes_tick_gate(tick):
+            return
+        if self._last_real_tick is None:
+            self._last_real_tick = tick
+        elif self._reverse:
+            # Reverse playback walks msec downward, so the position
+            # reached within a window is its lowest tick, not its
+            # highest. Keeping the highest reported where playback stood
+            # when the window opened, leaving the shared marker roughly
+            # one real second times the speed behind.
+            self._last_real_tick = min(self._last_real_tick, tick)
+        else:
+            self._last_real_tick = max(self._last_real_tick, tick)
+
+    def _passes_tick_gate(self, tick: int) -> bool:
+        """Whether a frame at *tick* counts -- see expect_history_position."""
+        if self._tick_gate is None:
+            return True
+        position, armed_at = self._tick_gate
+        # A frame of the new position can be up to a couple of seconds of
+        # playback past it, more at a higher speed.
+        tolerance = _TICK_GATE_TOLERANCE_SECONDS * max(1.0, float(self._speed))
+        if abs(tick - position) <= tolerance or (
+            time.monotonic() - armed_at > _TICK_GATE_TIMEOUT_SECONDS
+        ):
+            self._tick_gate = None
+            return True
+        return False
 
     def consume_last_real_tick(self) -> int | None:
         """Return the furthest real (frame-derived) absolute position

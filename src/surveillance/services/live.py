@@ -27,10 +27,14 @@
 
 from __future__ import annotations
 
+import logging
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
+
+log = logging.getLogger(__name__)
 
 
 PROTOCOL_LABELS: dict[str, str] = {
@@ -42,6 +46,76 @@ PROTOCOL_LABELS: dict[str, str] = {
     "multicast": "Multicast",
     "direct": "Direct RTSP URL",
 }
+
+# Protocols that stream over DSM's WebSocket, the only transport that can
+# ask for a stream profile: an RTSP path from GetLiveViewPath always
+# carries the camera's own Live View setting.
+WEBSOCKET_PROTOCOLS = frozenset({"auto", "websocket"})
+
+
+class StreamProfile(StrEnum):
+    """Which of a camera's Surveillance Station stream profiles Live View
+    asks for. CAMERA follows the camera's own Live View setting there."""
+
+    CAMERA = "camera"
+    HIGH = "high"
+    BALANCED = "balanced"
+    LOW = "low"
+
+
+STREAM_PROFILE_LABELS: dict[StreamProfile, str] = {
+    StreamProfile.CAMERA: "Use camera settings",
+    StreamProfile.HIGH: "High quality",
+    StreamProfile.BALANCED: "Balanced",
+    StreamProfile.LOW: "Low bandwidth",
+}
+
+# Surveillance Station's own number for each profile, as GetInfo's
+# defLiveProfile reports it. The WebSocket URL's profile parameter takes
+# the same number, and DSM resolves it through each camera's own
+# profile-to-stream mapping.
+_STREAM_PROFILE_NUMBER: dict[StreamProfile, int] = {
+    StreamProfile.HIGH: 0,
+    StreamProfile.BALANCED: 1,
+    StreamProfile.LOW: 2,
+}
+
+# Used when DSM does not say which profile a camera's Live View setting
+# picks. Balanced is Surveillance Station's own default.
+_FALLBACK_STREAM_PROFILE_NUMBER = 1
+
+# App-wide stream profile from the Settings page (see set_app_stream_profile).
+# Anything but CAMERA overrides every camera's own choice.
+_APP_STREAM_PROFILE = StreamProfile.CAMERA
+
+
+def app_stream_profile() -> StreamProfile:
+    """The app-wide stream profile from the Settings page."""
+    return _APP_STREAM_PROFILE
+
+
+def set_app_stream_profile(value: str) -> None:
+    """Set the app-wide stream profile; an unknown value (a hand-edited
+    config) means CAMERA."""
+    global _APP_STREAM_PROFILE
+    try:
+        _APP_STREAM_PROFILE = StreamProfile(value)
+    except ValueError:
+        _APP_STREAM_PROFILE = StreamProfile.CAMERA
+
+
+def effective_stream_profile(camera_choice: str) -> StreamProfile:
+    """The profile a camera's Live View stream uses: the app-wide setting
+    when it forces one, otherwise *camera_choice* (the camera's own
+    override, "camera" when it has none). CAMERA in the result means the
+    camera's Live View setting in Surveillance Station."""
+    if _APP_STREAM_PROFILE is not StreamProfile.CAMERA:
+        return _APP_STREAM_PROFILE
+    try:
+        return StreamProfile(camera_choice)
+    except ValueError:
+        return StreamProfile.CAMERA
+
 
 # Protocols whose stream URL is an RTSP one, so audio reaches mpv as soon
 # as the camera has a track. "auto" and "websocket" are not here because
@@ -73,17 +147,47 @@ OFFLINE_PLACEHOLDER_URL = (
 )
 
 
-def _build_ws_live_url(api: SurveillanceAPI, camera_id: int) -> str:
-    """Build a WebSocket live stream URL."""
-    # wss://host:port/ss_webstream_task/?method=MixStream&stmSrc=0&blAudio=true
-    #   &dsId=0&id={camId}&devType=1&profile=0
+def _build_ws_live_url(api: SurveillanceAPI, camera_id: int, profile: int) -> str:
+    """Build a WebSocket live stream URL for stream profile *profile*
+    (0 high, 1 balanced, 2 low)."""
     scheme = "wss" if api.base_url.startswith("https") else "ws"
     host_port = api.base_url.split("://", 1)[1]
     return (
         f"{scheme}://{host_port}/ss_webstream_task/"
         f"?method=MixStream&stmSrc=0&blAudio=true"
-        f"&dsId=0&id={camera_id}&devType=1&profile=0"
+        f"&dsId=0&id={camera_id}&devType=1&profile={profile}"
     )
+
+
+async def _stream_profile_number(
+    api: SurveillanceAPI, camera_id: int, profile: StreamProfile
+) -> int:
+    """Surveillance Station's profile number for *profile*, asking DSM
+    for the camera's Live View setting when *profile* is CAMERA.
+
+    Only Camera.GetInfo with streamInfo reports that setting
+    (defLiveProfile); Camera.List does not.
+    """
+    if profile is not StreamProfile.CAMERA:
+        return _STREAM_PROFILE_NUMBER[profile]
+    try:
+        data = await api.request(
+            api="SYNO.SurveillanceStation.Camera",
+            method="GetInfo",
+            version=8,
+            extra_params={"cameraIds": str(camera_id), "streamInfo": "true"},
+        )
+        value = data["cameras"][0]["defLiveProfile"]
+    except Exception as e:
+        log.warning(
+            "DSM did not report camera %d's Live View setting, using Balanced: %s",
+            camera_id,
+            e,
+        )
+        return _FALLBACK_STREAM_PROFILE_NUMBER
+    if value not in _STREAM_PROFILE_NUMBER.values():
+        return _FALLBACK_STREAM_PROFILE_NUMBER
+    return int(value)
 
 
 def get_history_view_path(api: SurveillanceAPI) -> str:
@@ -115,12 +219,16 @@ async def get_live_view_path(
     camera_id: int,
     protocol: str = "auto",
     override_url: str = "",
+    camera_stream_profile: str = StreamProfile.CAMERA,
 ) -> str:
     """Get the live view URL for a camera.
 
     *protocol* selects which stream path to use:
       auto, rtsp, rtsp_over_http, mjpeg, multicast, websocket, direct.
     When *protocol* is ``"direct"``, *override_url* is returned as-is.
+    *camera_stream_profile* is the camera's own stream profile override,
+    which only a WebSocket stream can honour (see
+    effective_stream_profile for how it combines with the app-wide one).
     """
     if protocol == "direct" and override_url:
         return override_url
@@ -129,8 +237,10 @@ async def get_live_view_path(
     # only transport that carries audio for the common camera. There is no
     # fallback to the API-based protocols -- picking one of those is a
     # per-camera override, made by right-clicking the camera in the sidebar.
-    if protocol in ("auto", "websocket"):
-        return _build_ws_live_url(api, camera_id)
+    if protocol in WEBSOCKET_PROTOCOLS:
+        profile = effective_stream_profile(camera_stream_profile)
+        number = await _stream_profile_number(api, camera_id, profile)
+        return _build_ws_live_url(api, camera_id, number)
 
     data = await api.request(
         api="SYNO.SurveillanceStation.Camera",

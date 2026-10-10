@@ -45,6 +45,7 @@ from surveillance.credentials import (
     get_credentials_async,
     store_credentials_async,
 )
+from surveillance.services.event_backend import EventBackend, select_event_backend
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -277,7 +278,7 @@ class LoginDialog(Gtk.Window):
         device_id: str = "",
         device_name: str = "",
         enable_device_token: bool = False,
-    ) -> tuple[SurveillanceAPI, ConnectionProfile, str, str]:
+    ) -> tuple[SurveillanceAPI, ConnectionProfile, str, str, EventBackend]:
         if not api._api_info:
             await api.discover_apis()
         await login(
@@ -289,7 +290,8 @@ class LoginDialog(Gtk.Window):
             device_name=device_name,
             enable_device_token=enable_device_token,
         )
-        return api, profile, username, password
+        event_backend = await select_event_backend(api)
+        return api, profile, username, password, event_backend
 
     def _on_close_request(self, _dialog: Gtk.Window) -> bool:
         """Drop any API the dialog still owns. Its httpx client holds a
@@ -301,7 +303,7 @@ class LoginDialog(Gtk.Window):
         return False
 
     def _on_connect_success(self, result: Any) -> None:
-        api, profile, username, password = result
+        api, profile, username, password, event_backend = result
         if self._dismissed:
             run_async(api.close())
             return
@@ -313,7 +315,7 @@ class LoginDialog(Gtk.Window):
         # Save profile
         add_profile(self.app.config, profile)
 
-        self.app.set_api(api)
+        self.app.set_api(api, event_backend)
         # Ownership passes to the application here, so the close handler
         # below must not tear this client down with the dialog.
         self._current_api = None

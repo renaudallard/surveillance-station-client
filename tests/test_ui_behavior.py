@@ -596,8 +596,8 @@ class TestComputeFocusMarkerUpdate:
         from surveillance.ui.liveview import compute_focus_marker_update
 
         position, _gap_started_at, _ref = compute_focus_marker_update(
-            current_position=1000.0,
-            last_set_position=1000.0,
+            current_position=1100.0,
+            last_set_position=1100.0,
             active_ticks=[1010, None, 1050, 1030],
             gap_started_at=None,
             gap_reference_position=0.0,
@@ -606,6 +606,43 @@ class TestComputeFocusMarkerUpdate:
             reverse=True,
         )
         assert position == 1010.0
+
+    @pytest.mark.parametrize(("reverse", "ticks"), [(False, [1003, None]), (True, [1007, None])])
+    def test_a_slot_falling_quiet_does_not_pull_the_marker_back(
+        self, reverse: bool, ticks: list[int | None]
+    ) -> None:
+        """The slot furthest along has no frame this second; the next one
+        is behind where the marker already is."""
+        from surveillance.ui.liveview import compute_focus_marker_update
+
+        position, _gap_started_at, _ref = compute_focus_marker_update(
+            current_position=1005.0,
+            last_set_position=1005.0,
+            active_ticks=ticks,
+            gap_started_at=None,
+            gap_reference_position=0.0,
+            now=2000.0,
+            speed="1",
+            reverse=reverse,
+        )
+        assert position == 1005.0
+
+    def test_after_a_jump_the_slots_are_taken_as_they_are(self) -> None:
+        """A jump back moved the position (current != last set): the
+        marker follows the slots there even though it's behind."""
+        from surveillance.ui.liveview import compute_focus_marker_update
+
+        position, _gap_started_at, _ref = compute_focus_marker_update(
+            current_position=500.0,
+            last_set_position=1005.0,
+            active_ticks=[501, 502],
+            gap_started_at=None,
+            gap_reference_position=0.0,
+            now=2000.0,
+            speed="1",
+            reverse=False,
+        )
+        assert position == 502.0
 
     def test_a_real_tick_clears_an_in_progress_gap(self) -> None:
         from surveillance.ui.liveview import compute_focus_marker_update
@@ -1231,9 +1268,11 @@ class TestFailedLoadClearsRows:
         assert page.page_label.value == "Failed to load snapshots"
 
     def test_events(self) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
         from surveillance.ui.events import EventsView
 
         page = self._page(
+            app=SimpleNamespace(event_backend=LegacyEventBackend()),
             listbox=self._Box(),
             _events=["old"],
             _page=0,
@@ -1299,3 +1338,111 @@ class TestEmptyLaterPage:
         page._load_recordings = lambda: reloaded.append(page._offset)
         cls._on_recordings_loaded(page, ([], 0))
         assert reloaded == [0]
+
+
+class TestEventsSavedTypeKeys:
+    """Saved Advanced Search event-type keys from another event backend
+    match nothing, so loading drops them instead of emptying the list."""
+
+    def test_keys_from_another_backend_are_dropped(self) -> None:
+        from surveillance.config import AppConfig
+        from surveillance.services.legacy_event import LegacyEventBackend
+        from surveillance.ui.events import EventsView
+
+        config = AppConfig(events_search_event_types=["08", "object:people", "25:hikvision"])
+        page = SimpleNamespace(
+            app=SimpleNamespace(config=config, event_backend=LegacyEventBackend()),
+            _search_event_types=None,
+        )
+        EventsView._load_search_from_config(page)
+        assert page._search_event_types == ["08", "25:hikvision"]
+
+    def test_nothing_left_means_no_type_filter(self) -> None:
+        from surveillance.config import AppConfig
+        from surveillance.services.legacy_event import LegacyEventBackend
+        from surveillance.ui.events import EventsView
+
+        config = AppConfig(events_search_event_types=["object:people"])
+        page = SimpleNamespace(
+            app=SimpleNamespace(config=config, event_backend=LegacyEventBackend()),
+            _search_event_types=None,
+        )
+        EventsView._load_search_from_config(page)
+        assert page._search_event_types is None
+
+
+class TestFilterPopoverOptions:
+    """The Live View Filter-events popover only scans cameras for their
+    event types when the event backend can't list them all up front."""
+
+    class _Timeline:
+        def __init__(self) -> None:
+            self.shown: list[tuple[object, ...]] = []
+            self.scanning: list[list[str]] = []
+
+        def show_filter_options(self, *args: object, **kwargs: object) -> None:
+            self.shown.append((*args, kwargs))
+
+        def show_filter_scanning(self, names: list[str]) -> None:
+            self.scanning.append(names)
+
+    def _page(self, backend: object) -> SimpleNamespace:
+        from surveillance.ui.liveview import LiveView
+
+        page = SimpleNamespace(
+            app=SimpleNamespace(api=object(), event_backend=backend),
+            timeline=self._Timeline(),
+            _filter_scan_generation=0,
+            _event_filter_keys=None,
+            _event_filter_match_all=True,
+            _active_timeline_cameras=lambda: (1, [1, 2]),
+            _camera_name=str,
+            scanned=[],
+        )
+        page._show_filter_options = lambda options: LiveView._show_filter_options(page, options)
+        page._scan_next_camera_for_event_types = lambda *args: page.scanned.append(args)
+        return page
+
+    def test_fixed_options_are_shown_without_a_scan(self) -> None:
+        from surveillance.ui.liveview import LiveView
+
+        options = [("motion", "Motion", "")]
+        backend = SimpleNamespace(fixed_filter_options=lambda: options, supports_match_all=False)
+        page = self._page(backend)
+        LiveView._on_filter_popover_show(page)
+        assert page.scanned == []
+        assert page.timeline.scanning == []
+        # Any/All hidden and left on Any, whatever was set before.
+        assert page.timeline.shown == [(options, None, False, {"show_match_all": False})]
+
+    def test_otherwise_the_cameras_are_scanned(self) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
+        from surveillance.ui.liveview import LiveView
+
+        page = self._page(LegacyEventBackend())
+        LiveView._on_filter_popover_show(page)
+        assert page.timeline.scanning == [["1", "2"]]
+        assert page.scanned == [(1, [1, 2], 0)]
+
+
+class TestFilterButtonShowsActiveFilter:
+    """The timeline's Filter events button is marked while a filter
+    narrows the event markers, and unmarked once it's cleared."""
+
+    def _apply(self, selected_keys: set[str] | None) -> list[bool]:
+        from surveillance.ui.liveview import LiveView
+
+        marked: list[bool] = []
+        page = SimpleNamespace(
+            timeline=SimpleNamespace(set_filter_active=marked.append),
+            _active_timeline_cameras=lambda: (None, []),
+            _apply_timeline_data_to_canvas=lambda *_args: None,
+        )
+        LiveView._on_filter_apply(page, selected_keys, False)
+        return marked
+
+    def test_a_selection_marks_it(self) -> None:
+        assert self._apply({"motion"}) == [True]
+
+    def test_all_event_types_unmarks_it(self) -> None:
+        assert self._apply(None) == [False]

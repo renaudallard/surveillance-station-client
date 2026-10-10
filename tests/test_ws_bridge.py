@@ -3412,3 +3412,56 @@ class TestInputQueueProbe:
         monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
         assert ws_bridge._ffmpeg_takes(ws_bridge._INPUT_QUEUE_OPTION) is False
         assert ws_bridge._ffmpeg_takes([]) is True
+
+
+class TestTickGateAfterAJump:
+    """WebSocketBridge.expect_history_position: after a jump, frames from
+    before it can't pull the shared timeline marker back there."""
+
+    def _bridge(self, speed: str = "1") -> WebSocketBridge:
+        rec = _recording()
+        return WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 50,
+            history_speed=speed,
+        )
+
+    def test_frames_from_before_the_jump_are_ignored(self) -> None:
+        bridge = self._bridge()
+        bridge._record_real_tick(1000)
+        bridge.expect_history_position(700)
+        bridge._record_real_tick(1001)  # still the old position
+        assert bridge.consume_last_real_tick() is None
+        bridge._record_real_tick(701)
+        assert bridge.consume_last_real_tick() == 701
+
+    def test_the_first_frame_near_the_target_opens_it(self) -> None:
+        bridge = self._bridge()
+        bridge.expect_history_position(700)
+        bridge._record_real_tick(702)
+        bridge._record_real_tick(900)  # anything goes once it's open
+        assert bridge.consume_last_real_tick() == 900
+
+    def test_the_tolerance_grows_with_speed(self) -> None:
+        slow, fast = self._bridge("1"), self._bridge("16")
+        for bridge in (slow, fast):
+            bridge.expect_history_position(700)
+            bridge._record_real_tick(720)
+        assert slow.consume_last_real_tick() is None
+        assert fast.consume_last_real_tick() == 720
+
+    def test_it_gives_up_after_a_while(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from surveillance.services import ws_bridge
+
+        bridge = self._bridge()
+        now = [100.0]
+        monkeypatch.setattr(ws_bridge.time, "monotonic", lambda: now[0])
+        bridge.expect_history_position(700)
+        bridge._record_real_tick(1000)
+        assert bridge.consume_last_real_tick() is None
+        now[0] += ws_bridge._TICK_GATE_TIMEOUT_SECONDS + 1
+        bridge._record_real_tick(1000)
+        assert bridge.consume_last_real_tick() == 1000

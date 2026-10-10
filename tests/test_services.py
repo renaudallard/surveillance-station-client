@@ -31,6 +31,7 @@ import base64
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,6 +39,7 @@ import pytest
 from surveillance.api.client import SurveillanceAPI
 from surveillance.api.models import (
     CameraStatus,
+    Event,
     HomeModeInfo,
     LicenseInfo,
     Recording,
@@ -119,9 +121,54 @@ class TestLiveService:
     async def test_get_live_view_path_auto_websocket(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_live_view_path
 
-        url = await get_live_view_path(api, 1)
+        info = {"cameras": [{"id": 1, "defLiveProfile": 2}]}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=info) as req:
+            url = await get_live_view_path(api, 1)
         assert url.startswith("wss://")
         assert "id=1" in url
+        # No override anywhere: the camera's own Live View setting.
+        assert url.endswith("&profile=2")
+        assert req.await_args is not None
+        assert req.await_args.kwargs["extra_params"]["streamInfo"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_a_camera_override_needs_no_lookup(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.live import get_live_view_path
+
+        with patch.object(api, "request", new_callable=AsyncMock) as req:
+            url = await get_live_view_path(api, 1, camera_stream_profile="high")
+        assert url.endswith("&profile=0")
+        req.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_app_wide_profile_beats_the_camera_override(
+        self, api: SurveillanceAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.services import live
+
+        monkeypatch.setattr(live, "_APP_STREAM_PROFILE", live.StreamProfile.LOW)
+        with patch.object(api, "request", new_callable=AsyncMock):
+            url = await live.get_live_view_path(api, 1, camera_stream_profile="high")
+        assert url.endswith("&profile=2")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_balanced_when_dsm_does_not_say(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.live import get_live_view_path
+
+        with patch.object(api, "request", new_callable=AsyncMock, side_effect=RuntimeError):
+            url = await get_live_view_path(api, 1)
+        assert url.endswith("&profile=1")
+
+    def test_an_unknown_app_wide_value_means_camera_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.services import live
+
+        monkeypatch.setattr(live, "_APP_STREAM_PROFILE", live.StreamProfile.HIGH)
+        live.set_app_stream_profile("ultra")
+        assert live.app_stream_profile() is live.StreamProfile.CAMERA
+        assert live.effective_stream_profile("bogus") is live.StreamProfile.CAMERA
+        assert live.effective_stream_profile("low") is live.StreamProfile.LOW
 
     def test_get_history_view_path(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_history_view_path
@@ -302,15 +349,15 @@ class TestEventService:
             assert count == 5
 
     @pytest.mark.asyncio
-    async def test_list_granular_events_decodes_event_map(self, api: SurveillanceAPI) -> None:
+    async def test_legacy_list_events_decodes_event_map(self, api: SurveillanceAPI) -> None:
         """event_map is a run-length-encoded bitmap: [ticks, flag, reserved]
         entries at a fixed interval. This decodes a synthetic response
         covering baseline (flag=1), a real event (flag=513, bits {0,9} =
-        Audio detected — see EVENT_BITMASK.md), and the "not processed yet"
+        Audio detected — see LEGACY_EVENT_BITMASK.md), and the "not processed yet"
         placeholder (flag=0) seen at the live edge of a still-recording
-        segment — which must NOT produce a phantom event. event_type is
+        segment — which must NOT produce a phantom event. legacy_flag is
         always the raw flag value, never reclassified here."""
-        from surveillance.services.event import list_granular_events
+        from surveillance.services.legacy_event import LegacyEventBackend
 
         from_time = 1700000000
         mock_data = {
@@ -338,7 +385,7 @@ class TestEventService:
         }
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            events = await list_granular_events(
+            events = await LegacyEventBackend().list_events(
                 api, [1], {1: "Front Door"}, from_time, from_time + 100
             )
 
@@ -346,23 +393,23 @@ class TestEventService:
         event = events[0]
         assert event.id == 555
         assert event.camera_name == "Front Door"
-        assert event.event_type == 513
+        assert event.legacy_flag == 513
         assert event.start_time == from_time + 10
         assert event.stop_time == from_time + 25
         assert event.mount_id == 7
         assert event.arch_id == 3
         assert event.seek_offset == 10
-        assert event.reserved == 0
+        assert event.legacy_reserved == 0
 
     @pytest.mark.asyncio
-    async def test_list_granular_events_reserved_field_passthrough(
+    async def test_legacy_list_events_reserved_field_passthrough(
         self, api: SurveillanceAPI
     ) -> None:
         """The event_map RLE tuple's 3rd element (reserved) must round-trip
-        onto Event.reserved — it carries Object Removal Detection on
+        onto Event.legacy_reserved — it carries Object Removal Detection on
         Hikvision via overflow once the 32-bit flag budget is exhausted
-        (see EVENT_BITMASK.md), and was previously discarded entirely."""
-        from surveillance.services.event import list_granular_events
+        (see LEGACY_EVENT_BITMASK.md), and was previously discarded entirely."""
+        from surveillance.services.legacy_event import LegacyEventBackend
 
         from_time = 1700000000
         mock_data = {
@@ -378,7 +425,7 @@ class TestEventService:
         }
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            events = await list_granular_events(
+            events = await LegacyEventBackend().list_events(
                 api, [36], {36: "Cam 83"}, from_time, from_time + 100
             )
 
@@ -386,17 +433,17 @@ class TestEventService:
         # something happened (Object Removal Detection) — must not be
         # dropped just because the main flag looks quiet.
         assert len(events) == 1
-        assert events[0].event_type == 1
-        assert events[0].reserved == 1
+        assert events[0].legacy_flag == 1
+        assert events[0].legacy_reserved == 1
 
     @pytest.mark.asyncio
-    async def test_list_granular_events_unrecognized_flag_passes_through(
+    async def test_legacy_list_events_unrecognized_flag_passes_through(
         self, api: SurveillanceAPI
     ) -> None:
         """A flag value we don't know the meaning of (e.g. the bit8 pattern
         seen on cameras with Person Detect and Tampering both off) must NOT
-        be reclassified/guessed — event_type is the raw flag, unchanged."""
-        from surveillance.services.event import list_granular_events
+        be reclassified/guessed — legacy_flag is the raw flag, unchanged."""
+        from surveillance.services.legacy_event import LegacyEventBackend
 
         from_time = 1700000000
         mock_data = {
@@ -420,19 +467,19 @@ class TestEventService:
         }
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            events = await list_granular_events(
+            events = await LegacyEventBackend().list_events(
                 api, [40], {40: "CAM 59"}, from_time, from_time + 100
             )
 
         assert len(events) == 1
-        assert events[0].event_type == 257
+        assert events[0].legacy_flag == 257
 
     @pytest.mark.asyncio
-    async def test_list_granular_events_no_cameras(self, api: SurveillanceAPI) -> None:
-        from surveillance.services.event import list_granular_events
+    async def test_legacy_list_events_no_cameras(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
 
         with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
-            events = await list_granular_events(api, [], {}, 1700000000, 1700000100)
+            events = await LegacyEventBackend().list_events(api, [], {}, 1700000000, 1700000100)
 
         assert events == []
         mock_request.assert_not_called()
@@ -454,7 +501,7 @@ class TestEventService:
     @pytest.mark.asyncio
     async def test_list_recording_presence_reads_the_event_list(self, api: SurveillanceAPI) -> None:
         """list_recording_presence reads EnumInterval's own per-file `event`
-        list directly -- unlike list_granular_events, it never touches
+        list directly -- unlike LegacyEventBackend.list_events, it never touches
         event_map at all."""
         from surveillance.services.event import list_recording_presence
 
@@ -492,15 +539,15 @@ class TestEventService:
         mock_request.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_list_presence_and_events_matches_the_separate_calls(
+    async def test_legacy_list_presence_and_events_matches_the_separate_calls(
         self, api: SurveillanceAPI
     ) -> None:
         """list_presence_and_events must decode the exact same presence
         and events a caller would get from list_recording_presence and
-        list_granular_events separately -- it exists only to avoid a
+        list_events separately -- it exists only to avoid a
         second round trip for the same EnumInterval data, not to change
         what either half returns."""
-        from surveillance.services.event import list_granular_events, list_presence_and_events
+        from surveillance.services.legacy_event import LegacyEventBackend
 
         from_time = 1700000000
         mock_data = {
@@ -521,10 +568,10 @@ class TestEventService:
         }
 
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
-            presence, events = await list_presence_and_events(
+            presence, events = await LegacyEventBackend().list_presence_and_events(
                 api, [1], {1: "Front Door"}, from_time, from_time + 100
             )
-            expected_events = await list_granular_events(
+            expected_events = await LegacyEventBackend().list_events(
                 api, [1], {1: "Front Door"}, from_time, from_time + 100
             )
 
@@ -532,11 +579,13 @@ class TestEventService:
         assert events == expected_events
 
     @pytest.mark.asyncio
-    async def test_list_presence_and_events_no_cameras(self, api: SurveillanceAPI) -> None:
-        from surveillance.services.event import list_presence_and_events
+    async def test_legacy_list_presence_and_events_no_cameras(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
 
         with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
-            presence, events = await list_presence_and_events(api, [], {}, 1700000000, 1700000100)
+            presence, events = await LegacyEventBackend().list_presence_and_events(
+                api, [], {}, 1700000000, 1700000100
+            )
 
         assert presence == {}
         assert events == []
@@ -1466,3 +1515,347 @@ class TestPttService:
 
         assert _double_bytes(b"") == b""
         assert _double_bytes(b"\x01\x02\x03") == b"\x01\x01\x02\x02\x03\x03"
+
+
+class TestEventBackend:
+    def _event(self, flag: int, reserved: int = 0) -> Event:
+        return Event(
+            id=1,
+            camera_id=1,
+            camera_name="Cam",
+            event_type=0,
+            start_time=0,
+            legacy_flag=flag,
+            legacy_reserved=reserved,
+        )
+
+    def test_legacy_backend_conforms_to_the_protocol(self) -> None:
+        """Typed so mypy flags LegacyEventBackend drifting from EventBackend."""
+        from surveillance.services.event_backend import EventBackend
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        backend: EventBackend = LegacyEventBackend()
+        assert backend.name == "legacy"
+
+    def test_legacy_classify_matches_the_bit_decoder(self) -> None:
+        """LegacyEventBackend only adapts legacy_event_bits' decoding:
+        same keys and labels, motion marked as such."""
+        from surveillance.services.legacy_event import LegacyEventBackend
+        from surveillance.services.legacy_event_bits import decode_legacy_flag
+
+        kinds = LegacyEventBackend().classify(self._event(771), "HIKVISION")
+        decoded = decode_legacy_flag(771, 0, "HIKVISION")
+        assert [k.key for k in kinds] == [d.key for d in decoded]
+        assert [k.label for k in kinds] == [d.label for d in decoded]
+        assert [k.is_motion for k in kinds] == [d.bit == 8 for d in decoded]
+
+    def test_legacy_matches_and_filter_options_agree(self) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        backend = LegacyEventBackend()
+        events = [self._event(257), self._event(513)]
+        options = backend.filter_options((backend.type_signature(e), "Reolink") for e in events)
+        keys = [key for key, _label, _notes in options]
+        assert keys == ["08", "09"]
+        assert backend.matches(events[0], "Reolink", ["08"], False)
+        assert not backend.matches(events[0], "Reolink", ["09"], False)
+        assert not backend.matches(events[0], "Reolink", ["08", "09"], True)
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            ("08", True),
+            ("25:hikvision", True),
+            ("R0", True),
+            ("R0:hikvision", True),
+            ("motion", False),
+            ("object:people", False),
+            ("8", False),
+        ],
+    )
+    def test_legacy_is_filter_key(self, key: str, expected: bool) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        assert LegacyEventBackend().is_filter_key(key) is expected
+
+    @pytest.mark.asyncio
+    async def test_legacy_list_type_signatures(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 1,
+                        "event": [{"id": 1, "start": from_time, "stop": from_time + 100}],
+                        "event_map": [[1, 257, 0], [1, 1, 0], [1, 257, 0], [1, 1, 1]],
+                    }
+                ]
+            ]
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            signatures = await LegacyEventBackend().list_type_signatures(
+                api, 1, from_time, from_time + 100
+            )
+        assert signatures == {(257, 0), (1, 1)}
+
+    def test_legacy_types_are_discovered_and_can_combine(self) -> None:
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        backend = LegacyEventBackend()
+        assert backend.fixed_filter_options() is None
+        assert backend.supports_match_all is True
+
+    def test_legacy_type_history_is_the_legacy_config_field(self) -> None:
+        from surveillance.config import AppConfig
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        config = AppConfig()
+        assert LegacyEventBackend().type_history(config) is config.legacy_event_type_history
+
+    @pytest.mark.asyncio
+    async def test_settings_can_force_the_legacy_backend(
+        self, api: SurveillanceAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.api.models import ApiInfo
+        from surveillance.services import event_backend
+        from surveillance.services.event_center import EVENT_CENTER_API
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        api._api_info[EVENT_CENTER_API] = ApiInfo(path="entry.cgi", max_version=1)
+        monkeypatch.setattr(event_backend, "_FORCE_LEGACY_EVENTS", True)
+        assert isinstance(await event_backend.select_event_backend(api), LegacyEventBackend)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("has_event_center", [False, True])
+    async def test_select_by_event_center_api(
+        self, api: SurveillanceAPI, has_event_center: bool
+    ) -> None:
+        from surveillance.api.models import ApiInfo
+        from surveillance.services.event_backend import select_event_backend
+        from surveillance.services.event_center import EVENT_CENTER_API, EventCenterBackend
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        if has_event_center:
+            api._api_info[EVENT_CENTER_API] = ApiInfo(path="entry.cgi", max_version=1)
+        assert api.has_api(EVENT_CENTER_API) is has_event_center
+        expected = EventCenterBackend if has_event_center else LegacyEventBackend
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"event_types": "10"}
+        ):
+            assert isinstance(await select_event_backend(api), expected)
+
+
+def _event_center_dispatch(
+    *, enum_interval: dict[str, Any], pages: list[list[dict[str, Any]]] | None = None
+) -> tuple[Any, list[dict[str, Any]]]:
+    """An api.request stand-in answering EnumInterval with *enum_interval*
+    and successive EventCenter List calls with *pages*, then empty pages.
+    Returns it and the list of List params it saw."""
+    remaining = list(pages or [])
+    seen: list[dict[str, Any]] = []
+
+    async def request(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["method"] == "EnumInterval":
+            return enum_interval
+        assert kwargs["method"] == "List"
+        seen.append(kwargs["extra_params"])
+        return {"0": remaining.pop(0) if remaining else []}
+
+    return request, seen
+
+
+class TestEventCenterBackend:
+    def _entry(self, id_: int, start: int, event_type: int = 10, **extra: Any) -> dict[str, Any]:
+        return {
+            "id": id_,
+            "camera_id": 1,
+            "start_time": start,
+            "duration": 12,
+            "event_type": event_type,
+            "object_type": 0,
+            **extra,
+        }
+
+    @pytest.mark.asyncio
+    async def test_lists_and_resolves_events_to_their_recordings(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        t0 = 1700000000
+        enum_interval = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 1,
+                        "mountId": 7,
+                        "archId": 3,
+                        "event": [
+                            {"id": 555, "start": t0, "stop": t0 + 100},
+                            {"id": 556, "start": t0 + 100, "stop": t0 + 200},
+                        ],
+                    }
+                ]
+            ]
+        }
+        # Newest first over two pages, as List returns them; the oldest
+        # entry predates every recording file and can't be played.
+        pages = [
+            [
+                self._entry(4, t0 + 150, event_type=11, object_type=2, duration=0),
+                self._entry(3, t0 + 50),
+            ],
+            [self._entry(2, t0 + 10, event_type=18), self._entry(1, t0 - 50)],
+        ]
+        request, seen = _event_center_dispatch(enum_interval=enum_interval, pages=pages)
+        with patch.object(api, "request", side_effect=request):
+            presence, events = await EventCenterBackend().list_presence_and_events(
+                api, [1], {1: "Front Door"}, t0 - 100, t0 + 200
+            )
+
+        assert presence == {1: [(t0, t0 + 200)]}
+        assert [(e.id, e.start_time, e.seek_offset) for e in events] == [
+            (556, t0 + 150, 50),
+            (555, t0 + 50, 50),
+            (555, t0 + 10, 10),
+        ]
+        newest = events[0]
+        assert (newest.event_center_type, newest.object_type) == (11, 2)
+        # Still going on (duration 0): never shorter than one bucket.
+        assert newest.stop_time == t0 + 155
+        assert events[1].stop_time == t0 + 62
+        assert (newest.mount_id, newest.arch_id, newest.camera_name) == (7, 3, "Front Door")
+        # The second page starts after the first one's last entry, and
+        # only an empty page ends the paging.
+        offsets = [json.loads(p["start_time_offset"]) for p in seen]
+        assert offsets == [
+            {"0": {"start_time": 0, "id": 0}},
+            {"0": {"start_time": t0 + 50, "id": 3}},
+            {"0": {"start_time": t0 - 50, "id": 1}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_cameras_makes_no_request(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
+            presence, events = await EventCenterBackend().list_presence_and_events(
+                api, [], {}, 1700000000, 1700000100
+            )
+        assert (presence, events) == ({}, [])
+        mock_request.assert_not_called()
+
+    def _event(self, event_type: int, object_type: int = 0) -> Event:
+        return Event(
+            id=1,
+            camera_id=1,
+            camera_name="Cam",
+            event_type=0,
+            start_time=0,
+            event_center_type=event_type,
+            object_type=object_type,
+        )
+
+    def test_classify(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        (person,) = backend.classify(self._event(11, 2), "Reolink")
+        assert (person.key, person.label, person.filter_label) == (
+            "object:people",
+            "People",
+            "Object detection (People)",
+        )
+        (motion,) = backend.classify(self._event(10), "")
+        assert (motion.key, motion.is_motion) == ("motion", True)
+        (unknown,) = backend.classify(self._event(99), "")
+        assert unknown.key == "type:99"
+        assert backend.is_filter_key(unknown.key)
+
+    def test_filter_options_follow_the_event_center_menu_order(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        signatures = [(24, 0), (10, 0), (11, 3), (1, 0), (11, 2), (10, 0)]
+        options = backend.filter_options((s, "") for s in signatures)
+        assert [key for key, _label, _notes in options] == [
+            "object:people",
+            "object:vehicle",
+            "intrusion",
+            "motion",
+            "missing_object",
+        ]
+
+    def test_matches(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        person = self._event(11, 2)
+        assert backend.matches(person, "", ["motion", "object:people"], False)
+        assert not backend.matches(person, "", ["motion"], False)
+        # One type per event, so "all of" two different types never matches.
+        assert not backend.matches(person, "", ["motion", "object:people"], True)
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [("motion", True), ("object:people", True), ("08", False), ("25:hikvision", False)],
+    )
+    def test_is_filter_key(self, key: str, expected: bool) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        assert EventCenterBackend().is_filter_key(key) is expected
+
+    def test_conforms_to_the_protocol(self) -> None:
+        from surveillance.services.event_backend import EventBackend
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend: EventBackend = EventCenterBackend()
+        assert backend.supports_match_all is False
+
+    @pytest.mark.asyncio
+    async def test_connect_lists_only_the_supported_types(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        capability = {"event_types": "24,10,11,1", "object_types": "1,2,3"}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=capability):
+            backend = await EventCenterBackend.connect(api)
+        options = backend.fixed_filter_options()
+        assert options is not None
+        assert [key for key, _label, _notes in options] == [
+            "object",
+            "object:animal",
+            "object:people",
+            "object:vehicle",
+            "intrusion",
+            "motion",
+            "missing_object",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_connect_falls_back_to_every_type(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        with patch.object(api, "request", new_callable=AsyncMock, side_effect=OSError("down")):
+            backend = await EventCenterBackend.connect(api)
+        assert backend.fixed_filter_options() == EventCenterBackend().fixed_filter_options()
+
+    def test_fixed_options_list_every_type_in_menu_order(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        options = backend.fixed_filter_options()
+        assert options is not None
+        keys = [key for key, _label, _notes in options]
+        assert keys[:6] == [
+            "object",
+            "object:animal",
+            "object:people",
+            "object:vehicle",
+            "object:people_vehicle",
+            "intrusion",
+        ]
+        assert len(keys) == len(set(keys)) == 30
+        assert keys[-1] == "face_recognition"
+        assert all(backend.is_filter_key(key) for key in keys)

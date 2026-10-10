@@ -39,6 +39,7 @@ from surveillance.ui.mpv_widget import (
     _CACHE_HIGH_SPEED_ENTER,
     _CACHE_HIGH_SPEED_MAX_SECONDS,
     _CACHE_SECONDS_DEFAULT,
+    _DEMUXER_MAX_BACK_BYTES_MIB,
     _DEMUXER_MAX_BYTES_MIB,
     _DEMUXER_MAX_BYTES_UNCACHED,
     MpvGLArea,
@@ -151,6 +152,18 @@ class TestPlaybackProfiles:
         assert muxed["demuxer-max-bytes"] == expected
         assert low_latency["demuxer-max-bytes"] == expected
         assert default["demuxer-max-bytes"] == expected
+
+    def test_every_profile_caps_the_back_buffer(self) -> None:
+        """Live never seeks back, so no profile keeps mpv's 50 MiB
+        default back buffer, cached or not."""
+        expected = f"{_DEMUXER_MAX_BACK_BYTES_MIB:g}MiB"
+        for options in (
+            _applied(low_latency=False, muxed_audio=True),
+            _applied(low_latency=True, muxed_audio=False),
+            _applied(low_latency=True, muxed_audio=False, history_speed=100.0),
+            _applied(low_latency=False, muxed_audio=False),
+        ):
+            assert options["demuxer-max-back-bytes"] == expected
 
     def test_an_uncached_profile_keeps_the_tight_byte_cap(self) -> None:
         """demuxer-max-bytes is the ceiling the demuxer buffers up to

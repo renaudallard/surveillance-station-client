@@ -1,21 +1,25 @@
-# Event Bitmask Reference
+# Legacy Event Bitmask Reference
 
 Reverse-engineered documentation of Synology Surveillance Station's
-undocumented `event_map` flag bitmask. This is a living reference —
+undocumented `event_map` flag bitmask, as the app's `LegacyEventBackend`
+decodes it. Surveillance Station 9.3 added the Event Center API, which
+returns typed events instead; on 9.3 the `event_map` bits also no longer
+follow the table below (`reserved` carries a full bitmask there, not just
+0 or 1). This is a living reference —
 contributors testing new camera brands/models are encouraged to add their
 findings here, following the format and confirmation standards below.
 
 ## Goal
 
-Keep `src/surveillance/data/event_bits.json` — the bit table the app
-actually decodes events with (via `src/surveillance/services/event_bits.py`)
+Keep `src/surveillance/data/legacy_event_bits.json` — the bit table the app
+actually decodes events with (via `src/surveillance/services/legacy_event_bits.py`)
 — accurate, sourced from live testing rather than guessing. This doc is the
 narrative/methodology companion to that JSON, not a duplicate of its data:
 see [Bit table](#bit-table) below for how the two relate.
 
 ## Background
 
-`src/surveillance/services/event.py` decodes `RecordingPicker::EnumInterval`'s
+`src/surveillance/services/legacy_event.py` decodes `RecordingPicker::EnumInterval`'s
 `event_map` — a run-length-encoded array of `[value, flag, reserved]` tuples,
 each meaning `value * 5` seconds in state `flag`. `flag` is a **signed
 32-bit bitmask** (bit 31 shows up as a negative number — recover the
@@ -79,8 +83,8 @@ installation (e.g. via the app's own camera list), not assumed.
 
 ## Bit table
 
-Bit meanings live in `src/surveillance/data/event_bits.json` — the single
-source of truth, loaded directly by `src/surveillance/services/event_bits.py`
+Bit meanings live in `src/surveillance/data/legacy_event_bits.json` — the single
+source of truth, loaded directly by `src/surveillance/services/legacy_event_bits.py`
 to decode real events. Don't duplicate its contents here; update the JSON
 (following [Contributing](#contributing) below) and let this doc stay
 narrative.
@@ -147,7 +151,7 @@ gaps stay visible instead of silently dropped from the doc.
 ## Decoding a flag by hand
 
 A flag is just the sum of its set bits' values — with the bit table above
-(now in `event_bits.json`) as the only other ingredient, any flag decodes
+(now in `legacy_event_bits.json`) as the only other ingredient, any flag decodes
 the same way. Worked examples, since a flag-value table would just be
 redundant derived data that drifts out of sync with the JSON:
 
@@ -162,14 +166,16 @@ redundant derived data that drifts out of sync with the JSON:
   2147483649` = 2³¹ + 1 → bits {0, 31} → **Unattended Baggage Detection**
   (Hikvision).
 - A flag with only bits {0, 1} set (e.g. `3`) decodes to no real category —
-  `decode_flag()` returns an empty list for this case (the app's own
+  `decode_legacy_flag()` returns an empty list for this case (the app's own
   `_create_event_row` then falls back to `"Unclassified"`), though
-  `list_granular_events()` normally filters flags 0/1 out entirely before
+  `LegacyEventBackend.list_events()` normally filters flags 0/1 out entirely before
   they'd reach that path.
 
 ## Open questions
 
-- Bit 1's exact meaning (see its `notes` in `event_bits.json`).
+- Bit 1 — Surveillance Station's own `REC_TRIG_LABEL` table (EventCommon.js)
+  names it advanced continuous recording, but that hasn't been checked
+  against each camera's recording settings yet.
 - Bit 24 — Face Detect (Reolink) proposed but never observed; Defocus
   Detection (Hikvision) strongly inferred from the sequential menu-order
   pattern but never directly triggered/cross-referenced. Neither is
@@ -213,9 +219,9 @@ redundant derived data that drifts out of sync with the JSON:
     analysis`, `detection_event_crowd`, `detection_event_smoke`,
     `detection_event_license_plate` are all empty NAS-wide.
     `detection_event_motion` is populated but redundant with `eventlog`.
-- The app decodes events directly from `event_bits.json` via
-  `src/surveillance/services/event_bits.py` (`decode_flag()`, the Events
-  view's type filter) — keyed by camera brand as well as flag, per the bit
+- The app decodes events directly from `legacy_event_bits.json` via
+  `src/surveillance/services/legacy_event_bits.py` (`decode_legacy_flag()`,
+  behind `LegacyEventBackend`) — keyed by camera brand as well as flag, per the bit
   27/25 collisions above. There's no separate in-code table to keep in
   sync; editing the JSON is sufficient.
 - **Vendor protocol check, don't redo:** neither Hikvision's ISAPI
@@ -276,14 +282,14 @@ redundant derived data that drifts out of sync with the JSON:
    ```sh
    python3 -c "
    import sys; sys.path.insert(0, 'src')
-   from surveillance.services.event_bits import decode_flag
-   print(decode_flag(<flag>, <reserved>, '<brand>'))
+   from surveillance.services.legacy_event_bits import decode_legacy_flag
+   print(decode_legacy_flag(<flag>, <reserved>, '<brand>'))
    "
    ```
    (handles the negative-flag/sign-bit recovery internally — see
-   `decode_flag()` in `src/surveillance/services/event_bits.py` if you want
+   `decode_legacy_flag()` in `src/surveillance/services/legacy_event_bits.py` if you want
    the raw bit list instead: `[i for i in range(32) if (v & 0xFFFFFFFF) & (1 << i)]`).
-7. **Update `src/surveillance/data/event_bits.json`**: add/adjust the
+7. **Update `src/surveillance/data/legacy_event_bits.json`**: add/adjust the
    variant(s) for the bit(s) you confirmed, and remove the matching entry
    from this doc's Known event categories not yet mapped table if it
    covered the same category.
@@ -291,7 +297,7 @@ redundant derived data that drifts out of sync with the JSON:
 ### What to include
 
 When you observe a new event category or a colliding bit meaning on a
-camera brand/model not yet in `event_bits.json`, add it there with:
+camera brand/model not yet in `legacy_event_bits.json`, add it there with:
 - Brand and model.
 - The confirmation method used (`eventlog` cross-reference preferred; a
   live Monitor Center match is acceptable; an Action Rule dropdown name

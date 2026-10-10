@@ -228,6 +228,10 @@ class SurveillanceAPI:
 
         log.debug("Discovered %d APIs", len(self._api_info))
 
+    def has_api(self, api_name: str) -> bool:
+        """True if discover_apis() found *api_name* on this NAS."""
+        return api_name in self._api_info
+
     def _get_api_path(self, api_name: str) -> str:
         """Get CGI path for an API, falling back to entry.cgi."""
         info = self._api_info.get(api_name)

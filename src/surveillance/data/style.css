@@ -160,13 +160,6 @@
     transform: rotate(-90deg);
 }
 
-/* The Live View timeline's Rev icon (icons.py's history_direction_icon)
-   mirrors the same loop-arrow+triangle glyph used for Fwd, rather than
-   needing separate reverse-drawn art. */
-.flip-horizontal {
-    transform: scaleX(-1);
-}
-
 /* Fixed rather than theme-derived to avoid visual clutter with video */
 .timeline {
     background-color: #24292e;
@@ -198,6 +191,25 @@
 .timeline-live-text {
     color: #3584e4;
     font-weight: bold;
+}
+
+/* Filter events button while a filter is active: the same warning color
+   the event markers it narrows are drawn in (TimelineCanvas._draw). The
+   inner button, since it sets its own color over the MenuButton's. */
+.timeline-filter-active > button {
+    color: @warning_color;
+}
+
+/* Previous/Next event while searching past the events already on the
+   timeline: a pulse rather than the steady tint above, which means a
+   setting is on, not that something is still happening. */
+@keyframes timeline-searching-pulse {
+    from { opacity: 1; }
+    to { opacity: 0.3; }
+}
+
+.timeline-searching {
+    animation: timeline-searching-pulse 0.6s ease-in-out infinite alternate;
 }
 
 .timeline-clock {

@@ -35,14 +35,11 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from urllib.parse import urlparse
-
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus
-from surveillance.config import save_config_now
 from surveillance.services.camera import list_cameras
-from surveillance.services.live import PROTOCOL_LABELS
+from surveillance.ui.camera_settings import CameraSettingsDialog
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -115,7 +112,7 @@ class CameraSidebar(Gtk.Box):
             ("media-playback-start-symbolic", "Recordings", "recordings"),
             ("camera-photo-symbolic", "Snapshots", "snapshots"),
             ("dialog-warning-symbolic", "Events", "events"),
-            ("camera-video-symbolic", "Time Lapse", "timelapse"),
+            ("surveillance-time-lapse-symbolic", "Time Lapse", "timelapse"),
             ("dialog-password-symbolic", "Licenses", "licenses"),
             ("preferences-system-symbolic", "Settings", "settings"),
             ("help-about-symbolic", "About", "about"),
@@ -323,7 +320,7 @@ class CameraSidebar(Gtk.Box):
         y: float,
         cam: Camera,
     ) -> None:
-        """Show stream protocol dialog on right-click.
+        """Show the camera settings dialog on right-click.
 
         Clears the row's pressed (CSS ":active") state by hand first:
         opening the modal dialog from this "pressed" handler was seen to
@@ -343,159 +340,7 @@ class CameraSidebar(Gtk.Box):
         widget = gesture.get_widget()
         if widget is not None:
             widget.unset_state_flags(Gtk.StateFlags.ACTIVE)
-        self._show_protocol_dialog(cam)
-
-    def _show_protocol_dialog(self, cam: Camera) -> None:
-        """Show dialog to choose the streaming protocol for a camera."""
-        dialog = Gtk.Window(transient_for=self.window, modal=True)
-        dialog.set_title(f"Stream Protocol — {cam.name}")
-        dialog.set_default_size(450, -1)
-        dialog.set_resizable(False)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_top(16)
-        box.set_margin_bottom(16)
-        box.set_margin_start(16)
-        box.set_margin_end(16)
-
-        label = Gtk.Label(label=f"Choose stream protocol for camera {cam.id} ({cam.name}).")
-        label.set_wrap(True)
-        label.set_xalign(0)
-        box.append(label)
-
-        current_proto = self.app.config.camera_protocols.get(cam.id, "auto")
-
-        # Radio buttons for each protocol
-        group: Gtk.CheckButton | None = None
-        radios: dict[str, Gtk.CheckButton] = {}
-        for proto_key, proto_label in PROTOCOL_LABELS.items():
-            radio = Gtk.CheckButton(label=proto_label)
-            if group is not None:
-                radio.set_group(group)
-            else:
-                group = radio
-            if proto_key == current_proto:
-                radio.set_active(True)
-            radios[proto_key] = radio
-            box.append(radio)
-
-        # Direct URL entry (shown below the radios)
-        url_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        url_label = Gtk.Label(label="Direct RTSP URL:")
-        url_label.set_xalign(0)
-        url_box.append(url_label)
-        url_entry = Gtk.Entry()
-        url_entry.set_placeholder_text("rtsp://user:pass@camera-ip:554/stream")
-        existing_url = self.app.config.camera_overrides.get(cam.id, "")
-        if existing_url:
-            url_entry.set_text(existing_url)
-        url_box.append(url_entry)
-        url_box.set_sensitive(current_proto == "direct")
-        box.append(url_box)
-
-        # Error label (hidden by default)
-        error_label = Gtk.Label()
-        error_label.set_xalign(0)
-        error_label.set_wrap(True)
-        error_label.add_css_class("error")
-        error_label.set_visible(False)
-        box.append(error_label)
-
-        # Toggle URL entry sensitivity based on radio selection
-        def _on_radio_toggled(radio: Gtk.CheckButton, key: str) -> None:
-            if radio.get_active():
-                url_box.set_sensitive(key == "direct")
-                error_label.set_visible(False)
-
-        for proto_key, radio in radios.items():
-            radio.connect("toggled", _on_radio_toggled, proto_key)
-
-        # Buttons
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_box.set_halign(Gtk.Align.END)
-
-        cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect("clicked", lambda _: dialog.close())
-        btn_box.append(cancel_btn)
-
-        apply_btn = Gtk.Button(label="Apply")
-        apply_btn.add_css_class("suggested-action")
-        apply_btn.connect(
-            "clicked",
-            self._on_apply_protocol,
-            cam,
-            radios,
-            url_entry,
-            error_label,
-            dialog,
-        )
-        btn_box.append(apply_btn)
-
-        box.append(btn_box)
-        dialog.set_child(box)
-        dialog.present()
-
-    @staticmethod
-    def _validate_rtsp_url(url: str) -> str | None:
-        """Return an error message if *url* is not a valid RTSP stream URL."""
-        if not url:
-            return "URL must not be empty."
-        try:
-            parsed = urlparse(url)
-        except ValueError:
-            return "Invalid URL syntax."
-        if parsed.scheme not in ("rtsp", "rtsps", "rtmp", "http", "https"):
-            return (
-                f"Unsupported scheme \u201c{parsed.scheme or ''}\u201d. "
-                "Expected rtsp://, rtsps://, rtmp://, http://, or https://."
-            )
-        if not parsed.hostname:
-            return "URL must contain a hostname."
-        return None
-
-    def _on_apply_protocol(
-        self,
-        btn: Gtk.Button,
-        cam: Camera,
-        radios: dict[str, Gtk.CheckButton],
-        url_entry: Gtk.Entry,
-        error_label: Gtk.Label,
-        dialog: Gtk.Window,
-    ) -> None:
-        # Find selected protocol
-        selected = "auto"
-        for proto_key, radio in radios.items():
-            if radio.get_active():
-                selected = proto_key
-                break
-
-        # Validate direct URL before saving
-        if selected == "direct":
-            url = url_entry.get_text().strip()
-            err = self._validate_rtsp_url(url)
-            if err:
-                error_label.set_label(err)
-                error_label.set_visible(True)
-                return
-
-        # Save protocol
-        if selected == "auto":
-            self.app.config.camera_protocols.pop(cam.id, None)
-        else:
-            self.app.config.camera_protocols[cam.id] = selected
-
-        # Save direct URL
-        if selected == "direct":
-            url = url_entry.get_text().strip()
-            self.app.config.camera_overrides[cam.id] = url
-        else:
-            self.app.config.camera_overrides.pop(cam.id, None)
-
-        save_config_now(self.app.config)
-        dialog.close()
-
-        # Restart the stream if the camera is currently displayed
-        self.window.restart_camera_stream(cam.id)
+        CameraSettingsDialog(self.window, cam).present()
 
     def _create_clear_slot_row(self) -> Gtk.ListBoxRow:
         """Action row that clears whichever grid slot is currently selected.

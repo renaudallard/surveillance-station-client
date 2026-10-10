@@ -171,7 +171,8 @@ a = Analysis(
         # their own explicit datas entry or the built AppImage silently
         # misses them (no styling; Events decodes every flag as "Unknown").
         ('${SCRIPT_DIR}/src/surveillance/data/style.css', 'surveillance/data'),
-        ('${SCRIPT_DIR}/src/surveillance/data/event_bits.json', 'surveillance/data'),
+        ('${SCRIPT_DIR}/src/surveillance/data/legacy_event_bits.json', 'surveillance/data'),
+        ('${SCRIPT_DIR}/src/surveillance/data/icons', 'surveillance/data/icons'),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -187,17 +187,21 @@ class Event:
     arch_id: int = 0
     detection_label: int = 0
     # Seconds into the parent recording file where this event actually starts.
-    # Set when the event was decoded from RecordingPicker::EnumInterval's
-    # event_map (see services.event.list_granular_events) rather than from
+    # Set by the event backends (see services.event_backend) rather than by
     # Event::List, since id/mount_id/arch_id there refer to the whole
     # (much longer) recording file, not this specific moment within it.
     seek_offset: int = 0
-    # event_map's 3rd RLE tuple element. Only set when decoded from
-    # RecordingPicker::EnumInterval (see services.event.list_granular_events);
-    # 0 for events from Event::List. See EVENT_BITMASK.md / services.event_bits
-    # for what this carries (Object Removal Detection, on Hikvision, via
-    # overflow once the 32-bit event_type budget is exhausted).
-    reserved: int = 0
+    # Raw event_map [value, flag, reserved] flag and reserved fields, set
+    # only by LegacyEventBackend (see services.legacy_event) and 0 for any
+    # other event. Classify an event through its EventBackend rather than
+    # reading these directly. See LEGACY_EVENT_BITMASK.md for what they carry.
+    legacy_flag: int = 0
+    legacy_reserved: int = 0
+    # EventCenter.Event::List's event_type and object_type, set only by
+    # EventCenterBackend (see services.event_center) and 0 for any other
+    # event. Not event_type above, which is Event::List's own "mode".
+    event_center_type: int = 0
+    object_type: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]

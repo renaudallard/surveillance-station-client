@@ -27,8 +27,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import Any
 
 
 class CameraStatus(IntEnum):
@@ -424,6 +425,12 @@ class EMapItem:
     lat: float
     direction: int = 0
     view_angle: int = 0
+    # The row as Load returned it. Emap Save replaces a map's whole item
+    # list, so an item written back must carry every field the NAS gave
+    # it, including the ones this client does not model (field of view,
+    # region, vertices). Not part of equality: two items are the same
+    # marker whatever else the NAS said about them.
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def is_camera(self) -> bool:
@@ -443,7 +450,42 @@ class EMapItem:
             lat=float(data["lat"]),
             direction=int(data.get("direction", 0)),
             view_angle=int(data.get("viewAngle", 0)),
+            raw=dict(data),
         )
+
+    @classmethod
+    def new_camera(cls, camera_id: int, lng: float, lat: float) -> EMapItem:
+        """A camera marker not yet on the NAS, with the field-of-view row
+        the web UI sends for a fresh camera marker (emapType 1, a round
+        region of 100 degrees). A row without these fields is silently
+        dropped by Surveillance Station 9.3's Save."""
+        return cls(
+            id=0, emap_id=0, emap_type=1, ref_item_type=EMAP_REF_CAMERA,
+            ref_item_id=camera_id, lng=lng, lat=lat, direction=0, view_angle=100,
+            raw={"regionType": 1, "radius": 20000, "vertices": []},
+        )  # fmt: skip
+
+    def to_api(self, emap_id: int = 0) -> dict[str, Any]:
+        """The row for an Emap Save item list: what Load returned, with
+        the referenced item and position as this object has them (a moved
+        marker's position wins over the one in raw). An item the NAS has
+        not seen yet sends no id and takes *emap_id* as its map."""
+        row = dict(self.raw)
+        row.update(
+            emapType=self.emap_type,
+            refItemIdOnHost=self.ref_item_id,
+            refItemType=self.ref_item_type,
+            lat=self.lat,
+            lng=self.lng,
+            direction=self.direction,
+            viewAngle=self.view_angle,
+        )
+        row["emapId"] = self.emap_id or emap_id
+        if self.id > 0:
+            row["id"] = self.id
+        else:
+            row.pop("id", None)
+        return row
 
 
 @dataclass(frozen=True)
@@ -461,6 +503,10 @@ class EMap:
     width: int = 0
     height: int = 0
     items: tuple[EMapItem, ...] = ()
+    # Item rows Load returned that this client could not model. Emap Save
+    # replaces the whole item list, so a save sends these back untouched
+    # rather than deleting them from the NAS.
+    extra_rows: tuple[dict[str, Any], ...] = ()
 
     @property
     def cameras(self) -> tuple[EMapItem, ...]:
@@ -470,13 +516,14 @@ class EMap:
     @classmethod
     def from_api(cls, data: dict) -> EMap:  # type: ignore[type-arg]
         items: list[EMapItem] = []
+        extra_rows: list[dict[str, Any]] = []
         for row in data.get("item") or []:
             if not isinstance(row, dict):
                 continue
             try:
                 items.append(EMapItem.from_api(row))
             except (KeyError, TypeError, ValueError):
-                continue
+                extra_rows.append(dict(row))
         return cls(
             id=int(data.get("id", 0)),
             name=str(data.get("name", "")),
@@ -488,6 +535,7 @@ class EMap:
             width=_int_or_zero(data.get("imgWidth")),
             height=_int_or_zero(data.get("imgHeight")),
             items=tuple(items),
+            extra_rows=tuple(extra_rows),
         )
 
 

@@ -321,17 +321,82 @@ class SurveillanceAPI:
         version: int = 1,
         extra_params: dict[str, Any] | None = None,
         timeout: float | None = None,
+        post: bool = False,
     ) -> Any:
         """Make an API request with auto-reconnect on session errors.
+
+        *post* is raw_request's: for parameters too long for a URL, such
+        as an E-Map's base64 image data or its whole marker list.
 
         Returns the 'data' field from the response (dict or list).
         """
         try:
-            return await self.raw_request(api, method, version, extra_params, timeout=timeout)
+            return await self.raw_request(
+                api, method, version, extra_params, timeout=timeout, post=post
+            )
         except ApiError as e:
             if e.code in SESSION_ERRORS and self.username and self.password:
                 await self._relogin(e)
                 return await self.raw_request(api, method, version, extra_params, timeout=timeout)
+            raise
+
+    async def _raw_upload(
+        self,
+        api: str,
+        method: str,
+        version: int,
+        field: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> Any:
+        """Upload one file as multipart/form-data (no auto-reconnect).
+
+        The API selector and the session id travel in the query string,
+        the file as the form's only field, which is how Surveillance
+        Station's own web UI sends an E-Map image to Emap.Image Upload.
+        """
+        path = self._get_api_path(api)
+        params: dict[str, Any] = {
+            "api": api,
+            "version": self._get_api_version(api, version),
+            "method": method,
+        }
+        if self.sid:
+            params["_sid"] = self.sid
+        resp = await self.client.post(
+            path, params=params, files={field: (filename, content, content_type)}
+        )
+        _raise_for_status(resp)
+        result = _json_or_raise(resp)
+        if not result.get("success"):
+            code = result.get("error", {}).get("code", 100)
+            raise ApiError(code, result.get("error", {}).get("message", ""), _error_table(api))
+        data: Any = result.get("data", {})
+        return data
+
+    async def upload(
+        self,
+        api: str,
+        method: str,
+        version: int,
+        field: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> Any:
+        """Upload one file with auto-reconnect on session errors, the way
+        request() retries. Returns the 'data' field of the response."""
+        try:
+            return await self._raw_upload(
+                api, method, version, field, filename, content, content_type
+            )
+        except ApiError as e:
+            if e.code in SESSION_ERRORS and self.username and self.password:
+                await self._relogin(e)
+                return await self._raw_upload(
+                    api, method, version, field, filename, content, content_type
+                )
             raise
 
     async def _relogin(self, cause: ApiError) -> None:

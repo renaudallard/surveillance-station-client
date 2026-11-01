@@ -197,6 +197,7 @@ class TestParsing:
         assert emap is not None
         assert emap.id == 1
         assert [i.id for i in emap.items] == [11, 12, 13]
+        assert [row["id"] for row in emap.extra_rows] == [14, 15]
         assert emap.items[0] == EMapItem(
             id=11,
             emap_id=1,
@@ -356,6 +357,10 @@ class TestLoadErrorMessage:
             _listed=True,
             shown=shown,
             _show_message=shown.append,
+            # Losing the maps also ends an edit in progress.
+            _emap=None,
+            _end_edit=MagicMock(),
+            _update_edit_controls=MagicMock(),
         )
 
     def test_a_failed_relogin_says_so(self) -> None:

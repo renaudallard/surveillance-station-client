@@ -130,7 +130,9 @@ Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings
   <img src="assets/screenshots/maps.webp" alt="Maps page" width="100%">
 </p>
 
-Shows the E-Maps set up in Surveillance Station, read only: pick a map from the list and its image is drawn to fit the page, with a dot for every camera placed on it, green while the camera is enabled and red when it is disconnected or disabled (grey for a camera the account cannot see). Hover a dot for the camera's name, and click it to put the camera in Live View the same way a click in the camera sidebar does: into the selected slot, or alone in 1&times;1 when no slot is selected. The map last opened is remembered per connection profile. PNG, JPEG and SVG map images are drawn; one that cannot be decoded still shows its cameras on a blank map. The page says so instead when the NAS has no E-Maps, the account may not view them, or the NAS's E-Map interface is older than the one the page reads. Maps are created and edited in Surveillance Station itself.
+Shows the E-Maps set up in Surveillance Station: pick a map from the list and its image is drawn to fit the page, with a dot for every camera placed on it, green while the camera is enabled and red when it is disconnected or disabled (grey for a camera the account cannot see). Hover a dot for the camera's name, and click it to put the camera in Live View the same way a click in the camera sidebar does: into the selected slot, or alone in 1&times;1 when no slot is selected. The map last opened is remembered per connection profile. PNG, JPEG and SVG map images are drawn; one that cannot be decoded still shows its cameras on a blank map. The page says so instead when the NAS has no E-Maps, the account may not view them, or the NAS's E-Map interface is older than the one the page reads.
+
+Maps are created and edited here too. **+** in the list header makes a new map from an image file (PNG, JPEG or SVG; the NAS stores PNG, so the others are converted first) under a name taken from the file, which can be changed but not reused: a second map of an existing name is refused. The pencil switches the selected map to editing: drag a dot to move the camera (it stays on the image), **Add camera…** lists the sidebar's cameras not yet on the map and drops the picked one at the centre to drag into place, and a right click on a dot offers **Remove**. **Save** asks first and then sends the whole marker list, since Surveillance Station replaces the list rather than merging it; the map is reloaded before the save and the save refused when its markers changed on the NAS meanwhile. **Discard** returns to what the NAS holds. Leaving the map, refreshing the list or changing the image with unsaved edits asks whether to save, discard or stay. **Change image…** gives the map another image and keeps its markers; **Delete map** asks and then removes the map. An account allowed to view maps but not edit them is told so at the first edit, and the page goes back to viewing only.
 </details>
 <details>
 <summary><b>Events</b></summary>
@@ -853,6 +855,7 @@ surveillance-station-client/
 │   │   ├── licenses.py                  license management
 │   │   ├── timelapse.py                 time lapse browser
 │   │   ├── emaps.py                     Maps page (E-Maps with camera markers)
+│   │   ├── emaps_edit.py                Maps page editing: marker working copy, edit bar, dialogs
 │   │   ├── notifications.py             alert popover
 │   │   ├── settings.py                  Settings page
 │   │   └── labels.py                    combo label helpers shared by the browser pages
@@ -868,6 +871,7 @@ surveillance-station-client/
     ├── test_config.py
     ├── test_date_time_picker.py
     ├── test_emap.py
+    ├── test_emap_editor.py
     ├── test_fisheye.py
     ├── test_legacy_event_bits.py
     ├── test_icons.py
@@ -916,8 +920,8 @@ surveillance-station-client/
 | `SYNO.SurveillanceStation.HomeMode` | Get/set home mode status |
 | `SYNO.SurveillanceStation.Transactions.Device` | POS devices and the camera each is paired with |
 | `SYNO.SurveillanceStation.Transactions.Transaction` | Latest POS receipts for the Live View overlay (`Enum`) |
-| `SYNO.SurveillanceStation.Emap` | E-Maps for the Maps page: the map list (`List`) and one map's camera markers (`Load`) |
-| `SYNO.SurveillanceStation.Emap.Image` | A map's image (`Load`) |
+| `SYNO.SurveillanceStation.Emap` | E-Maps for the Maps page: the map list (`List`), one map's camera markers (`Load`), creating a map, giving it another image and replacing its marker list (`Save`), and removing it (`Delete`) |
+| `SYNO.SurveillanceStation.Emap.Image` | A map's image (`Load`) and storing a new one (`Upload`, multipart PNG) |
 | `SYNO.SurveillanceStation.License` | License management |
 | `SYNO.SurveillanceStation.Info` | NAS device info |
 

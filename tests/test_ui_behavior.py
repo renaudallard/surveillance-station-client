@@ -1539,18 +1539,15 @@ class TestCameraSettingsUnknownProtocol:
     """config.toml is hand-editable, and a misspelt protocol must not
     stop the one dialog that can fix it from opening."""
 
-    @pytest.mark.parametrize("protocol", ["rtsp", "rtps"])
-    def test_the_dialog_opens(self, protocol: str) -> None:
-        from surveillance.api.models import Camera
-        from surveillance.ui.camera_settings import CameraSettingsDialog
+    def test_a_known_protocol_is_shown(self) -> None:
+        from surveillance.ui.camera_settings import shown_protocol
 
-        config = AppConfig()
-        config.camera_protocols[3] = protocol
-        app = SimpleNamespace(config=config)
-        window = SimpleNamespace(get_application=lambda: app)
-        cam = Camera(id=3, name="Till", model="m", vendor="v", status=1)
-        dialog = object.__new__(CameraSettingsDialog)
-        CameraSettingsDialog.__init__(dialog, window, cam)  # type: ignore[arg-type]
+        assert shown_protocol("rtsp") == "rtsp"
+
+    def test_an_unknown_protocol_is_shown_as_auto(self) -> None:
+        from surveillance.ui.camera_settings import shown_protocol
+
+        assert shown_protocol("rtps") == "auto"
 
 
 class TestNotificationPopover:

@@ -355,9 +355,12 @@ class TestHelpers:
     def test_token_item_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.undo()
         asked: list[tuple[str, str]] = []
-        monkeypatch.setattr(
-            credentials.keyring, "get_password", lambda s, n: asked.append((s, n)) or "t"
-        )
+
+        def _get_password(service: str, name: str) -> str:
+            asked.append((service, name))
+            return "t"
+
+        monkeypatch.setattr(credentials.keyring, "get_password", _get_password)
         assert webhooks.webhook_token(TARGET) == "t"
         assert asked == [("surveillance-station", f"webhook_token:{TARGET}")]
 

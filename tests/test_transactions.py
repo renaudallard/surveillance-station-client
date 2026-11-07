@@ -1,5 +1,10 @@
 """Tests for the Surveillance Station Transactions (POS) parsers."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
 from surveillance.services.transactions import (
     Transaction,
     fresh_receipts,
@@ -7,6 +12,9 @@ from surveillance.services.transactions import (
     parse_server_time,
     parse_transactions,
 )
+
+if TYPE_CHECKING:
+    import httpx
 
 
 def test_parse_devices_keeps_only_paired() -> None:
@@ -185,7 +193,7 @@ def test_only_slots_on_screen_count() -> None:
     assert shown == [0]
 
 
-def _answer_105(times: int) -> tuple[list[str], object]:
+def _answer_105(times: int) -> tuple[list[str], Callable[[httpx.Request], httpx.Response]]:
     """A NAS whose Transactions calls answer 105 *times* times, then
     succeed; logins are recorded."""
     import httpx

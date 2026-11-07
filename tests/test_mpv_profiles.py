@@ -204,11 +204,8 @@ class TestPlaybackProfiles:
         stream."""
         monkeypatch.setattr(mpv_widget, "_CACHE_SECONDS_MUXED_AUDIO", 0.0)
         monkeypatch.setattr(mpv_widget, "_CACHE_SECONDS_DEFAULT", 0.0)
-        for kwargs in (
-            {"low_latency": False, "muxed_audio": True},
-            {"low_latency": False, "muxed_audio": False},
-        ):
-            options = _applied(**kwargs)
+        for muxed_audio in (True, False):
+            options = _applied(low_latency=False, muxed_audio=muxed_audio)
             assert options["cache"] == "no"
             assert options["correct-pts"] is True
             assert options["untimed"] is False

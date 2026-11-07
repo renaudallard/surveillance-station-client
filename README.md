@@ -713,7 +713,7 @@ pip install -e ".[dev]"
 
 ruff check src/ tests/       # lint (rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
 ruff format src/ tests/       # format
-mypy src/surveillance/        # type check
+mypy src/ tests/              # type check
 pytest tests/ -v              # tests
 ```
 
@@ -723,7 +723,7 @@ CI runs automatically on push and pull requests to `main`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy |
+| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy, pytest |
 | [`release.yml`](.github/workflows/release.yml) | version bump on `main` | Build AppImages (x86_64 + aarch64), create GitHub release |
 
 </details>
@@ -786,7 +786,7 @@ surveillance-station-client/
 │   ├── bug_report.yml                   bug report form
 │   └── config.yml                       issue template config
 ├── .github/workflows/
-│   ├── lint.yml                         CI: ruff + mypy
+│   ├── lint.yml                         CI: ruff, mypy, pytest
 │   ├── check-debug-logs.yml             CI: validates bug-report debug logs
 │   ├── stale-issues.yml                 CI: closes stale issues
 │   └── release.yml                      AppImage build + GitHub release

@@ -199,9 +199,8 @@ class TestTypedTime:
     @pytest.mark.parametrize("text", ["12:30", "12:30:00", "12:30:30"])
     def test_hours_and_minutes_are_enough(self, text: str) -> None:
         picker = self._picker(text)
-        assert picker.get_datetime() == datetime(
-            2026, 9, 6, *map(int, (text + ":00").split(":")[:3])
-        )
+        hour, minute, second = map(int, (text + ":00").split(":")[:3])
+        assert picker.get_datetime() == datetime(2026, 9, 6, hour, minute, second)
         assert picker.is_current_selection_valid()
 
     @pytest.mark.parametrize("text", ["1230", "12.30", "12h30"])

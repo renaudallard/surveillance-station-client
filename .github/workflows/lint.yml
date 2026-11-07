@@ -29,6 +29,9 @@ jobs:
             gir1.2-gtk-4.0 \
             libgtk-4-dev \
             libmpv-dev \
+            libcairo2-dev \
+            libportaudio2 \
+            pkg-config \
             python3-gi \
             python3-gi-cairo \
             python3-cairo \
@@ -37,7 +40,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install ruff mypy
+          pip install -e ".[dev]"
 
       - name: Run ruff check
         id: ruff_check
@@ -51,11 +54,17 @@ jobs:
 
       - name: Run mypy
         id: mypy
-        run: mypy src/
+        run: mypy src/ tests/
+        continue-on-error: true
+
+      - name: Run tests
+        id: pytest
+        shell: bash
+        run: pytest -q 2>&1 | tee "$RUNNER_TEMP/pytest.log"
         continue-on-error: true
 
       - name: Check results
-        if: steps.ruff_check.outcome == 'success' && steps.ruff_format.outcome == 'success' && steps.mypy.outcome == 'success'
+        if: steps.ruff_check.outcome == 'success' && steps.ruff_format.outcome == 'success' && steps.mypy.outcome == 'success' && steps.pytest.outcome == 'success'
         run: echo "All checks passed!"
 
       - name: Attempt auto-fix
@@ -83,7 +92,7 @@ jobs:
           git push
 
       - name: Collect errors and create issue
-        if: github.event_name == 'push' && (steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure' || steps.mypy.outcome == 'failure') && (steps.recheck.outcome != 'success' || steps.mypy.outcome == 'failure')
+        if: github.event_name == 'push' && (steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure' || steps.mypy.outcome == 'failure' || steps.pytest.outcome == 'failure') && (steps.recheck.outcome != 'success' || steps.mypy.outcome == 'failure' || steps.pytest.outcome == 'failure')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -102,8 +111,13 @@ jobs:
           fi
 
           if [ "${{ steps.mypy.outcome }}" = "failure" ]; then
-            MYPY_OUT=$(mypy src/ 2>&1 || true)
+            MYPY_OUT=$(mypy src/ tests/ 2>&1 || true)
             BODY="${BODY}### mypy\n\`\`\`\n${MYPY_OUT}\n\`\`\`\n\n"
+          fi
+
+          if [ "${{ steps.pytest.outcome }}" = "failure" ]; then
+            PYTEST_OUT=$(tail -n 60 "$RUNNER_TEMP/pytest.log")
+            BODY="${BODY}### pytest\n\`\`\`\n${PYTEST_OUT}\n\`\`\`\n\n"
           fi
 
           gh label create lint --color "d73a4a" --description "Lint/type errors" 2>/dev/null || true
@@ -113,5 +127,5 @@ jobs:
             --body-file -
 
       - name: Fail if checks did not pass
-        if: steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure' || steps.mypy.outcome == 'failure'
+        if: steps.ruff_check.outcome == 'failure' || steps.ruff_format.outcome == 'failure' || steps.mypy.outcome == 'failure' || steps.pytest.outcome == 'failure'
         run: exit 1

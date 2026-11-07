@@ -166,14 +166,20 @@ class TestAlert:
     def test_from_api(self) -> None:
         data = {
             "id": 300,
-            "cameraId": 1,
-            "cameraName": "Front Door",
-            "alertType": 0,
-            "timestamp": 1700000000,
-            "isRead": False,
+            "dsId": 0,
+            "grpType": 2,
+            "logKey": "msg_cam_conn_lost",
+            "param1": "Front Door",
+            "param2": "",
+            "param3": "",
+            "time": 1700000000,
+            "hasRead": False,
         }
         alert = Alert.from_api(data)
         assert alert.id == 300
+        assert alert.log_key == "msg_cam_conn_lost"
+        assert alert.params == ("Front Door", "", "")
+        assert alert.timestamp == 1700000000
         assert alert.is_read is False
 
 

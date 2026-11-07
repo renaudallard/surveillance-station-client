@@ -1553,6 +1553,95 @@ class TestCameraSettingsUnknownProtocol:
         CameraSettingsDialog.__init__(dialog, window, cam)  # type: ignore[arg-type]
 
 
+class TestNotificationPopover:
+    @staticmethod
+    def _popover() -> Any:
+        return SimpleNamespace(
+            listbox=MagicMock(),
+            clear_btn=MagicMock(),
+            _clear=MagicMock(),
+            _show_placeholder=MagicMock(),
+            _create_alert_row=MagicMock(),
+        )
+
+    def test_an_empty_queue_says_so_and_has_nothing_to_clear(self) -> None:
+        from surveillance.ui.notifications import NotificationPopover
+
+        popover = self._popover()
+        NotificationPopover._on_alerts_loaded(popover, MagicMock(), [], {})
+
+        popover._show_placeholder.assert_called_once_with("No notifications")
+        popover.clear_btn.set_sensitive.assert_called_once_with(False)
+
+    def test_read_alerts_can_be_cleared(self) -> None:
+        from surveillance.api.models import Alert
+        from surveillance.ui.notifications import NotificationPopover
+
+        popover = self._popover()
+        alert = Alert(1, "msg_cam_conn_lost", ("Door", "", ""), 0, is_read=True)
+        NotificationPopover._on_alerts_loaded(popover, MagicMock(), [alert], {})
+
+        popover._show_placeholder.assert_not_called()
+        popover.clear_btn.set_sensitive.assert_called_once_with(True)
+
+    @pytest.mark.parametrize(
+        ("handler", "text"),
+        [
+            ("_on_load_failed", "Could not load notifications"),
+            ("_on_clear_failed", "Could not clear notifications"),
+        ],
+    )
+    def test_a_failure_is_shown(self, handler: str, text: str) -> None:
+        from surveillance.ui.notifications import NotificationPopover
+
+        popover = self._popover()
+        popover._show_failure = lambda message: NotificationPopover._show_failure(popover, message)
+        getattr(NotificationPopover, handler)(popover, RuntimeError("down"))
+
+        popover._show_placeholder.assert_called_once_with(text)
+        popover.clear_btn.set_sensitive.assert_called_once_with(False)
+
+
+class TestNotificationsAvailability:
+    def test_a_nas_without_the_queue_hides_the_bell_and_is_not_polled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gi.repository import GLib
+
+        from surveillance.ui.window import MainWindow
+
+        timers: list[Any] = []
+
+        def _timeout_add_seconds(_seconds: int, fn: Any) -> int:
+            timers.append(fn)
+            return 1
+
+        monkeypatch.setattr(GLib, "timeout_add_seconds", _timeout_add_seconds)
+        api = MagicMock()
+        api.has_api.return_value = False
+        window = SimpleNamespace(
+            app=SimpleNamespace(api=api, config=AppConfig()),
+            headerbar=MagicMock(),
+            _stop_polling=lambda: None,
+            _for_session=lambda handler: handler,
+            _start_transactions_polling=lambda: None,
+            _alerts_poll_id=0,
+            _homemode_poll_id=0,
+            _on_home_mode=MagicMock(),
+        )
+        window._set_alerts_available = (  # type: ignore[attr-defined]
+            lambda available: MainWindow._set_alerts_available(window, available)  # type: ignore[arg-type]
+        )
+        monkeypatch.setattr(
+            "surveillance.util.async_bridge.run_async", lambda coro, **_k: coro.close()
+        )
+        MainWindow._start_polling(window)  # type: ignore[arg-type]
+
+        window.headerbar.set_notifications_available.assert_called_once_with(False)
+        assert window._alerts_poll_id == 0
+        assert len(timers) == 1  # home mode's
+
+
 class TestPollAnswersAcrossSessions:
     """A poll answer can land after logging out and into another NAS."""
 
@@ -1590,6 +1679,9 @@ class TestPollAnswersAcrossSessions:
             _seen_transactions={},
         )
         window._for_session = lambda h: MainWindow._for_session(window, h)  # type: ignore[attr-defined]
+        window._set_alerts_available = (  # type: ignore[attr-defined]
+            lambda available: setattr(window, "_alerts_available", available)
+        )
         window._start_transactions_polling = (  # type: ignore[attr-defined]
             lambda: MainWindow._start_transactions_polling(window)
         )

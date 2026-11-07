@@ -67,6 +67,7 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.app: SurveillanceApp = window.get_application()  # type: ignore[assignment]
         self._page = "live"
         self._connected = False
+        self._notifications_available = True
         self._update_available = False
 
         # Title, updated with the current page name by set_page()
@@ -328,6 +329,16 @@ class AppHeaderBar(Gtk.HeaderBar):
         else:
             self.badge_label.set_visible(False)
 
+    def set_notifications_available(self, available: bool) -> None:
+        """Hide the bell on a NAS without the notification queue."""
+        self._notifications_available = available
+        self._update_notification_button()
+
+    def _update_notification_button(self) -> None:
+        shown = self._connected and self._notifications_available
+        self.notif_overlay.set_visible(shown)
+        self.notif_btn.set_sensitive(shown)
+
     def _update_grid_button(self) -> None:
         """Grid Layout is only useful on the Live View page."""
         on_live = self._connected and self._page == "live"
@@ -340,7 +351,6 @@ class AppHeaderBar(Gtk.HeaderBar):
         self._update_logout_button()
         self.home_btn.set_visible(connected)
         self.home_btn.set_sensitive(connected)
-        self.notif_overlay.set_visible(connected)
-        self.notif_btn.set_sensitive(connected)
+        self._update_notification_button()
         self._update_grid_button()
         self.reload_btn.set_sensitive(connected and self._page == "live")

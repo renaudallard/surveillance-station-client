@@ -85,7 +85,7 @@ class AppHeaderBar(Gtk.HeaderBar):
 
         # Sidebar toggle (left side, right of Home Mode)
         self.sidebar_btn = Gtk.ToggleButton()
-        self.sidebar_btn.set_icon_name("sidebar-show-symbolic")
+        self.sidebar_btn.set_icon_name("surveillance-sidebar-symbolic")
         self.sidebar_btn.set_active(self.app.config.sidebar_visible)
         self._update_sidebar_tooltip(self.app.config.sidebar_visible)
         self.sidebar_btn.connect("toggled", self._on_sidebar_toggled)
@@ -113,17 +113,8 @@ class AppHeaderBar(Gtk.HeaderBar):
         # Timeline toggle (left side, right of the sidebar toggle) — Live
         # View only, unlike the sidebar toggle, so it's hidden rather than
         # merely disabled on other pages.
-        #
-        # No stock "bottom pane" icon shares sidebar-show-symbolic's
-        # convention of highlighting the panel itself (they all highlight
-        # the main content instead, leaving the pane an empty box) — so
-        # reuse that same icon rotated 90°, rather than pairing two icons
-        # with inverted-looking coloring.
         self.timeline_btn = Gtk.ToggleButton()
-        timeline_icon = Gtk.Image.new_from_icon_name("sidebar-show-symbolic")
-        timeline_icon.set_pixel_size(16)
-        timeline_icon.add_css_class("rotate-ccw-90")
-        self.timeline_btn.set_child(timeline_icon)
+        self.timeline_btn.set_icon_name("surveillance-timeline-symbolic")
         self.timeline_btn.set_active(self.app.config.timeline_visible)
         self._update_timeline_tooltip(self.app.config.timeline_visible)
         self.timeline_btn.connect("toggled", self._on_timeline_toggled)
@@ -152,12 +143,7 @@ class AppHeaderBar(Gtk.HeaderBar):
 
         # Notification bell
         self.notif_btn = Gtk.MenuButton()
-        # "bell-symbolic" doesn't exist in this icon theme (confirmed via
-        # Gtk.IconTheme.has_icon) and silently falls back to a pale
-        # missing-icon placeholder that looks disabled even when the
-        # button is sensitive. This is the same bell GNOME Settings uses
-        # for its own notifications panel.
-        self.notif_btn.set_icon_name("preferences-system-notifications-symbolic")
+        self.notif_btn.set_icon_name("surveillance-notifications-symbolic")
         self.notif_btn.set_tooltip_text("Notifications")
         self.notif_btn.set_sensitive(False)
 

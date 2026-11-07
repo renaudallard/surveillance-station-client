@@ -235,7 +235,13 @@ class SurveillanceApp(Gtk.Application):
             settings.set_property("gtk-application-prefer-dark-theme", False)
 
     def _add_icon_path(self) -> None:
-        """Let icon lookups find the app's own icons in ICONS_PATH."""
+        """Let icon lookups find the app's own icons in ICONS_PATH.
+
+        Some of them stand in for an Adwaita icon of the same meaning,
+        such as the notification bell, Maps and the panel toggles. They
+        are shipped so the app finds them even on a system using a theme
+        without those names, such as the plain GNOME icon theme.
+        """
         display = Gdk.Display.get_default()
         if display:
             Gtk.IconTheme.get_for_display(display).add_search_path(str(ICONS_PATH))

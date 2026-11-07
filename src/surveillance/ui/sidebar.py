@@ -113,7 +113,7 @@ class CameraSidebar(Gtk.Box):
             ("camera-photo-symbolic", "Snapshots", "snapshots"),
             ("dialog-warning-symbolic", "Events", "events"),
             ("surveillance-time-lapse-symbolic", "Time Lapse", "timelapse"),
-            ("mark-location-symbolic", "Maps", "maps"),
+            ("surveillance-maps-symbolic", "Maps", "maps"),
             ("dialog-password-symbolic", "Licenses", "licenses"),
             ("preferences-system-symbolic", "Settings", "settings"),
             ("help-about-symbolic", "About", "about"),
@@ -271,10 +271,10 @@ class CameraSidebar(Gtk.Box):
             status_icon.set_from_icon_name("object-select-symbolic")
             status_icon.add_css_class("camera-status-online")
         elif cam.status == CameraStatus.DISCONNECTED:
-            status_icon.set_from_icon_name("network-offline-symbolic")
+            status_icon.set_from_icon_name("surveillance-camera-offline-symbolic")
             status_icon.add_css_class("camera-status-offline")
         else:
-            status_icon.set_from_icon_name("action-unavailable-symbolic")
+            status_icon.set_from_icon_name("surveillance-camera-disabled-symbolic")
             status_icon.add_css_class("camera-status-offline")
         box.append(status_icon)
 

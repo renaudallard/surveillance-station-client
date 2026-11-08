@@ -243,12 +243,21 @@ click-and-drag panning.
 Browse, play back, download, and manage Smart Time Lapse recordings.
 .TP
 .B Maps
-Show the E-Maps set up in Surveillance Station, read only, with a dot for
-every camera placed on a map: green while the camera is enabled, red when it
-is disconnected or disabled, grey for one the account cannot see. Hovering a
-dot names the camera, and clicking it puts the camera in Live View the way a
-click in the camera sidebar does. PNG, JPEG and SVG map images are drawn.
-Maps are created and edited in Surveillance Station itself.
+Show the E-Maps set up in Surveillance Station, with a dot for every camera
+placed on a map: green while the camera is enabled, red when it is
+disconnected or disabled, grey for one the account cannot see. Hovering a dot
+names the camera, and clicking it puts the camera in Live View the way a click
+in the camera sidebar does. PNG, JPEG and SVG map images are drawn.
+.IP
+Maps are created and edited here too: the + button makes a new map from an
+image file (the NAS stores PNG; JPEG and SVG are converted), the pencil
+switches the selected map to editing, where dots are dragged into place,
+cameras added from the sidebar's list and removed with a right click, and
+Save sends the whole marker list after asking (Surveillance Station replaces
+the list rather than merging it, and the save is refused when the map changed
+on the NAS meanwhile). Change image keeps the markers; Delete map asks first.
+An account allowed to view maps but not edit them is told so at the first
+edit.
 .TP
 .B Events
 Browse real events with their type and time, filtered by event type, camera,

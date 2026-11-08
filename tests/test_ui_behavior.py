@@ -1129,7 +1129,7 @@ class TestLogoutShowsLoginOnce:
         from surveillance.app import SurveillanceApp
         from surveillance.util import async_bridge
 
-        pending: list[object] = []
+        pending: list[tuple[Any, dict[str, Any]]] = []
         monkeypatch.setattr(
             async_bridge, "run_async", lambda coro, **kwargs: pending.append((coro, kwargs))
         )
@@ -1144,9 +1144,9 @@ class TestLogoutShowsLoginOnce:
 
         assert shown == ["disconnected", "login"]
         assert app.api is None
-        coro, kwargs = pending[0]  # type: ignore[misc]
+        coro, kwargs = pending[0]
         assert "callback" not in kwargs, "nothing may show a dialog once the cleanup lands"
-        coro.close()  # type: ignore[attr-defined]
+        coro.close()
 
 
 class TestSidebarRefreshAfterLogout:
@@ -1157,7 +1157,7 @@ class TestSidebarRefreshAfterLogout:
         from surveillance.ui import sidebar as sidebar_module
         from surveillance.ui.sidebar import CameraSidebar
 
-        pending: list[object] = []
+        pending: list[tuple[Any, Any]] = []
         monkeypatch.setattr(
             sidebar_module,
             "run_async",
@@ -1170,11 +1170,11 @@ class TestSidebarRefreshAfterLogout:
             on_cameras_updated=None,
         )
         CameraSidebar.refresh(sidebar)  # type: ignore[arg-type]
-        coro, callback = pending[0]  # type: ignore[misc]
-        coro.close()  # type: ignore[attr-defined]
+        coro, callback = pending[0]
+        coro.close()
 
         sidebar.app.api = None  # logged out while the request was out
-        callback(["cam1"])  # type: ignore[operator]
+        callback(["cam1"])
         assert updated == []
 
 
@@ -1242,7 +1242,7 @@ class TestFailedLoadClearsRows:
         """A row container in both of the shapes the pages use."""
 
         def __init__(self) -> None:
-            self.rows = ["old row", "old row"]
+            self.rows: list[object] = ["old row", "old row"]
 
         def get_first_child(self) -> object:
             return self.rows[0] if self.rows else None
@@ -1279,8 +1279,8 @@ class TestFailedLoadClearsRows:
         page = self._page(
             row_box=self._Box(), _thumb_futures=[], _thumb_generation=0, _offset=0, _total=120
         )
-        page._clear_rows = lambda: RecordingsView._clear_rows(page)
-        RecordingsView._on_load_error(page, OSError("down"))
+        page._clear_rows = lambda: RecordingsView._clear_rows(page)  # type: ignore[arg-type]
+        RecordingsView._on_load_error(page, OSError("down"))  # type: ignore[arg-type]
         assert page.row_box.rows == []
         assert page.page_label.value == "Failed to load recordings"
 
@@ -1288,7 +1288,7 @@ class TestFailedLoadClearsRows:
         from surveillance.ui.snapshots import SnapshotsView
 
         page = self._page(row_box=self._Box(), _snapshots=["old"], _page=0)
-        SnapshotsView._on_load_error(page, OSError("down"))
+        SnapshotsView._on_load_error(page, OSError("down"))  # type: ignore[arg-type]
         assert page.row_box.rows == []
         assert page.page_label.value == "Failed to load snapshots"
 
@@ -1305,8 +1305,8 @@ class TestFailedLoadClearsRows:
             _event_type_filter=None,
             _camera_vendor={},
         )
-        page._render_events = lambda: EventsView._render_events(page)
-        EventsView._on_load_error(page, OSError("down"))
+        page._render_events = lambda: EventsView._render_events(page)  # type: ignore[arg-type]
+        EventsView._on_load_error(page, OSError("down"))  # type: ignore[arg-type]
         assert page.listbox.rows == []
         assert page.page_label.value == "Failed to load events"
 
@@ -1379,7 +1379,7 @@ class TestEventsSavedTypeKeys:
             app=SimpleNamespace(config=config, event_backend=LegacyEventBackend()),
             _search_event_types=None,
         )
-        EventsView._load_search_from_config(page)
+        EventsView._load_search_from_config(page)  # type: ignore[arg-type]
         assert page._search_event_types == ["08", "25:hikvision"]
 
     def test_nothing_left_means_no_type_filter(self) -> None:
@@ -1392,7 +1392,7 @@ class TestEventsSavedTypeKeys:
             app=SimpleNamespace(config=config, event_backend=LegacyEventBackend()),
             _search_event_types=None,
         )
-        EventsView._load_search_from_config(page)
+        EventsView._load_search_from_config(page)  # type: ignore[arg-type]
         assert page._search_event_types is None
 
     def test_saving_keeps_the_other_backends_keys(self) -> None:
@@ -1419,11 +1419,11 @@ class TestEventsSavedTypeKeys:
 
         center = page(EventCenterBackend())
         with patch("surveillance.ui.events.save_config"):
-            EventsView._load_search_from_config(center)
+            EventsView._load_search_from_config(center)  # type: ignore[arg-type]
             center._search_event_types = ["motion"]
-            EventsView._save_search_to_config(center)
+            EventsView._save_search_to_config(center)  # type: ignore[arg-type]
             legacy = page(LegacyEventBackend())
-            EventsView._load_search_from_config(legacy)
+            EventsView._load_search_from_config(legacy)  # type: ignore[arg-type]
         assert legacy._search_event_types == ["08", "25:hikvision"]
         assert legacy._search_event_types_match_all is True
         assert config.events_search_event_types == ["08", "25:hikvision", "motion"]
@@ -1457,7 +1457,7 @@ class TestFilterPopoverOptions:
             _camera_name=str,
             scanned=[],
         )
-        page._show_filter_options = lambda options: LiveView._show_filter_options(page, options)
+        page._show_filter_options = lambda options: LiveView._show_filter_options(page, options)  # type: ignore[arg-type]
         page._scan_next_camera_for_event_types = lambda *args: page.scanned.append(args)
         return page
 
@@ -1467,7 +1467,7 @@ class TestFilterPopoverOptions:
         options = [("motion", "Motion", "")]
         backend = SimpleNamespace(fixed_filter_options=lambda: options, supports_match_all=False)
         page = self._page(backend)
-        LiveView._on_filter_popover_show(page)
+        LiveView._on_filter_popover_show(page)  # type: ignore[arg-type]
         assert page.scanned == []
         assert page.timeline.scanning == []
         # Any/All hidden and left on Any, whatever was set before.
@@ -1478,7 +1478,7 @@ class TestFilterPopoverOptions:
         from surveillance.ui.liveview import LiveView
 
         page = self._page(LegacyEventBackend())
-        LiveView._on_filter_popover_show(page)
+        LiveView._on_filter_popover_show(page)  # type: ignore[arg-type]
         assert page.timeline.scanning == [["1", "2"]]
         assert page.scanned == [(1, [1, 2], 0)]
 
@@ -1496,7 +1496,7 @@ class TestFilterButtonShowsActiveFilter:
             _active_timeline_cameras=lambda: (None, []),
             _apply_timeline_data_to_canvas=lambda *_args: None,
         )
-        LiveView._on_filter_apply(page, selected_keys, False)
+        LiveView._on_filter_apply(page, selected_keys, False)  # type: ignore[arg-type]
         return marked
 
     def test_a_selection_marks_it(self) -> None:
@@ -1539,18 +1539,104 @@ class TestCameraSettingsUnknownProtocol:
     """config.toml is hand-editable, and a misspelt protocol must not
     stop the one dialog that can fix it from opening."""
 
-    @pytest.mark.parametrize("protocol", ["rtsp", "rtps"])
-    def test_the_dialog_opens(self, protocol: str) -> None:
-        from surveillance.api.models import Camera
-        from surveillance.ui.camera_settings import CameraSettingsDialog
+    def test_a_known_protocol_is_shown(self) -> None:
+        from surveillance.ui.camera_settings import shown_protocol
 
-        config = AppConfig()
-        config.camera_protocols[3] = protocol
-        app = SimpleNamespace(config=config)
-        window = SimpleNamespace(get_application=lambda: app)
-        cam = Camera(id=3, name="Till", model="m", vendor="v", status=1)
-        dialog = object.__new__(CameraSettingsDialog)
-        CameraSettingsDialog.__init__(dialog, window, cam)  # type: ignore[arg-type]
+        assert shown_protocol("rtsp") == "rtsp"
+
+    def test_an_unknown_protocol_is_shown_as_auto(self) -> None:
+        from surveillance.ui.camera_settings import shown_protocol
+
+        assert shown_protocol("rtps") == "auto"
+
+
+class TestNotificationPopover:
+    @staticmethod
+    def _popover() -> Any:
+        return SimpleNamespace(
+            listbox=MagicMock(),
+            clear_btn=MagicMock(),
+            _clear=MagicMock(),
+            _show_placeholder=MagicMock(),
+            _create_alert_row=MagicMock(),
+        )
+
+    def test_an_empty_queue_says_so_and_has_nothing_to_clear(self) -> None:
+        from surveillance.ui.notifications import NotificationPopover
+
+        popover = self._popover()
+        NotificationPopover._on_alerts_loaded(popover, MagicMock(), [], {})
+
+        popover._show_placeholder.assert_called_once_with("No notifications")
+        popover.clear_btn.set_sensitive.assert_called_once_with(False)
+
+    def test_read_alerts_can_be_cleared(self) -> None:
+        from surveillance.api.models import Alert
+        from surveillance.ui.notifications import NotificationPopover
+
+        popover = self._popover()
+        alert = Alert(1, "msg_cam_conn_lost", ("Door", "", ""), 0, is_read=True)
+        NotificationPopover._on_alerts_loaded(popover, MagicMock(), [alert], {})
+
+        popover._show_placeholder.assert_not_called()
+        popover.clear_btn.set_sensitive.assert_called_once_with(True)
+
+    @pytest.mark.parametrize(
+        ("handler", "text"),
+        [
+            ("_on_load_failed", "Could not load notifications"),
+            ("_on_clear_failed", "Could not clear notifications"),
+        ],
+    )
+    def test_a_failure_is_shown(self, handler: str, text: str) -> None:
+        from surveillance.ui.notifications import NotificationPopover
+
+        popover = self._popover()
+        popover._show_failure = lambda message: NotificationPopover._show_failure(popover, message)
+        getattr(NotificationPopover, handler)(popover, RuntimeError("down"))
+
+        popover._show_placeholder.assert_called_once_with(text)
+        popover.clear_btn.set_sensitive.assert_called_once_with(False)
+
+
+class TestNotificationsAvailability:
+    def test_a_nas_without_the_queue_hides_the_bell_and_is_not_polled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gi.repository import GLib
+
+        from surveillance.ui.window import MainWindow
+
+        timers: list[Any] = []
+
+        def _timeout_add_seconds(_seconds: int, fn: Any) -> int:
+            timers.append(fn)
+            return 1
+
+        monkeypatch.setattr(GLib, "timeout_add_seconds", _timeout_add_seconds)
+        api = MagicMock()
+        api.has_api.return_value = False
+        window = SimpleNamespace(
+            app=SimpleNamespace(api=api, config=AppConfig()),
+            headerbar=MagicMock(),
+            _stop_polling=lambda: None,
+            _for_session=lambda handler: handler,
+            _start_transactions_polling=lambda: None,
+            _alerts_poll_id=0,
+            _homemode_poll_id=0,
+            _on_home_mode=MagicMock(),
+        )
+        window._set_alerts_available = (  # type: ignore[attr-defined]
+            lambda available: MainWindow._set_alerts_available(window, available)  # type: ignore[arg-type]
+        )
+        monkeypatch.setattr(
+            "surveillance.util.async_bridge.run_async", lambda coro, **_k: coro.close()
+        )
+        MainWindow._start_polling(window)  # type: ignore[arg-type]
+
+        window.headerbar.set_notifications_available.assert_called_once_with(False)
+        assert window._alerts_poll_id == 0
+        assert len(timers) == 1  # home mode's
 
 
 class TestPollAnswersAcrossSessions:
@@ -1589,9 +1675,12 @@ class TestPollAnswersAcrossSessions:
             _pos_cameras_at=0.0,
             _seen_transactions={},
         )
-        window._for_session = lambda h: MainWindow._for_session(window, h)  # type: ignore[attr-defined]
+        window._for_session = lambda h: MainWindow._for_session(window, h)  # type: ignore[attr-defined, arg-type]
+        window._set_alerts_available = (  # type: ignore[attr-defined]
+            lambda available: setattr(window, "_alerts_available", available)
+        )
         window._start_transactions_polling = (  # type: ignore[attr-defined]
-            lambda: MainWindow._start_transactions_polling(window)
+            lambda: MainWindow._start_transactions_polling(window)  # type: ignore[arg-type]
         )
         MainWindow._start_polling(window)  # type: ignore[arg-type]
         assert len(calls) == 3, "home mode, alerts and receipts each asked once"

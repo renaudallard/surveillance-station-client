@@ -39,6 +39,7 @@ from gi.repository import Gio, GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.services import webhooks
+from surveillance.services.event import ALERTS_API
 from surveillance.ui.headerbar import AppHeaderBar
 from surveillance.ui.layouts import valid_layout
 from surveillance.ui.sidebar import CameraSidebar
@@ -415,6 +416,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.headerbar.set_home_mode(on)
         webhooks.note_home_mode(on)
 
+    def _set_alerts_available(self, available: bool) -> None:
+        self._alerts_available = available
+        self.headerbar.set_notifications_available(available)
+
     def _on_unread_alerts(self, count: int) -> None:
         self.headerbar.set_notification_count(count)
         webhooks.note_unread_alerts(count)
@@ -442,7 +447,7 @@ class MainWindow(Gtk.ApplicationWindow):
         from surveillance.util.async_bridge import run_async
 
         self._homemode_available = True
-        self._alerts_available = True
+        self._set_alerts_available(self.app.api is not None and self.app.api.has_api(ALERTS_API))
 
         # Poll home mode
         def _poll_homemode() -> bool:
@@ -491,7 +496,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
                 if isinstance(e, ApiError) and e.code in (102, 103, 104):
                     log.debug("Notification API not available: %s", e)
-                    self._alerts_available = False
+                    self._set_alerts_available(False)
                 else:
                     log.debug("Alert poll failed: %s", e)
 
@@ -502,10 +507,11 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             return True
 
-        self._alerts_poll_id = GLib.timeout_add_seconds(
-            self.app.config.poll_interval_alerts, _poll_alerts
-        )
-        _poll_alerts()
+        if self._alerts_available:
+            self._alerts_poll_id = GLib.timeout_add_seconds(
+                self.app.config.poll_interval_alerts, _poll_alerts
+            )
+            _poll_alerts()
 
         self._start_transactions_polling()
 

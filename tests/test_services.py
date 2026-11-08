@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
@@ -344,9 +345,69 @@ class TestEventService:
     async def test_count_unread_alerts(self, api: SurveillanceAPI) -> None:
         from surveillance.services.event import count_unread_alerts
 
-        with patch.object(api, "request", new_callable=AsyncMock, return_value={"unread": 5}):
-            count = await count_unread_alerts(api)
-            assert count == 5
+        queue = {"msgqueue": [{"hasRead": False}, {"hasRead": True}, {"hasRead": False}]}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=queue) as request:
+            assert await count_unread_alerts(api) == 2
+        assert request.call_args.kwargs["extra_params"]["isReading"] == "false"
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_without_a_queue_is_empty(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import list_alerts
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}):
+            assert await list_alerts(api) == []
+
+    @pytest.mark.asyncio
+    async def test_mark_alerts_read_lists_as_reading(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import mark_alerts_read
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as request:
+            await mark_alerts_read(api)
+        assert request.call_args.kwargs["extra_params"]["isReading"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_clear_alerts(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import ALERTS_API, clear_alerts
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as request:
+            await clear_alerts(api)
+        request.assert_awaited_once_with(api=ALERTS_API, method="Clear", version=1)
+
+    @pytest.mark.asyncio
+    async def test_load_alert_templates_reads_the_log_strings(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import load_alert_templates
+
+        body = (
+            "_s.ss_log={};\n"
+            "_s.ss_log['msg_cam_conn_lost']='Camera [{0}] connection was lost.';\n"
+            "_s.log_ui_desc['msg_cam_conn_lost']='Connection to camera was lost';\n"
+        )
+        with patch.object(
+            api.client, "get", new=AsyncMock(return_value=MagicMock(status_code=200, text=body))
+        ):
+            templates = await load_alert_templates(api)
+        assert templates == {"msg_cam_conn_lost": "Camera [{0}] connection was lost."}
+
+    @pytest.mark.asyncio
+    async def test_load_alert_templates_survives_a_failure(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event import load_alert_templates
+
+        with patch.object(api.client, "get", new=AsyncMock(side_effect=httpx.ConnectError("down"))):
+            assert await load_alert_templates(api) == {}
+        with patch.object(
+            api.client, "get", new=AsyncMock(return_value=MagicMock(status_code=404))
+        ):
+            assert await load_alert_templates(api) == {}
+
+    def test_alert_text(self) -> None:
+        from surveillance.api.models import Alert
+        from surveillance.services.event import alert_text
+
+        alert = Alert(1, "msg_cam_conn_lost", ("Front Door", "", ""), 0)
+        templates = {"msg_cam_conn_lost": "Camera [{0}] connection was lost."}
+        assert alert_text(alert, templates) == "Camera [Front Door] connection was lost."
+        assert alert_text(alert, {}) == "Cam conn lost: Front Door"
+        assert alert_text(Alert(2, "msg_disk_full", ("", "", ""), 0), {}) == "Disk full"
 
     @pytest.mark.asyncio
     async def test_legacy_list_events_decodes_event_map(self, api: SurveillanceAPI) -> None:

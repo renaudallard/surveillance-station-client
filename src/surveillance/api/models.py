@@ -223,12 +223,11 @@ class Event:
 
 @dataclass
 class Alert:
-    """A surveillance alert."""
+    """One entry of Surveillance Station's notification queue."""
 
     id: int
-    camera_id: int
-    camera_name: str
-    alert_type: int
+    log_key: str
+    params: tuple[str, ...]
     timestamp: int
     is_read: bool = False
 
@@ -236,11 +235,10 @@ class Alert:
     def from_api(cls, data: dict) -> Alert:  # type: ignore[type-arg]
         return cls(
             id=data.get("id", 0),
-            camera_id=data.get("cameraId", 0),
-            camera_name=data.get("cameraName", ""),
-            alert_type=data.get("alertType", 0),
-            timestamp=data.get("timestamp", 0),
-            is_read=data.get("isRead", False),
+            log_key=data.get("logKey", ""),
+            params=tuple(data.get(f"param{i}", "") for i in (1, 2, 3)),
+            timestamp=data.get("time", 0),
+            is_read=data.get("hasRead", False),
         )
 
 

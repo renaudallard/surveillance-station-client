@@ -37,15 +37,29 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
+from surveillance.api.client import ApiError
 from surveillance.api.models import Alert
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
 
 log = logging.getLogger(__name__)
+
+# Undocumented, like everything about this queue: what follows matches the
+# web app's traffic. SYNO.SurveillanceStation.Notification is the settings
+# API of the Notification app and has no message list.
+ALERTS_API = "SYNO.SurveillanceStation.TaskQueue"
+
+# Served without a login, as lines of JavaScript:
+# _s.ss_log['msg_cam_conn_lost']='Camera [{0}] connection was lost.';
+_UI_STRINGS_PATH = "/webman/3rdparty/SurveillanceStation/uistrings.cgi"
+_LOG_STRING = re.compile(r"^_s\.ss_log\['([^']+)'\]\s*=\s*'(.*)';\s*$", re.MULTILINE)
 
 # EnumInterval's `interval`: the bucket size, in seconds, of the event_map
 # it returns alongside the per-file recording list. 5 is what DSM's own
@@ -188,48 +202,58 @@ async def list_recording_presence(
     return result
 
 
-async def list_alerts(
-    api: SurveillanceAPI,
-    offset: int = 0,
-    limit: int = 50,
-) -> tuple[list[Alert], int]:
-    """List alerts/notifications.
-
-    Returns (alerts, total_count).
-    """
+async def _task_queue(api: SurveillanceAPI, *, reading: bool) -> list[Alert]:
     data = await api.request(
-        api="SYNO.SurveillanceStation.Notification",
+        api=ALERTS_API,
         method="List",
         version=1,
-        extra_params={
-            "offset": str(offset),
-            "limit": str(limit),
-        },
+        extra_params={"isReading": str(reading).lower(), "nonRecMode": "false"},
     )
+    return [Alert.from_api(a) for a in data.get("msgqueue", [])]
 
-    alerts = [Alert.from_api(a) for a in data.get("notifications", data.get("alerts", []))]
-    total = data.get("total", len(alerts))
-    return alerts, total
+
+async def list_alerts(api: SurveillanceAPI) -> list[Alert]:
+    """The notifications the web app's Desktop Notifications panel shows."""
+    return await _task_queue(api, reading=False)
 
 
 async def count_unread_alerts(api: SurveillanceAPI) -> int:
     """Get count of unread alerts."""
-    data = await api.request(
-        api="SYNO.SurveillanceStation.Notification",
-        method="GetUnreadCount",
-        version=1,
-    )
-    count: int = data.get("unread", 0)
-    return count
+    return sum(not alert.is_read for alert in await list_alerts(api))
 
 
-async def mark_alerts_read(api: SurveillanceAPI, alert_ids: list[int]) -> None:
-    """Mark multiple alerts as read in a single call."""
-    if not alert_ids:
-        return
-    await api.request(
-        api="SYNO.SurveillanceStation.Notification",
-        method="SetRead",
-        version=1,
-        extra_params={"idList": ",".join(str(i) for i in alert_ids)},
-    )
+async def mark_alerts_read(api: SurveillanceAPI) -> None:
+    """Mark the whole queue read, as the web app does on opening its panel."""
+    await _task_queue(api, reading=True)
+
+
+async def clear_alerts(api: SurveillanceAPI) -> None:
+    """Delete the whole queue from the NAS."""
+    await api.request(api=ALERTS_API, method="Clear", version=1)
+
+
+async def load_alert_templates(api: SurveillanceAPI) -> dict[str, str]:
+    """logKey -> message template, from the NAS's own web UI strings.
+
+    Empty when they can't be read, which alert_text() copes with.
+    """
+    try:
+        resp = await api.client.get(_UI_STRINGS_PATH, params={"lang": "enu"})
+    except (httpx.HTTPError, ApiError) as e:
+        log.debug("Notification texts not available: %s", e)
+        return {}
+    if resp.status_code != 200:
+        log.debug("Notification texts not available: HTTP %d", resp.status_code)
+        return {}
+    return dict(_LOG_STRING.findall(resp.text))
+
+
+def alert_text(alert: Alert, templates: dict[str, str]) -> str:
+    """*alert* as a sentence, or its key in plain words without a template."""
+    template = templates.get(alert.log_key)
+    if template is None:
+        words = alert.log_key.removeprefix("msg_").replace("_", " ").capitalize()
+        return ": ".join(filter(None, [words, ", ".join(filter(None, alert.params))]))
+    for index, param in enumerate(alert.params):
+        template = template.replace(f"{{{index}}}", param)
+    return template

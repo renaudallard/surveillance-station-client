@@ -150,7 +150,7 @@ On Surveillance Station 9.3 and later, events and their types come from the Even
 <details>
 <summary><b>Notifications</b></summary>
 
-Notification bell in the header bar with an unread badge and a popover listing Surveillance Station's newest notifications (motion, connection lost/restored, alarm, camera disabled/enabled), polled every 30 seconds. **Mark these read** marks them read on the NAS: they stay in the list, no longer in bold, and leave the badge count.
+Notification bell in the header bar with an unread badge, polled every 30 seconds, and a popover listing the same notifications as the web app's Desktop Notifications panel, in the NAS's own wording. Opening the popover marks them read on the NAS, as the web app does: they stay in the list, no longer in bold, and leave the badge count. **Clear all** deletes them from the NAS, without asking first, as the web app's Clear All does. The bell is hidden on a NAS without this queue.
 </details>
 <details>
 <summary><b>Home Mode</b></summary>
@@ -713,7 +713,7 @@ pip install -e ".[dev]"
 
 ruff check src/ tests/       # lint (rules: E, F, W, I, B, S, SIM, RET, PLR, PLW, PLC, TRY, RUF)
 ruff format src/ tests/       # format
-mypy src/surveillance/        # type check
+mypy src/ tests/              # type check
 pytest tests/ -v              # tests
 ```
 
@@ -723,7 +723,7 @@ CI runs automatically on push and pull requests to `main`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy |
+| [`lint.yml`](.github/workflows/lint.yml) | push / PR to `main` | ruff check, ruff format, mypy, pytest |
 | [`release.yml`](.github/workflows/release.yml) | version bump on `main` | Build AppImages (x86_64 + aarch64), create GitHub release |
 
 </details>
@@ -786,7 +786,7 @@ surveillance-station-client/
 │   ├── bug_report.yml                   bug report form
 │   └── config.yml                       issue template config
 ├── .github/workflows/
-│   ├── lint.yml                         CI: ruff + mypy
+│   ├── lint.yml                         CI: ruff, mypy, pytest
 │   ├── check-debug-logs.yml             CI: validates bug-report debug logs
 │   ├── stale-issues.yml                 CI: closes stale issues
 │   └── release.yml                      AppImage build + GitHub release
@@ -912,7 +912,7 @@ surveillance-station-client/
 | `SYNO.SurveillanceStation.SnapShot` | List, take, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |
 | `SYNO.SurveillanceStation.TimeLapse.Recording` | Time lapse recording management |
-| `SYNO.SurveillanceStation.Notification` | Alert list, unread count, mark read |
+| `SYNO.SurveillanceStation.TaskQueue` | Notification list, unread count, mark read, clear (undocumented) |
 | `SYNO.SurveillanceStation.HomeMode` | Get/set home mode status |
 | `SYNO.SurveillanceStation.Transactions.Device` | POS devices and the camera each is paired with |
 | `SYNO.SurveillanceStation.Transactions.Transaction` | Latest POS receipts for the Live View overlay (`Enum`) |

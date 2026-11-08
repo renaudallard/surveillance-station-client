@@ -38,40 +38,40 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Alert
-from surveillance.services.event import count_unread_alerts, list_alerts, mark_alerts_read
+from surveillance.services.event import (
+    alert_text,
+    clear_alerts,
+    count_unread_alerts,
+    list_alerts,
+    load_alert_templates,
+    mark_alerts_read,
+)
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
+    from surveillance.api.client import SurveillanceAPI
     from surveillance.app import SurveillanceApp
 
 log = logging.getLogger(__name__)
 
-ALERT_TYPES = {
-    0: "Motion detected",
-    1: "Connection lost",
-    2: "Connection restored",
-    3: "Alarm triggered",
-    4: "Camera disabled",
-    5: "Camera enabled",
-}
-
-
-# The popover shows the newest alerts only; the button label and
-# _on_mark_all_read both depend on this being a bounded fetch.
-_ALERT_LIMIT = 20
-
 
 class NotificationPopover(Gtk.Popover):
-    """Popover showing recent alerts/notifications."""
+    """Popover showing recent alerts/notifications.
+
+    Opening it marks them read, as the web app's panel does. They are
+    listed first, so the unread ones still show in bold this time.
+    """
 
     def __init__(self, app: SurveillanceApp, headerbar: Any = None) -> None:
         super().__init__()
         self.app = app
-        # Kept so marking alerts read can push the new unread count
-        # straight to the badge instead of leaving it stale until the
-        # next alert poll comes round.
+        # Kept so marking alerts read or clearing them can push the new
+        # unread count straight to the badge instead of leaving it stale
+        # until the next alert poll comes round.
         self._headerbar = headerbar
-        self._alerts: list[Alert] = []
+        # Read once per session: the strings are about a megabyte.
+        self._templates: dict[str, str] = {}
+        self._templates_api: SurveillanceAPI | None = None
 
         self.set_size_request(350, 400)
 
@@ -89,11 +89,10 @@ class NotificationPopover(Gtk.Popover):
         title.set_xalign(0)
         header.append(title)
 
-        # "these", not "all": refresh() only ever fetches the newest
-        # _ALERT_LIMIT alerts, and only those can be marked.
-        mark_all_btn = Gtk.Button(label="Mark these read")
-        mark_all_btn.connect("clicked", self._on_mark_all_read)
-        header.append(mark_all_btn)
+        self.clear_btn = Gtk.Button(label="Clear all")
+        self.clear_btn.set_sensitive(False)
+        self.clear_btn.connect("clicked", self._on_clear_all)
+        header.append(self.clear_btn)
 
         box.append(header)
         box.append(Gtk.Separator())
@@ -117,34 +116,83 @@ class NotificationPopover(Gtk.Popover):
 
     def refresh(self) -> None:
         """Refresh the alert list."""
-        if not self.app.api:
+        api = self.app.api
+        if not api:
             return
+        templates = self._templates if api is self._templates_api else {}
         run_async(
-            list_alerts(self.app.api, limit=_ALERT_LIMIT),
-            callback=self._on_alerts_loaded,
-            error_callback=lambda e: log.error("Failed to load alerts: %s", e),
+            self._load(api, templates),
+            callback=lambda result: self._on_alerts_loaded(api, *result),
+            error_callback=self._on_load_failed,
         )
 
-    def _on_alerts_loaded(self, result: tuple[list[Alert], int]) -> None:
-        alerts, _ = result
-        self._alerts = alerts
+    @staticmethod
+    async def _load(
+        api: SurveillanceAPI, templates: dict[str, str]
+    ) -> tuple[list[Alert], dict[str, str]]:
+        alerts = await list_alerts(api)
+        if alerts and not templates:
+            templates = await load_alert_templates(api)
+        return alerts, templates
 
-        while True:
-            row = self.listbox.get_row_at_index(0)
-            if row is None:
-                break
-            self.listbox.remove(row)
+    def _on_alerts_loaded(
+        self, api: SurveillanceAPI, alerts: list[Alert], templates: dict[str, str]
+    ) -> None:
+        self._templates, self._templates_api = templates, api
+        self._clear()
+        self.clear_btn.set_sensitive(bool(alerts))
 
         if not alerts:
-            empty = Gtk.Label(label="No notifications")
-            empty.add_css_class("dim-label")
-            empty.set_margin_top(24)
-            self.listbox.append(Gtk.ListBoxRow(child=empty))
+            self._show_placeholder("No notifications")
             return
 
         for alert in alerts:
-            row = self._create_alert_row(alert)
-            self.listbox.append(row)
+            self.listbox.append(self._create_alert_row(alert))
+
+        if not all(alert.is_read for alert in alerts):
+            run_async(
+                mark_alerts_read(api),
+                callback=lambda _: self._update_badge(api),
+                error_callback=lambda e: log.error("Mark read failed: %s", e),
+            )
+
+    def _on_load_failed(self, error: Exception) -> None:
+        log.error("Failed to load alerts: %s", error)
+        self._show_failure("Could not load notifications")
+
+    def _on_clear_all(self, btn: Gtk.Button) -> None:
+        api = self.app.api
+        if not api:
+            return
+        btn.set_sensitive(False)
+        run_async(
+            clear_alerts(api),
+            callback=lambda _: self._after_cleared(api),
+            error_callback=self._on_clear_failed,
+        )
+
+    def _after_cleared(self, api: SurveillanceAPI) -> None:
+        self.refresh()
+        self._update_badge(api)
+
+    def _on_clear_failed(self, error: Exception) -> None:
+        log.error("Failed to clear alerts: %s", error)
+        self._show_failure("Could not clear notifications")
+
+    def _show_failure(self, text: str) -> None:
+        self._clear()
+        self.clear_btn.set_sensitive(False)
+        self._show_placeholder(text)
+
+    def _clear(self) -> None:
+        while (row := self.listbox.get_row_at_index(0)) is not None:
+            self.listbox.remove(row)
+
+    def _show_placeholder(self, text: str) -> None:
+        label = Gtk.Label(label=text)
+        label.add_css_class("dim-label")
+        label.set_margin_top(24)
+        self.listbox.append(Gtk.ListBoxRow(child=label))
 
     def _create_alert_row(self, alert: Alert) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
@@ -154,22 +202,14 @@ class NotificationPopover(Gtk.Popover):
         box.set_margin_start(4)
         box.set_margin_end(4)
 
-        # Top line: type + camera
-        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        type_text = ALERT_TYPES.get(alert.alert_type, f"Alert {alert.alert_type}")
-        type_label = Gtk.Label(label=type_text)
+        text_label = Gtk.Label(label=alert_text(alert, self._templates))
         if not alert.is_read:
-            type_label.add_css_class("camera-label")
-        type_label.set_xalign(0)
-        type_label.set_hexpand(True)
-        top.append(type_label)
+            text_label.add_css_class("camera-label")
+        text_label.set_xalign(0)
+        text_label.set_wrap(True)
+        text_label.set_max_width_chars(40)
+        box.append(text_label)
 
-        cam_label = Gtk.Label(label=alert.camera_name)
-        cam_label.add_css_class("dim-label")
-        top.append(cam_label)
-        box.append(top)
-
-        # Bottom line: timestamp
         time_str = datetime.fromtimestamp(alert.timestamp).strftime("%Y-%m-%d %H:%M:%S")
         time_label = Gtk.Label(label=time_str)
         time_label.add_css_class("dim-label")
@@ -180,30 +220,13 @@ class NotificationPopover(Gtk.Popover):
         row.set_child(box)
         return row
 
-    def _on_mark_all_read(self, btn: Gtk.Button) -> None:
-        if not self.app.api:
-            return
-        unread_ids = [a.id for a in self._alerts if not a.is_read]
-        if not unread_ids:
-            return
-        run_async(
-            mark_alerts_read(self.app.api, unread_ids),
-            callback=lambda _: self._after_marked_read(),
-            error_callback=lambda e: log.error("Mark read failed: %s", e),
-        )
-
-    def _after_marked_read(self) -> None:
-        """Refresh the list and push the new unread count to the badge.
-
-        The badge is otherwise written only by the alert poll, so it kept
-        showing the old count for up to a poll interval after the user had
-        just cleared them.
-        """
-        self.refresh()
-        if self._headerbar is None or not self.app.api:
+    def _update_badge(self, api: SurveillanceAPI) -> None:
+        """Push the new unread count to the badge, which the alert poll
+        would otherwise leave stale for up to a poll interval."""
+        if self._headerbar is None:
             return
         run_async(
-            count_unread_alerts(self.app.api),
+            count_unread_alerts(api),
             callback=self._headerbar.set_notification_count,
             error_callback=lambda e: log.error("Unread count refresh failed: %s", e),
         )

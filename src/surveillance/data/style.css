@@ -152,14 +152,6 @@
     color: @success_color;
 }
 
-/* Reuses sidebar-show-symbolic for the timeline toggle (see headerbar.py) —
-   rotating it 90° counter-clockwise turns its highlighted left edge into a
-   highlighted bottom edge, matching the same "highlight = the panel"
-   convention for a bottom pane instead of a side one. */
-.rotate-ccw-90 {
-    transform: rotate(-90deg);
-}
-
 /* Fixed rather than theme-derived to avoid visual clutter with video */
 .timeline {
     background-color: #24292e;

@@ -80,6 +80,13 @@ def validate_rtsp_url(url: str) -> str | None:
     return None
 
 
+def shown_protocol(saved: str) -> str:
+    """The protocol the dialog selects for a camera: *saved*, or Auto when
+    config.toml holds one the client does not know, so Apply replaces it
+    rather than the dialog failing to open."""
+    return saved if saved in PROTOCOL_LABELS else "auto"
+
+
 def _store(table: dict[int, str], cam_id: int, value: str, default: str) -> None:
     """Set *cam_id*'s entry in *table* to *value*, or drop it for *default*."""
     if value == default:
@@ -112,12 +119,7 @@ class CameraSettingsDialog(Gtk.Window):
         label.set_xalign(0)
         box.append(label)
 
-        current_proto = self.app.config.camera_protocols.get(cam.id, "auto")
-        # A protocol hand-edited into config.toml that the client does not
-        # know: show Auto, so Apply replaces it rather than the dialog
-        # failing to open.
-        if current_proto not in PROTOCOL_LABELS:
-            current_proto = "auto"
+        current_proto = shown_protocol(self.app.config.camera_protocols.get(cam.id, "auto"))
 
         # Radio buttons for each protocol
         group: Gtk.CheckButton | None = None

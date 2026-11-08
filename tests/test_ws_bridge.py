@@ -3051,7 +3051,8 @@ class TestHistoryTailRefresh:
             answer = answers.pop(0) if len(answers) > 1 else answers[0]
             if isinstance(answer, Exception):
                 raise answer
-            return answer
+            recording: Recording = answer
+            return recording
 
         bridge = self._bridge(rec, rec.stop_time - 5, resolver)
         watch = asyncio.create_task(bridge._watch_history_tail())
@@ -3416,7 +3417,8 @@ class TestVideoFormat:
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         try:
-            return bridge.video_format
+            video_format: str = bridge.video_format
+            return video_format
         finally:
             await bridge.stop()
 

@@ -34,7 +34,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from surveillance.api.models import Camera
+from surveillance.api.models import Camera, CameraStatus
 from surveillance.app import RemoteRequest, SurveillanceApp, parse_remote_request
 from surveillance.ui.liveview import LiveView
 from surveillance.ui.window import MainWindow
@@ -117,7 +117,9 @@ class TestDoCommandLine:
 
 
 def _camera(camera_id: int) -> Camera:
-    return Camera(id=camera_id, name=f"Camera {camera_id}", model="m", vendor="v", status=1)
+    return Camera(
+        id=camera_id, name=f"Camera {camera_id}", model="m", vendor="v", status=CameraStatus.ENABLED
+    )
 
 
 def _window(*, ready: bool = True, visible: str = "live", pages: tuple[str, ...] = ()) -> Any:
@@ -137,9 +139,9 @@ def _window(*, ready: bool = True, visible: str = "live", pages: tuple[str, ...]
         show_page=MagicMock(),
         live=live,
     )
-    window._run_remote_request = lambda r: MainWindow._run_remote_request(window, r)
-    window._run_live_view_request = lambda lv, r: MainWindow._run_live_view_request(window, lv, r)
-    window.apply_remote_request = lambda r: MainWindow.apply_remote_request(window, r)
+    window._run_remote_request = lambda r: MainWindow._run_remote_request(window, r)  # type: ignore[arg-type]
+    window._run_live_view_request = lambda lv, r: MainWindow._run_live_view_request(window, lv, r)  # type: ignore[arg-type]
+    window.apply_remote_request = lambda r: MainWindow.apply_remote_request(window, r)  # type: ignore[arg-type]
     return window
 
 

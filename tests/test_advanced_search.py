@@ -43,7 +43,8 @@ def _parse(text: str, default_time: str = "00:00:00") -> datetime:
         )
     )
     entry = SimpleNamespace(get_text=lambda: text)
-    return AdvancedSearchDialog._get_datetime(None, calendar, entry, default_time)  # type: ignore[arg-type]
+    parsed: datetime = AdvancedSearchDialog._get_datetime(None, calendar, entry, default_time)  # type: ignore[arg-type]
+    return parsed
 
 
 class TestTimeEntry:

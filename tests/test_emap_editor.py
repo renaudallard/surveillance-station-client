@@ -119,6 +119,16 @@ class _Nas:
         return [r for r in self.requests if _params(r).get("method") == method]
 
 
+class _ExpiringNas(_Nas):
+    """Answers the first Save as if the session had expired."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        response = super().__call__(request)
+        if _params(request).get("method") == "Save":
+            self.fail_edits_with = None
+        return response
+
+
 def _run(nas: _Nas, coro: Any) -> Any:
     with respx.mock(assert_all_called=False) as mock:
         mock.route(host="nas").mock(side_effect=nas)
@@ -316,6 +326,16 @@ class TestSaveMarkers:
             _run(nas, service.save_markers(1, emap.items, [i.id for i in emap.items]))
         assert len(nas.calls("Load")) == 2
         assert nas.calls("Save") == []
+
+    def test_a_save_retried_after_a_fresh_login_is_still_a_post(self) -> None:
+        nas = _ExpiringNas()
+        nas.fail_edits_with = 119
+        assert _run(nas, EMapService(_api()).create_map("Annex", UPLOADED)) == 9
+
+        saves = nas.calls("Save")
+        assert [r.method for r in saves] == ["POST", "POST"]
+        assert "imgData" not in saves[1].url.params
+        assert _params(saves[1])["_sid"] == "sid-2"
 
     def test_a_deleted_map_is_stale_too(self) -> None:
         nas = _Nas()

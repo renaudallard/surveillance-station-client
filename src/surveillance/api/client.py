@@ -337,7 +337,9 @@ class SurveillanceAPI:
         except ApiError as e:
             if e.code in SESSION_ERRORS and self.username and self.password:
                 await self._relogin(e)
-                return await self.raw_request(api, method, version, extra_params, timeout=timeout)
+                return await self.raw_request(
+                    api, method, version, extra_params, timeout=timeout, post=post
+                )
             raise
 
     async def _raw_upload(

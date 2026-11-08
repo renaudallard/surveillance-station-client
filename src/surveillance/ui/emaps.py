@@ -776,7 +776,11 @@ class EMapsView(Gtk.Box):
     def _settle_edits(self, then: Callable[[], None]) -> None:
         """Run *then* once unsaved edits are dealt with: at once when there
         are none, else after the user chose to save them, drop them, or
-        stay (in which case *then* does not run)."""
+        stay (in which case *then* does not run). Nothing runs while a
+        save, upload or delete is in flight: the edits stay unsaved until
+        it lands, so asking again could start a second save."""
+        if self._busy:
+            return
         if self._edits is None or not self._edits.dirty or self._emap is None:
             then()
             return

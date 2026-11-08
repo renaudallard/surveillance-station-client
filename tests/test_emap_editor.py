@@ -553,6 +553,7 @@ class _Page:
         self._edit_bar = _Stub()
         self._edit_note = _Stub()
         self.area = _Stub()
+        self.window = None
         self.errors: list[tuple[str, str]] = []
         self.reloads = 0
 
@@ -612,3 +613,17 @@ class TestEditFailures:
         page._on_edit_failed(service, ApiError(0, "API client is closed"))
         assert page.errors == []
         assert not page._read_only
+
+    def test_nothing_else_starts_while_a_save_is_in_flight(self) -> None:
+        from unittest.mock import patch
+
+        page = _Page()
+        ran: list[int] = []
+        with patch("surveillance.ui.emaps.ask_unsaved") as ask:
+            # Picking another map or Refresh mid-save, edits still dirty.
+            page._settle_edits(lambda: ran.append(1))
+            assert ask.call_count == 0
+            page._busy = False
+            page._settle_edits(lambda: ran.append(1))
+            assert ask.call_count == 1
+        assert ran == []

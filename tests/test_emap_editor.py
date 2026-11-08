@@ -539,7 +539,8 @@ class _Page:
     """A Maps page without GTK: EMapsView's methods bound to stub state."""
 
     def __init__(self) -> None:
-        self._service = object()
+        self.app = SimpleNamespace(api=object())
+        self._service = SimpleNamespace(api=self.app.api)
         self._unavailable = False
         self._read_only = False
         self._busy = True
@@ -574,7 +575,7 @@ class TestEditFailures:
         from surveillance.ui.emaps_edit import READ_ONLY_MESSAGE
 
         page = _Page()
-        page._on_edit_failed(ApiError(105))
+        page._on_edit_failed(page._service, ApiError(105))
 
         assert page._read_only
         assert page._edits is None
@@ -589,7 +590,7 @@ class TestEditFailures:
 
     def test_a_stale_list_is_reported_and_the_map_reloaded(self) -> None:
         page = _Page()
-        page._on_edit_failed(StaleMapError("changed"))
+        page._on_edit_failed(page._service, StaleMapError("changed"))
         assert not page._read_only
         assert page.reloads == 1
         assert page.errors[0][0] == "The map changed on the NAS"
@@ -598,8 +599,16 @@ class TestEditFailures:
 
     def test_other_errors_leave_editing_on(self) -> None:
         page = _Page()
-        page._on_edit_failed(DuplicateMapNameError("taken"))
-        page._on_edit_failed(OSError("down"))
+        page._on_edit_failed(page._service, DuplicateMapNameError("taken"))
+        page._on_edit_failed(page._service, OSError("down"))
         assert not page._read_only
         assert [m for m, _ in page.errors] == ["That name is taken", "The map could not be changed"]
         assert page._new_btn.calls["set_sensitive"] is True
+
+    def test_nothing_is_shown_once_that_session_logged_out(self) -> None:
+        page = _Page()
+        service = page._service
+        page.app.api = None
+        page._on_edit_failed(service, ApiError(0, "API client is closed"))
+        assert page.errors == []
+        assert not page._read_only

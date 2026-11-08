@@ -838,7 +838,7 @@ class EMapsView(Gtk.Box):
         run_async(
             service.save_markers(emap.id, list(edits.items), edits.base.items),
             callback=_saved,
-            error_callback=self._on_edit_failed,
+            error_callback=lambda e: self._on_edit_failed(service, e),
         )
 
     # -- editing: maps -------------------------------------------------
@@ -877,7 +877,9 @@ class EMapsView(Gtk.Box):
             self._save_config()
             self._refresh()
 
-        run_async(_create(), callback=_created, error_callback=self._on_edit_failed)
+        run_async(
+            _create(), callback=_created, error_callback=lambda e: self._on_edit_failed(service, e)
+        )
 
     def _on_change_image(self) -> None:
         self._settle_edits(lambda: pick_image(self.window, self._on_replacement_image))
@@ -903,7 +905,11 @@ class EMapsView(Gtk.Box):
             self._set_busy(False)
             self._reload_current()
 
-        run_async(_replace(), callback=_replaced, error_callback=self._on_edit_failed)
+        run_async(
+            _replace(),
+            callback=_replaced,
+            error_callback=lambda e: self._on_edit_failed(service, e),
+        )
 
     def _on_delete_map(self) -> None:
         emap = self._emap
@@ -932,14 +938,20 @@ class EMapsView(Gtk.Box):
             self._refresh()
 
         run_async(
-            service.delete_map(emap.id), callback=_deleted, error_callback=self._on_edit_failed
+            service.delete_map(emap.id),
+            callback=_deleted,
+            error_callback=lambda e: self._on_edit_failed(service, e),
         )
 
     # -- editing: errors -----------------------------------------------
 
-    def _on_edit_failed(self, error: Exception) -> None:
-        """An upload, save or delete failed. 105 means the account may only
-        view maps, and the page stays read only from then on."""
+    def _on_edit_failed(self, service: EMapService, error: Exception) -> None:
+        """An upload, save or delete through *service* failed. 105 means
+        the account may only view maps, and the page stays read only from
+        then on. Nothing is shown once that session is logged out: logout
+        closes its client under the calls still in flight."""
+        if self.app.api is not service.api:
+            return
         self._set_busy(False)
         if emaps_read_only(error):
             log.info("E-Maps are read only for this account: %s", error)

@@ -141,11 +141,6 @@ class MapEdits:
         self.dirty = False
 
     @property
-    def base_item_ids(self) -> list[int]:
-        """What the save's stale check compares the NAS against."""
-        return [item.id for item in self.base.items]
-
-    @property
     def markers(self) -> list[tuple[int, EMapItem]]:
         """The camera markers with their index in items."""
         return [(i, item) for i, item in enumerate(self.items) if item.is_camera]

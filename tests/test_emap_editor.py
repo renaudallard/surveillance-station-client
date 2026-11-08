@@ -287,7 +287,7 @@ class TestSaveMarkers:
         emap = _run(nas, service.load_map(1))
         assert emap is not None
         items = [*emap.items, EMapItem.new_camera(42, 0.5, 0.5)]
-        _run(nas, service.save_markers(1, items, [i.id for i in emap.items]))
+        _run(nas, service.save_markers(1, items, emap.items))
 
         (save,) = nas.calls("Save")
         assert save.method == "POST"
@@ -323,8 +323,21 @@ class TestSaveMarkers:
             ]
         }
         with pytest.raises(StaleMapError):
-            _run(nas, service.save_markers(1, emap.items, [i.id for i in emap.items]))
+            _run(nas, service.save_markers(1, emap.items, emap.items))
         assert len(nas.calls("Load")) == 2
+        assert nas.calls("Save") == []
+
+    def test_refuses_when_a_marker_was_moved_on_the_nas(self) -> None:
+        nas = _Nas()
+        service = EMapService(_api())
+        emap = _run(nas, service.load_map(1))
+        assert emap is not None
+        # Someone moved item 11 in the web UI meanwhile; the ids are the same.
+        rows = [dict(row) for row in LOAD_DATA["emap"][0]["item"]]
+        rows[0].update(lng=0.9, lat=0.1)
+        nas.loaded = {"emap": [{**LOAD_DATA["emap"][0], "item": rows}]}
+        with pytest.raises(StaleMapError):
+            _run(nas, service.save_markers(1, emap.items, emap.items))
         assert nas.calls("Save") == []
 
     def test_a_save_retried_after_a_fresh_login_is_still_a_post(self) -> None:
@@ -348,7 +361,10 @@ class TestSaveMarkers:
         nas = _Nas()
         nas.fail_edits_with = 105
         with pytest.raises(ApiError) as exc:
-            _run(nas, EMapService(_api()).save_markers(1, [], [11, 12, 13]))
+            _run(
+                nas,
+                EMapService(_api()).save_markers(1, [], EMap.from_api(LOAD_DATA["emap"][0]).items),
+            )
         assert emaps_read_only(exc.value)
 
 
@@ -371,7 +387,7 @@ class TestMapEdits:
         assert [i.id for i in edits.items] == [11, 12, 13]
         assert [(i, item.id) for i, item in edits.markers] == [(0, 11), (1, 12)]
         assert edits.camera_ids == {5, 7}
-        assert edits.base_item_ids == [11, 12, 13]
+        assert [i.id for i in edits.base.items] == [11, 12, 13]
 
     def test_unplaced_lists_the_sidebar_cameras_not_on_the_map_by_name(self) -> None:
         edits = self._edits()
@@ -413,7 +429,7 @@ class TestMapEdits:
         assert edits.dirty
         # The base is untouched: the stale check still compares the
         # NAS against what was loaded.
-        assert edits.base_item_ids == [11, 12, 13]
+        assert [i.id for i in edits.base.items] == [11, 12, 13]
 
 
 class TestEditGeometry:

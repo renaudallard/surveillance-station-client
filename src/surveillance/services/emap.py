@@ -297,21 +297,22 @@ class EMapService:
             self._images.pop(cached.image_name, None)
 
     async def save_markers(
-        self, emap_id: int, items: Iterable[EMapItem], base_item_ids: Collection[int]
+        self, emap_id: int, items: Iterable[EMapItem], base_items: Collection[EMapItem]
     ) -> None:
         """Make *items* the map's whole item list.
 
-        *base_item_ids* are the ids of the items the edits started from.
-        The map is reloaded first, and when its items are not those any
-        more the save is refused with StaleMapError: Save replaces the
-        list, so it would silently drop whatever was placed since. Rows
-        of that reload this client could not model go back as they came.
+        *base_items* are the items the edits started from. The map is
+        reloaded first, and when its items differ from those in any field
+        this client models (an item added, removed or moved) the save is
+        refused with StaleMapError: Save replaces the list, so it would
+        silently undo whatever was changed since. Rows of that reload this
+        client could not model go back as they came.
         """
         self._maps.pop(emap_id, None)
         current = await self.load_map(emap_id)
         if current is None:
             raise StaleMapError("This E-Map no longer exists on the NAS")
-        if {item.id for item in current.items} != set(base_item_ids):
+        if set(current.items) != set(base_items):
             raise StaleMapError(
                 "This E-Map's markers changed on the NAS since it was loaded; "
                 "reload it and make the changes again"

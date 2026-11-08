@@ -836,7 +836,7 @@ class EMapsView(Gtk.Box):
                 then()
 
         run_async(
-            service.save_markers(emap.id, list(edits.items), edits.base_item_ids),
+            service.save_markers(emap.id, list(edits.items), edits.base.items),
             callback=_saved,
             error_callback=self._on_edit_failed,
         )

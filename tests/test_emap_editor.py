@@ -552,6 +552,7 @@ class _Page:
         self._edit_btn = _Stub()
         self._edit_bar = _Stub()
         self._edit_note = _Stub()
+        self._refresh_btn = _Stub()
         self.area = _Stub()
         self.window = None
         self.errors: list[tuple[str, str]] = []
@@ -627,3 +628,13 @@ class TestEditFailures:
             page._settle_edits(lambda: ran.append(1))
             assert ask.call_count == 1
         assert ran == []
+
+    def test_refresh_is_off_while_a_save_is_in_flight(self) -> None:
+        page = _Page()
+        page._set_busy(True)
+        assert page._refresh_btn.calls["set_sensitive"] is False
+        page._set_busy(False)
+        assert page._refresh_btn.calls["set_sensitive"] is True
+        page._unavailable = True
+        page._set_busy(False)
+        assert page._refresh_btn.calls["set_sensitive"] is False

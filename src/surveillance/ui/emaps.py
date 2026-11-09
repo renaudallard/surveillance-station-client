@@ -806,6 +806,7 @@ class EMapsView(Gtk.Box):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self._edit_bar.set_busy(busy)
+        self._refresh_btn.set_sensitive(not busy and not self._unavailable)
         self._update_edit_controls()
         if not busy:
             self._update_edit_bar()
